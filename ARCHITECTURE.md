@@ -151,14 +151,14 @@ Phase 1 — 路由
 
 Phase 2 — 专家执行（可并行）
   Visualizer (AssistantAgent + UserProxyAgent)
-    工具：get_smiles_by_name, generate_2d_image_from_smiles
+    工具：draw_molecules_by_name（批量检索 SMILES + 渲染 2D 图，单次调用返回全部 artifacts）
   Researcher (AssistantAgent + UserProxyAgent)
-    工具：web_search
+    工具：web_search（Serper API 真实搜索）
 
-Phase 3 — 综合回答
-  Manager Synthesizer (AssistantAgent, 持久历史)
-  → 输出 Markdown 格式最终答案
-  → 事件 sender='Manager'，前端路由至 Turn.finalAnswer
+Phase 3 — 综合回答（双轨制流式输出）
+  绕过 AG2 缓冲，由 event_bridge._stream_synthesis_direct() 直接调用 OpenAI 客户端
+  → stream=True，token 级实时推送 assistant.message 帧
+  → 前端追加拼接 Turn.finalAnswer，即时渲染打字机效果
 ```
 
 ### 为什么保留双智能体（AssistantAgent + UserProxyAgent）
@@ -213,8 +213,10 @@ Phase 3 — 综合回答
 - 不关心前端 UI、session 管理和消息协议
 
 当前工具：
-- `get_smiles_by_name`
-- `generate_2d_image_from_smiles`
+- `draw_molecules_by_name` — 批量分子结构流水线（PubChem + RDKit）
+- `get_smiles_by_name` — 单次 PubChem SMILES 检索（备用）
+- `generate_2d_image_from_smiles` — 单次 RDKit 渲染（备用）
+- `web_search` — Serper API 真实搜索
 
 未来工具候选：
 - 分子量计算
@@ -230,7 +232,8 @@ Phase 3 — 综合回答
 - 输入要结构化
 - 输出要统一为 `ToolExecutionResult`
 - 不直接耦合前端显示
-- 不用字符串哨兵协议
+- 不用字符串地兵协议
+- 批量处理逻辑封装在工具内部，剥夺模型循环控制权
 
 ---
 

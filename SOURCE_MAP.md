@@ -101,7 +101,7 @@ frontend/components/chat/*
 **职责**
 - 加载 `.env`
 - 规范化 OpenAI 兼容 `base_url`
-- 提供 `get_llm_config()` / `get_fast_llm_config()`
+- 提供 `build_llm_config(model)` / `get_fast_llm_config()`
 
 ### `backend/app/agents/factory.py`
 **职责**
@@ -146,11 +146,12 @@ frontend/components/chat/*
 ### `backend/app/api/event_bridge.py`
 **职责**
 - 将 AG2 原始事件映射为前端协议帧
-- 负责 specialist 并行/串行 draining
-- 汇总 specialist summary 并驱动 Manager 综合阶段
+- 负责 specialist 并行/串行 draining（Phase 2）
+- Phase 3 综合回答通过直接调用 OpenAI 流式接口实现 token 级实时输出，更绕过 AG2 缓冲
 
 **关键函数**
 - `sanitize_assistant_message()`
+- `_stream_synthesis_direct()` — Phase 3 直接流式输出
 - `stream_multi_agent_run()`
 
 ### `backend/app/api/protocol.py`
@@ -238,6 +239,17 @@ frontend/components/chat/*
 
 ## 3.5 Tool 层
 
+### `backend/app/tools/molecule_pipeline.py`
+**职责**
+- 批量维度分子结构流水线：PubChem SMILES 检索 → RDKit 2D 渲染
+
+**导出工具**
+- `draw_molecules_by_name(chemical_names)` — 接受逗号分隔的名称列表，一次调用返回全部 artifacts
+
+**设计动机**
+- 剥夺模型循环控制权，幾个药物的 SMILES 检索和图像生成均在工具内部完成
+- 部分失败时仍返回成功项 artifacts，失败项以 `{name, reason}` 结构化返回
+
 ### `backend/app/tools/pubchem.py`
 **职责**
 - 基于 PubChem 名称检索 Canonical SMILES
@@ -269,10 +281,10 @@ frontend/components/chat/*
 **导出工具**
 - `web_search(query)`
 
-**当前状态**
-- 存根实现，返回占位结果
-- 替换真实实现时只需改此文件，无需动 agent 层
-- 推荐接入：Serper API / Bing Search API / Tavily
+**实现**
+- Serper API（`https://google.serper.dev/search`，num=8）
+- 需在 `.env` 中配置 `SERPER_API_KEY`
+- 缺失 key / 超时 / 请求失败均返回结构化错误
 
 ### `backend/app/tools/__init__.py`
 工具包声明。

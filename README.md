@@ -84,12 +84,14 @@ chem-agent-project/
 ## 4. 当前能力
 
 ### 已有工具
+- `draw_molecules_by_name`  
+  批量绘制分子结构图：接受逗号分隔的化合物名称，内部自动查询 PubChem 获取 SMILES，再用 RDKit 渲染，一次调用返回全部结构图像
 - `get_smiles_by_name`  
-  基于 PubChem 名称检索标准 Canonical SMILES
+  基于 PubChem 名称检索标准 Canonical SMILES（供单次查询备用）
 - `generate_2d_image_from_smiles`  
-  基于 RDKit 将 SMILES 渲染为 2D 结构图
+  基于 RDKit 将 SMILES 渲染为 2D 结构图（供单次渲染备用）
 - `web_search`  
-  通用网页搜索（当前为存根实现，可替换为 Serper / Bing 等真实接口）
+  通用网页搜索，基于 Serper API（`https://google.serper.dev/search`），供 Researcher 专家使用
 
 ### 已有协议事件
 - `session.started`
@@ -128,6 +130,7 @@ cp .env.example .env
 至少配置：
 - `OPENAI_API_KEY` 必填
 - `OPENAI_BASE_URL` 可选
+- `SERPER_API_KEY` 可选（缺失时 web_search 返回错误提示）
 
 同步依赖并启动：
 
@@ -179,6 +182,7 @@ pnpm dev
 部署前先在根目录创建 `.env`（参考 [.env.example](.env.example)）：
 - `OPENAI_API_KEY`：必填
 - `OPENAI_BASE_URL`：可选
+- `SERPER_API_KEY`：可选，接入真实网页搜索
 - `CORS_ALLOWED_ORIGINS`：建议填写你的实际公网域名或 IP，例如 `http://your-server-ip`
 - `NEXT_PUBLIC_WS_URL`：通常留空；留空时前端会自动走同源 WebSocket
 
@@ -195,7 +199,7 @@ docker compose up -d --build
 说明：
 - 如果未来接入 HTTPS，前端会根据页面协议自动切换到 `wss://`
 - 当前 session 仍是内存态，因此建议单机单后端实例部署
-- 当前 `web_search` 仍为 mock/stub，若要正式科研检索，建议先替换真实搜索提供方
+- 当前 `web_search` 已接入 Serper 真实搜索接口
 
 ---
 
@@ -311,19 +315,6 @@ WebSocket 层会把 AG2 的事件转换成统一前端协议，而不是解析 s
 1. 在 `frontend/components/chat/ArtifactRenderer.tsx` 中增加分支
 2. 根据 `kind` / `mimeType` 渲染对应组件
 3. 保持 `Artifact` 类型契约稳定
-
----
-
-## 8.1 最近一次结构清理
-
-本轮额外完成：
-- 抽离共享 LLM 配置到 `backend/app/agents/config.py`
-- 抽离通用 agent / executor 工厂到 `backend/app/agents/factory.py`
-- 抽离运行期 plan / summary 模型到 `backend/app/api/runtime.py`
-- 抽离事件桥接到 `backend/app/api/event_bridge.py`
-- 去掉前端 store 中的模块级 `pendingTurn` 全局变量
-- 修复 artifact 下载对象 URL 生命周期
-- 删除空占位文件与过时的 `backend/main.py`
 
 ---
 
