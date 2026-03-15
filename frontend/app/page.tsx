@@ -47,6 +47,9 @@ export default function Home() {
         <div className="max-w-5xl mx-auto px-4 py-3">
           <ChatInput />
         </div>
+        <p className="text-center text-[10px] text-muted-foreground/70 pb-2 select-none">
+          © {new Date().getFullYear()} ChemAgent · Designed &amp; developed by Yuan Ye · Consulting by Kelly 
+        </p>
       </footer>
     </main>
   )
