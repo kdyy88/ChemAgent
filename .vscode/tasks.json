@@ -1,0 +1,39 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start Backend",
+      "type": "shell",
+      "command": "cd backend && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "chem-agent"
+      }
+    },
+    {
+      "label": "Start Frontend",
+      "type": "shell",
+      "command": "cd frontend && pnpm dev",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "chem-agent"
+      }
+    },
+    {
+      "label": "🚀 Start ChemAgent (Full Stack)",
+      "dependsOn": ["Start Backend", "Start Frontend"],
+      "dependsOrder": "parallel",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    }
+  ]
+}

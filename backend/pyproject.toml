@@ -1,0 +1,15 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ag2[openai]>=0.11.2",
+    "fastapi>=0.135.1",
+    "python-dotenv>=1.1.1",
+    "rdkit>=2025.9.6",
+    "requests>=2.32.5",
+    "uvicorn>=0.41.0",
+    "websockets>=16.0",
+]
