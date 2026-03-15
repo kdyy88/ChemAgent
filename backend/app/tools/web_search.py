@@ -1,46 +1,32 @@
 # backend/app/tools/web_search.py
 """
-Stub web-search tool for the Researcher specialist.
+Web-search tool powered by Serper (https://serper.dev).
 
-# TODO: Replace mock implementation with a real provider, e.g.:
-#   - Tavily: pip install tavily-python, set TAVILY_API_KEY in .env
-#   - SerpAPI: pip install google-search-results, set SERPAPI_API_KEY in .env
-#
-# Example Tavily swap (drop-in replacement for the body below):
-#   from tavily import TavilyClient
-#   client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
-#   results = client.search(query=query, max_results=5)
-#   items = [{"title": r["title"], "url": r["url"], "snippet": r["content"]} for r in results["results"]]
+Requires SERPER_API_KEY in backend/.env.
+Falls back to an error result (rather than silently returning stale mock data)
+so the Researcher agent knows the search didn't succeed and can tell the user.
 """
+
+import os
+from pathlib import Path
+
+import requests
+from dotenv import load_dotenv
 
 from app.core.tooling import ToolExecutionResult, tool_registry
 
-_MOCK_DRUG_NEWS = [
-    {
-        "title": "FDA approves Amivantamab-vmjw (Rybrevant) for NSCLC with EGFR Exon 20 insertions",
-        "url": "https://www.fda.gov/drugs/resources-information-approved-drugs/fda-approves-amivantamab-vmjw-non-small-cell-lung-cancer",
-        "snippet": "The FDA approved amivantamab-vmjw (Rybrevant, Janssen Biotech) for adult patients with locally advanced or metastatic NSCLC with EGFR exon 20 insertion mutations.",
-        "drug_name": "Amivantamab",
-        "indication": "Non-small cell lung cancer (NSCLC) with EGFR Exon 20 insertions",
-        "approval_year": 2021,
-    },
-    {
-        "title": "FDA approves Adagrasib (Krazati) for KRAS G12C-mutated NSCLC",
-        "url": "https://www.fda.gov/drugs/resources-information-approved-drugs/fda-approves-adagrasib-kras-g12c-mutated-nsclc",
-        "snippet": "Adagrasib (Krazati) received FDA approval for adult patients with KRAS G12C-mutated locally advanced or metastatic NSCLC, as determined by an FDA-approved test.",
-        "drug_name": "Adagrasib",
-        "indication": "NSCLC with KRAS G12C mutation",
-        "approval_year": 2022,
-    },
-    {
-        "title": "FDA approves Sotorasib (Lumakras) for adult patients with KRAS G12C-mutated NSCLC",
-        "url": "https://www.fda.gov/drugs/resources-information-approved-drugs/fda-approves-sotorasib-kras-g12c-mutated-nsclc",
-        "snippet": "Sotorasib (Lumakras, Amgen) is a first-in-class KRAS inhibitor approved for KRAS G12C-mutated NSCLC treatment.",
-        "drug_name": "Sotorasib",
-        "indication": "NSCLC with KRAS G12C mutation",
-        "approval_year": 2021,
-    },
-]
+_SERPER_URL = "https://google.serper.dev/search"
+_TIMEOUT_SECONDS = 15
+_ENV_LOADED = False
+
+
+def _ensure_env() -> None:
+    global _ENV_LOADED
+    if _ENV_LOADED:
+        return
+    env_file = Path(__file__).resolve().parents[3] / ".env"
+    load_dotenv(dotenv_path=env_file, override=False)
+    _ENV_LOADED = True
 
 
 @tool_registry.register(
@@ -61,31 +47,74 @@ _MOCK_DRUG_NEWS = [
 )
 def web_search(query: str) -> ToolExecutionResult:
     """
-    Search the web for chemistry and pharmacology information.
+    Search the web for chemistry and pharmacology information via Serper.dev.
 
     Args:
         query: The search query string (e.g. 'FDA approved lung cancer drugs 2024').
     """
-    # ── STUB ─────────────────────────────────────────────────────────────────
-    # Always returns mock FDA drug-approval news regardless of query.
-    # Replace this section with a real API call when an API key is available.
-    # ─────────────────────────────────────────────────────────────────────────
-    results = _MOCK_DRUG_NEWS
+    _ensure_env()
+    api_key = os.environ.get("SERPER_API_KEY", "").strip()
+    if not api_key:
+        return ToolExecutionResult(
+            status="error",
+            summary="SERPER_API_KEY is not set. Add it to backend/.env to enable web search.",
+            data={"query": query},
+            artifacts=[],
+        )
 
-    summary_lines = [f"- {r['drug_name']}: {r['indication']} (approved {r['approval_year']})" for r in results]
-    summary = (
-        f"[STUB] Found {len(results)} result(s) for query '{query}':\n"
-        + "\n".join(summary_lines)
-    )
+    try:
+        response = requests.post(
+            _SERPER_URL,
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            json={"q": query, "num": 8},
+            timeout=_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except requests.exceptions.Timeout:
+        return ToolExecutionResult(
+            status="error",
+            summary=f"Web search timed out after {_TIMEOUT_SECONDS}s for query: {query}",
+            data={"query": query},
+            artifacts=[],
+        )
+    except requests.exceptions.RequestException as exc:
+        return ToolExecutionResult(
+            status="error",
+            summary=f"Web search request failed: {exc}",
+            data={"query": query},
+            artifacts=[],
+        )
+
+    # Normalise Serper response into a flat list of result dicts
+    results: list[dict] = []
+
+    for item in data.get("organic", []):
+        results.append({
+            "title":   item.get("title", ""),
+            "url":     item.get("link", ""),
+            "snippet": item.get("snippet", ""),
+        })
+
+    # Include the "answerBox" if Serper returned a direct answer
+    if answer_box := data.get("answerBox"):
+        answer_text = (
+            answer_box.get("answer")
+            or answer_box.get("snippet")
+            or answer_box.get("snippetHighlighted", "")
+        )
+        if answer_text:
+            results.insert(0, {
+                "title":   answer_box.get("title", "Direct Answer"),
+                "url":     answer_box.get("link", ""),
+                "snippet": answer_text,
+            })
+
+    summary = f"Found {len(results)} result(s) for query '{query}'."
 
     return ToolExecutionResult(
         status="success",
         summary=summary,
-        data={
-            "query": query,
-            "results": results,
-            "source": "stub_mock",
-            "note": "This is mock data. Replace web_search() with a real provider for production use.",
-        },
+        data={"query": query, "results": results},
         artifacts=[],
     )

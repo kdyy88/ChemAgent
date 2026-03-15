@@ -8,7 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from app.api.protocol import EventEnvelope, SessionControlMessage, UserMessage
-from app.api.event_bridge import stream_multi_agent_run
+from app.api.event_bridge import stream_greeting, stream_multi_agent_run
 from app.api.sessions import ChatSession, session_manager
 from app.core.network import is_origin_allowed
 from app.core.tooling import tool_registry
@@ -58,6 +58,18 @@ async def _stream_turn(
         ).to_wire()
     )
 
+    # Notify the frontend that routing is in progress so it can show a
+    # meaningful status label instead of a blank spinner.
+    await websocket.send_json(
+        EventEnvelope(
+            type="turn.status",
+            session_id=session.session_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            payload={"phase": "routing", "message": "正在分析请求…"},
+        ).to_wire()
+    )
+
     # run_turn does Phase 1 (routing) synchronously; offload to thread to avoid
     # blocking the event loop during that LLM call.
     try:
@@ -90,11 +102,54 @@ async def _stream_turn(
     await _pump_queue_to_websocket(websocket, output_queue)
 
 
-async def _init_session(websocket: WebSocket) -> ChatSession:
+
+async def _stream_greeting(websocket: WebSocket, session: ChatSession) -> None:
+    """Run the Manager greeting and stream frames to the client.
+
+    Mirrors _stream_turn but uses a unique turn_id per invocation so that
+    multiple greeting turns (e.g. after New Chat) never share a React key.
+    """
+    turn_id = f"greeting_{uuid4().hex}"
+    run_id = f"run_{uuid4().hex}"
+    output_queue: Queue = Queue()
+
+    if not session.lock.acquire(blocking=False):
+        # Should never happen on a freshly created session — skip silently.
+        return
+
+    await websocket.send_json(
+        EventEnvelope(
+            type="run.started",
+            session_id=session.session_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            payload={"prompt": "", "is_greeting": True},
+        ).to_wire()
+    )
+
+    threading.Thread(
+        target=stream_greeting,
+        kwargs={
+            "session": session,
+            "session_id": session.session_id,
+            "turn_id": turn_id,
+            "run_id": run_id,
+            "output_queue": output_queue,
+        },
+        daemon=True,
+    ).start()
+
+    await _pump_queue_to_websocket(websocket, output_queue)
+
+
+async def _init_session(websocket: WebSocket) -> tuple[ChatSession, bool]:
     initial_message = await websocket.receive_json()
     control = SessionControlMessage.model_validate(initial_message)
     requested_session_id = control.session_id if control.type == "session.resume" else None
-    session, _created = session_manager.get_or_create(requested_session_id)
+    session, created = session_manager.get_or_create(
+        requested_session_id,
+        agent_models=control.agent_models if control.type == "session.start" else None,
+    )
 
     await websocket.send_json(
         EventEnvelope(
@@ -104,10 +159,12 @@ async def _init_session(websocket: WebSocket) -> ChatSession:
                 "tools": tool_registry.public_catalog(),
                 "resumed": control.type == "session.resume"
                 and requested_session_id == session.session_id,
+                # Tell the client to block user input until the greeting finishes.
+                "has_greeting": created,
             },
         ).to_wire()
     )
-    return session
+    return session, created
 
 
 @router.websocket("/ws")
@@ -119,7 +176,12 @@ async def websocket_chat(websocket: WebSocket) -> None:
     await websocket.accept()
 
     try:
-        session = await _init_session(websocket)
+        session, created = await _init_session(websocket)
+
+        # For new sessions, stream a greeting — this also pre-warms the LLM
+        # connection so the user's first real query gets a faster response.
+        if created:
+            await _stream_greeting(websocket, session)
 
         while True:
             raw_message = await websocket.receive_json()
@@ -127,7 +189,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
 
             if incoming.type == "session.clear":
                 session_manager.clear(session.session_id)
-                session = session_manager.create()
+                session = session_manager.create(agent_models=incoming.agent_models)
                 await websocket.send_json(
                     EventEnvelope(
                         type="session.started",
@@ -135,9 +197,12 @@ async def websocket_chat(websocket: WebSocket) -> None:
                         payload={
                             "tools": tool_registry.public_catalog(),
                             "resumed": False,
+                            "has_greeting": True,
+                            "agent_models": session.agent_models,
                         },
                     ).to_wire()
                 )
+                await _stream_greeting(websocket, session)
                 continue
 
             if incoming.type != "user.message":

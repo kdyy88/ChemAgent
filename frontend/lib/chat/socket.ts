@@ -1,4 +1,4 @@
-import type { ClientEvent, ServerEvent } from '@/lib/types'
+import type { AgentModelConfig, ClientEvent, ServerEvent } from '@/lib/types'
 
 function resolveWebSocketUrl(): string {
   const configured = process.env.NEXT_PUBLIC_WS_URL?.trim()
@@ -17,18 +17,19 @@ function resolveWebSocketUrl(): string {
 
 type SocketCallbacks = {
   getSessionId: () => string | null
+  getAgentModels: () => AgentModelConfig
   onEvent: (event: ServerEvent) => void
   onClosed: () => void
 }
 
-export function connectChatSocket({ getSessionId, onEvent, onClosed }: SocketCallbacks): WebSocket {
+export function connectChatSocket({ getSessionId, getAgentModels, onEvent, onClosed }: SocketCallbacks): WebSocket {
   const ws = new WebSocket(resolveWebSocketUrl())
 
   ws.onopen = () => {
     const sessionId = getSessionId()
     const message: ClientEvent = sessionId
       ? { type: 'session.resume', session_id: sessionId }
-      : { type: 'session.start' }
+      : { type: 'session.start', agent_models: getAgentModels() }
     ws.send(JSON.stringify(message))
   }
 

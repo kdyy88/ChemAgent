@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Callable
 
 from autogen.io.run_response import RunResponseProtocol
+
+
+def today_str() -> str:
+    """Return today's date as a locale-neutral string, e.g. '2026-03-15'."""
+    return date.today().isoformat()
 
 
 @dataclass
@@ -30,7 +36,8 @@ class SpecialistSummary:
 class MultiAgentRunPlan:
     routing_rationale: str
     phase2_items: list[tuple[str, RunResponseProtocol]]
-    synthesis_factory: Callable[[list[SpecialistSummary]], RunResponseProtocol]
+    # Returns (synthesis_prompt, system_message, llm_config) for direct streaming.
+    synthesis_factory: Callable[[list[SpecialistSummary]], tuple[str, str, dict]]
 
 
 def format_turn_history(history: list[dict[str, str]], limit: int = 3) -> str:
@@ -53,6 +60,7 @@ def build_synthesis_prompt(
 ) -> str:
     if is_general:
         return (
+            f"今日日期：{today_str()}\n"
             f"用户问题：{original_prompt}\n\n"
             "这是一个通用问题（能力介绍、使用方式或闲聊），无需调用专家工具，请直接用中文友好地回答。\n"
             "你是 ChemAgent，一个化学科研 AI 助手，具备：\n"
@@ -65,7 +73,7 @@ def build_synthesis_prompt(
         summary.label == "Visualizer" and summary.success and summary.generated_image
         for summary in summaries
     )
-    lines = [f"用户原始问题：{original_prompt}"]
+    lines = [f"今日日期：{today_str()}", f"用户原始问题：{original_prompt}"]
     if routing_rationale:
         lines.append(f"路由决策逻辑：{routing_rationale}")
     lines.append("2D结构图已成功生成" if visualizer_succeeded else "Visualizer 未运行，本轮没有生成任何 2D 结构图")

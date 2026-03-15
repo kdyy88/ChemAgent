@@ -27,28 +27,27 @@ export function MoleculeCard({ image, title }: MoleculeCardProps) {
         initial={{ opacity: 0, scale: 0.9, y: 6 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ type: 'spring', stiffness: 340, damping: 24, mass: 0.8 }}
-        className="flex flex-col items-center gap-1"
+        className="flex flex-col items-center gap-1 w-full"
       >
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="group relative rounded-xl border bg-card overflow-hidden shadow-sm hover:shadow-md transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="group relative w-full aspect-square rounded-xl border bg-card overflow-hidden shadow-sm hover:shadow-md transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label={`View full size: ${title ?? 'molecule'}`}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={dataUrl}
             alt={title ?? 'Molecule structure'}
-            className="block object-contain"
-            style={{ width: 160, height: 160 }}
+            className="w-full h-full object-contain"
           />
           {/* hover overlay */}
           <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/20 transition-colors">
-            <Maximize2 className="h-5 w-5 text-white opacity-0 group-hover:opacity-100 drop-shadow transition-opacity" />
+            <Maximize2 className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 drop-shadow transition-opacity" />
           </div>
         </button>
         {title && (
-          <span className="max-w-[160px] truncate text-center text-[11px] text-muted-foreground leading-tight">
+          <span className="w-full truncate text-center text-[10px] text-muted-foreground leading-tight">
             {title}
           </span>
         )}

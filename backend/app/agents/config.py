@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,17 @@ from dotenv import load_dotenv
 
 _DEFAULT_MODEL = "gpt-4o-mini"
 _ENV_LOADED = False
+
+# Allowlist of models known to fully support system prompts + tool calling.
+# If a user supplies a model not in this set the backend logs a warning and
+# falls back to the default rather than sending a likely-broken API request.
+_SUPPORTED_MODELS: frozenset[str] = frozenset({
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "gpt-4.1-nano",
+})
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -36,8 +48,17 @@ def build_llm_config(model: str | None = None) -> dict[str, list[dict[str, Any]]
     if not api_key:
         raise ValueError("❌ 启动失败: 未找到环境变量 OPENAI_API_KEY，请检查环境配置！")
 
+    resolved_model = model or os.environ.get("OPENAI_MODEL", _DEFAULT_MODEL)
+    if model and model not in _SUPPORTED_MODELS:
+        warnings.warn(
+            f"[ChemAgent] Unknown model '{model}' — falling back to default '{_DEFAULT_MODEL}'. "
+            "Add it to _SUPPORTED_MODELS in config.py if it fully supports system prompts and tool calling.",
+            stacklevel=2,
+        )
+        resolved_model = _DEFAULT_MODEL
+
     config: dict[str, Any] = {
-        "model": model or os.environ.get("OPENAI_MODEL", _DEFAULT_MODEL),
+        "model": resolved_model,
         "api_key": api_key,
     }
 
@@ -51,10 +72,6 @@ def build_llm_config(model: str | None = None) -> dict[str, list[dict[str, Any]]
             print(f"[*] 已检测到并挂载自定义 BASE_URL: {normalized_base_url}")
 
     return {"config_list": [config]}
-
-
-def get_llm_config() -> dict[str, list[dict[str, Any]]]:
-    return build_llm_config()
 
 
 def get_fast_llm_config() -> dict[str, list[dict[str, Any]]]:

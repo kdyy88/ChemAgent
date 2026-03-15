@@ -13,6 +13,7 @@ ServerEventType = Literal[
     "run.started",
     "run.finished",
     "run.failed",
+    "turn.status",
     "assistant.message",
     "tool.call",
     "tool.result",
@@ -22,12 +23,14 @@ ServerEventType = Literal[
 class SessionControlMessage(BaseModel):
     type: SessionControlType
     session_id: str | None = None
+    agent_models: dict[str, str] | None = None
 
 
 class UserMessage(BaseModel):
     type: UserMessageType
     content: str
     turn_id: str | None = None
+    agent_models: dict[str, str] | None = None
 
 
 class EventEnvelope(BaseModel):

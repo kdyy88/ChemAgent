@@ -11,7 +11,7 @@ Tools registered: name == "web_search"
 
 from autogen import AssistantAgent, UserProxyAgent
 
-from app.agents.config import get_llm_config
+from app.agents.config import build_llm_config
 from app.agents.factory import create_tool_agent_pair, describe_tools, get_tool_specs
 
 
@@ -34,9 +34,9 @@ def _build_system_message() -> str:
 - 不要复述原始 JSON；只输出提炼后的人类可读总结。"""
 
 
-def create_researcher() -> tuple[AssistantAgent, UserProxyAgent]:
+def create_researcher(model: str | None = None) -> tuple[AssistantAgent, UserProxyAgent]:
     """创建并返回 Researcher 专家智能体对 (assistant, executor)。"""
-    llm_config = get_llm_config()
+    llm_config = build_llm_config(model)
     specs = get_tool_specs(lambda spec: spec.name == "web_search")
     return create_tool_agent_pair(
         assistant_name="Researcher",

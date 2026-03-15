@@ -1,8 +1,15 @@
-import { FlaskConical } from 'lucide-react'
+'use client'
+
+import { FlaskConical, PlusCircle } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { MessageList } from '@/components/chat/MessageList'
 import { ChatInput } from '@/components/chat/ChatInput'
+import { TeamSettingsPopover } from '@/components/chat/TeamSettingsPopover'
+import { useChemAgent } from '@/hooks/useChemAgent'
 
 export default function Home() {
+  const { clearTurns } = useChemAgent()
+
   return (
     <main className="flex flex-col h-[100dvh] bg-background">
       {/* Header */}
@@ -11,10 +18,22 @@ export default function Home() {
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
             <FlaskConical className="h-4 w-4 text-primary-foreground" />
           </div>
-          <div>
+          <div className="flex-1">
             <h1 className="text-sm font-semibold leading-none">ChemAgent</h1>
             <p className="text-xs text-muted-foreground mt-0.5">AI Chemistry Expert</p>
           </div>
+
+          {/* Header actions */}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={clearTurns}
+            className="gap-1.5 text-muted-foreground hover:text-foreground"
+          >
+            <PlusCircle className="h-4 w-4" />
+            <span className="hidden sm:inline text-xs">New Chat</span>
+          </Button>
+          <TeamSettingsPopover />
         </div>
       </header>
 

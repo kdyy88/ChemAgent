@@ -30,7 +30,7 @@ export function ArtifactGallery({ artifacts }: ArtifactGalleryProps) {
   return (
     <div className="flex flex-col gap-3 mt-1">
       {imageArtifacts.length > 0 && (
-        <div className="flex flex-wrap gap-3">
+        <div className="grid grid-cols-7 gap-2">
           {imageArtifacts.map((artifact) => (
             <MoleculeCard
               key={artifact.artifactId}

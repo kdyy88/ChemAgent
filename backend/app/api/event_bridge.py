@@ -17,6 +17,8 @@ from autogen.events.agent_events import (
 )
 from autogen.io.run_response import RunResponseProtocol
 
+from openai import OpenAI
+
 from app.api.protocol import EventEnvelope
 from app.api.runtime import MultiAgentRunPlan, SpecialistSummary
 from app.core.tooling import parse_tool_payload, tool_result_store
@@ -26,6 +28,8 @@ if TYPE_CHECKING:
 
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)", re.IGNORECASE)
 _DATA_URL_RE = re.compile(r"data:[^\s)]+", re.IGNORECASE)
+_TERMINATE = "TERMINATE"
+_TERMINATE_LEN = len(_TERMINATE)
 
 
 def _json_loads(value: str | None) -> dict[str, object]:
@@ -39,9 +43,12 @@ def _json_loads(value: str | None) -> dict[str, object]:
 
 
 def sanitize_assistant_message(content: str) -> str:
+    """Remove inline image markdown and data URLs. Does NOT strip whitespace —
+    callers in the streaming path rely on newlines being preserved so that
+    Markdown headings and lists parse correctly on the frontend."""
     sanitized = _MARKDOWN_IMAGE_RE.sub("", content)
     sanitized = _DATA_URL_RE.sub("[artifact]", sanitized)
-    return sanitized.strip()
+    return sanitized
 
 
 def _event_to_frames(
@@ -137,9 +144,11 @@ def _event_to_frames(
             )
 
     elif isinstance(event, TextEvent):
-        content = str(payload.content or "").strip()
+        content = str(payload.content or "")
         if content and payload.sender == sender:
-            message = sanitize_assistant_message(content.removesuffix("TERMINATE").strip())
+            # Strip only TERMINATE suffix (appears on final chunk); preserve
+            # internal whitespace so streaming tokens concatenate correctly.
+            message = sanitize_assistant_message(content.removesuffix("TERMINATE"))
             if message:
                 frames.append(
                     EventEnvelope(
@@ -239,7 +248,8 @@ def _drain_specialists_parallel(
     queue: Queue,
     summaries_out: list[SpecialistSummary],
 ) -> None:
-    frame_buffers: dict[str, list[dict[str, object]]] = {label: [] for label, _ in phase2_items}
+    # Each specialist streams frames directly into the shared queue as events
+    # arrive — no buffering — so the frontend sees real-time progress.
     specialist_summaries: dict[str, list[SpecialistSummary]] = {label: [] for label, _ in phase2_items}
 
     def collect(label: str, response: RunResponseProtocol) -> None:
@@ -247,19 +257,18 @@ def _drain_specialists_parallel(
         phase_state = {"generated_image": False}
         try:
             for event in response.events:
-                frame_buffers[label].extend(
-                    _event_to_frames(
-                        event=event,
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        run_id=run_id,
-                        sender=label,
-                        is_final_phase=False,
-                        pending_calls=pending_calls,
-                        summaries_out=specialist_summaries[label],
-                        phase_state=phase_state,
-                    )
-                )
+                for frame in _event_to_frames(
+                    event=event,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    run_id=run_id,
+                    sender=label,
+                    is_final_phase=False,
+                    pending_calls=pending_calls,
+                    summaries_out=specialist_summaries[label],
+                    phase_state=phase_state,
+                ):
+                    queue.put(frame)  # stream immediately, not buffered
         except Exception as exc:
             specialist_summaries[label].append(
                 SpecialistSummary(label=label, success=False, summary="", error=str(exc))
@@ -270,9 +279,133 @@ def _drain_specialists_parallel(
         concurrent.futures.wait(futures)
 
     for label, _ in phase2_items:
-        for frame in frame_buffers[label]:
-            queue.put(frame)
         summaries_out.extend(specialist_summaries[label])
+
+
+def stream_greeting(
+    *,
+    session: "ChatSession",
+    session_id: str,
+    turn_id: str,
+    run_id: str,
+    output_queue: Queue,
+) -> None:
+    """Generate a greeting from Manager and stream it into output_queue.
+
+    Releases session.lock in finally — caller must acquire it before spawning
+    this function in a thread.
+    """
+    try:
+        response = session.generate_greeting()
+        _drain_response(
+            response=response,
+            session_id=session_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            sender="Manager",
+            queue=output_queue,
+            summaries_out=[],
+            is_final_phase=True,
+        )
+    except Exception as exc:
+        output_queue.put(
+            EventEnvelope(
+                type="run.failed",
+                session_id=session_id,
+                turn_id=turn_id,
+                run_id=run_id,
+                payload={"error": str(exc)},
+            ).to_wire()
+        )
+    finally:
+        output_queue.put(None)
+        session.lock.release()
+
+
+def _stream_synthesis_direct(
+    *,
+    synthesis_prompt: str,
+    system_message: str,
+    llm_config: dict,
+    session_id: str,
+    turn_id: str,
+    run_id: str,
+    queue: Queue,
+) -> None:
+    """Stream the Manager synthesis reply token-by-token via the OpenAI client.
+
+    Bypasses AG2's event loop (which buffers the full response before emitting
+    a single TextEvent) so the frontend receives chunks as they arrive.
+    """
+    cfg = llm_config["config_list"][0]
+    client_kwargs: dict = {"api_key": cfg["api_key"]}
+    if "base_url" in cfg:
+        client_kwargs["base_url"] = cfg["base_url"]
+    client = OpenAI(**client_kwargs)
+
+    try:
+        stream = client.chat.completions.create(
+            model=cfg["model"],
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": synthesis_prompt},
+            ],
+            stream=True,
+        )
+        # Rolling tail buffer: holds the last len("TERMINATE") chars so the
+        # sentinel word is never emitted mid-stream even if split across chunks.
+        tail = ""
+        for chunk in stream:
+            delta = (chunk.choices[0].delta.content or "") if chunk.choices else ""
+            if not delta:
+                continue
+            combined = tail + delta
+            safe = combined[:-_TERMINATE_LEN] if len(combined) > _TERMINATE_LEN else ""
+            tail = combined[-_TERMINATE_LEN:]
+            text = sanitize_assistant_message(safe.replace(_TERMINATE, ""))
+            if text:
+                queue.put(
+                    EventEnvelope(
+                        type="assistant.message",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        run_id=run_id,
+                        payload={"sender": "Manager", "message": text},
+                    ).to_wire()
+                )
+
+        # Flush the tail, stripping any trailing TERMINATE sentinel
+        if tail_text := sanitize_assistant_message(tail.replace(_TERMINATE, "")):
+            queue.put(
+                EventEnvelope(
+                    type="assistant.message",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    run_id=run_id,
+                    payload={"sender": "Manager", "message": tail_text},
+                ).to_wire()
+            )
+    except Exception as exc:
+        queue.put(
+            EventEnvelope(
+                type="run.failed",
+                session_id=session_id,
+                turn_id=turn_id,
+                run_id=run_id,
+                payload={"error": f"[Synthesis] {exc}"},
+            ).to_wire()
+        )
+        return
+
+    queue.put(
+        EventEnvelope(
+            type="run.finished",
+            session_id=session_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            payload={"summary": None, "last_speaker": "Manager"},
+        ).to_wire()
+    )
 
 
 def stream_multi_agent_run(
@@ -309,16 +442,15 @@ def stream_multi_agent_run(
                 summaries_out=all_summaries,
             )
 
-        synthesis_response = plan.synthesis_factory(all_summaries)
-        _drain_response(
-            response=synthesis_response,
+        synthesis_prompt, system_message, llm_config = plan.synthesis_factory(all_summaries)
+        _stream_synthesis_direct(
+            synthesis_prompt=synthesis_prompt,
+            system_message=system_message,
+            llm_config=llm_config,
             session_id=session_id,
             turn_id=turn_id,
             run_id=run_id,
-            sender="Manager",
             queue=output_queue,
-            summaries_out=[],
-            is_final_phase=True,
         )
     except Exception as exc:
         output_queue.put(

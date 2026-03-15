@@ -1,11 +1,33 @@
 import { create } from 'zustand'
-import type { ClientEvent, ToolMeta, Turn } from '@/lib/types'
+import type { AgentModelConfig, ClientEvent, ToolMeta, Turn } from '@/lib/types'
 import { connectChatSocket } from '@/lib/chat/socket'
 import { applyServerEvent, applySocketClosed, createTurn, type ChatStateSlice, type PendingTurn } from '@/lib/chat/state'
+
+const STORAGE_KEY = 'chemagent_model_prefs'
+
+function loadStoredModels(): AgentModelConfig {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    return raw ? (JSON.parse(raw) as AgentModelConfig) : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveStoredModels(config: AgentModelConfig): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(config))
+  } catch {
+    // Quota exceeded or private browsing — silently ignore.
+  }
+}
 
 interface ChatStore extends ChatStateSlice {
   wsRef: WebSocket | null
   pendingTurn: PendingTurn | null
+  initialize: () => void
+  setAgentModels: (config: AgentModelConfig) => void
   sendMessage: (prompt: string) => void
   clearTurns: () => void
 }
@@ -36,19 +58,33 @@ const connectSocket = (
 
   const ws = connectChatSocket({
     getSessionId: () => get().sessionId,
+    getAgentModels: () => get().agentModels,
     onEvent: (msg) => {
-      set((state) => {
-        const nextState = applyServerEvent(state, msg)
-        if (msg.type === 'session.started') {
-          return nextState
-        }
-        return nextState
-      })
+      set((state) => applyServerEvent(state, msg))
 
       if (msg.type === 'session.started') {
-        if (flushPendingTurn(get)) {
-          set({ pendingTurn: null })
+        // If a greeting is about to stream, defer flushing any pending turn
+        // until the greeting finishes — otherwise the user's queued message
+        // races with the greeting turn and both appear simultaneously.
+        if (!msg.has_greeting) {
+          if (flushPendingTurn(get)) {
+            set({ pendingTurn: null })
+          }
         }
+      }
+
+      // After any run finishes (including the greeting), flush a queued pending
+      // turn so a message the user sent while connecting isn't lost.
+      if (msg.type === 'run.finished' || msg.type === 'run.failed') {
+        if (flushPendingTurn(get)) {
+          set({ pendingTurn: null, isStreaming: true })
+        }
+      }
+
+      // Keep localStorage in sync when the backend echoes back the real model
+      // bindings so the next new session pre-selects the same combination.
+      if (msg.type === 'session.started' && msg.agent_models) {
+        saveStoredModels(msg.agent_models)
       }
     },
     onClosed: () => {
@@ -68,6 +104,18 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   wsRef: null,
   toolCatalog: {} as Record<string, ToolMeta>,
   pendingTurn: null,
+  agentModels: loadStoredModels(),
+
+  // Connect the WebSocket eagerly (called on page mount) so the greeting
+  // pre-warms before the user types anything.
+  initialize: () => {
+    connectSocket(set, get)
+  },
+
+  setAgentModels: (config: AgentModelConfig) => {
+    set({ agentModels: config })
+    saveStoredModels(config)
+  },
 
   sendMessage: (prompt: string) => {
     if (get().isStreaming) return
@@ -80,7 +128,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set((state) => ({
       turns: [...state.turns, newTurn],
       isStreaming: true,
-      sessionId: state.sessionId,
       pendingTurn: { turnId: newTurn.id, prompt: trimmed },
     }))
 
@@ -93,7 +140,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   clearTurns: () => {
     const ws = get().wsRef
     if (ws && ws.readyState === WebSocket.OPEN) {
-      const message: ClientEvent = { type: 'session.clear', content: '' }
+      const message: ClientEvent = {
+        type: 'session.clear',
+        content: '',
+        agent_models: get().agentModels,
+      }
       ws.send(JSON.stringify(message))
     }
 

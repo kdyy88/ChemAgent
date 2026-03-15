@@ -9,16 +9,18 @@ import { MessageBubble } from './MessageBubble'
 import { useChemAgent } from '@/hooks/useChemAgent'
 
 export function MessageList() {
-  const { turns, isStreaming, toolCatalog } = useChemAgent()
+  const { turns, toolCatalog } = useChemAgent()
   const bottomRef = useRef<HTMLDivElement>(null)
   const lastTurn = turns[turns.length - 1]
   const lastStepCount = lastTurn?.steps.length ?? 0
   const lastArtifactCount = lastTurn?.artifacts.length ?? 0
 
-  // Auto-scroll when new steps arrive or a new turn appears
+  // Auto-scroll to bottom when tool steps/artifacts arrive.
+  // Intentionally excludes isStreaming — synthesis firing dozens of tokens/sec
+  // would call scrollIntoView continuously, triggering layout recalculation jank.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [turns.length, lastStepCount, lastArtifactCount, isStreaming])
+  }, [turns.length, lastStepCount, lastArtifactCount])
 
   return (
     <ScrollArea className="h-full">

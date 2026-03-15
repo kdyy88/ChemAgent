@@ -1,11 +1,13 @@
 'use client'
 
-import { motion } from 'framer-motion'
+import { memo } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import { FlaskConical } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ThinkingLog } from './ThinkingLog'
 import { ArtifactGallery } from './ArtifactGallery'
+import { Skeleton } from '@/components/ui/skeleton'
 import type { ToolMeta, Turn } from '@/lib/types'
 
 interface MessageBubbleProps {
@@ -13,7 +15,7 @@ interface MessageBubbleProps {
   toolCatalog: Record<string, ToolMeta>
 }
 
-export function MessageBubble({ turn, toolCatalog }: MessageBubbleProps) {
+export const MessageBubble = memo(function MessageBubble({ turn, toolCatalog }: MessageBubbleProps) {
   // Prefer the dedicated finalAnswer (Manager synthesis) when available;
   // fall back only for legacy sessions whose agent replies had no sender.
   const displayContent =
@@ -22,6 +24,9 @@ export function MessageBubble({ turn, toolCatalog }: MessageBubbleProps) {
       | { kind: 'agent_reply'; content: string }
       | undefined)?.content
 
+  const isThinking = turn.status === 'thinking'
+  const showSkeleton = isThinking && !displayContent
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
@@ -29,12 +34,14 @@ export function MessageBubble({ turn, toolCatalog }: MessageBubbleProps) {
       transition={{ duration: 0.25, ease: 'easeOut' }}
       className="flex flex-col gap-3"
     >
-      {/* User bubble — right-aligned */}
-      <div className="flex justify-end">
-        <div className="max-w-[75%] rounded-2xl bg-primary text-primary-foreground px-4 py-2.5 text-sm leading-relaxed shadow-sm">
-          {turn.userMessage}
+      {/* User bubble — right-aligned; hidden for auto-generated greeting turns */}
+      {!turn.isGreeting && (
+        <div className="flex justify-end">
+          <div className="max-w-[75%] rounded-2xl bg-primary text-primary-foreground px-4 py-2.5 text-sm leading-relaxed shadow-sm">
+            {turn.userMessage}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Agent response — left-aligned */}
       <div className="flex items-start gap-2.5">
@@ -44,7 +51,7 @@ export function MessageBubble({ turn, toolCatalog }: MessageBubbleProps) {
         </div>
 
         {/* Content */}
-        <div className="flex flex-col gap-1.5 min-w-0">
+        <div className="flex flex-col gap-1.5 min-w-0 flex-1">
           <span className="text-xs font-medium text-muted-foreground">ChemAgent</span>
 
           <ThinkingLog
@@ -53,19 +60,55 @@ export function MessageBubble({ turn, toolCatalog }: MessageBubbleProps) {
             startedAt={turn.startedAt}
             finishedAt={turn.finishedAt}
             toolCatalog={toolCatalog}
+            statusMessage={turn.statusMessage}
           />
 
-          {displayContent && (
-            <div className="rounded-2xl border bg-card px-4 py-3 text-sm leading-relaxed shadow-sm prose prose-sm dark:prose-invert max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {displayContent}
-              </ReactMarkdown>
-            </div>
-          )}
+          <AnimatePresence mode="wait">
+            {showSkeleton ? (
+              <motion.div
+                key="skeleton"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                className="rounded-2xl border bg-card px-4 py-3 shadow-sm space-y-2"
+              >
+                <Skeleton className="h-3 w-3/4" />
+                <Skeleton className="h-3 w-full" />
+                <Skeleton className="h-3 w-5/6" />
+                <Skeleton className="h-3 w-2/3" />
+              </motion.div>
+            ) : displayContent ? (
+              <motion.div
+                key="answer"
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+                className="rounded-2xl border bg-card px-4 py-3 text-sm leading-relaxed shadow-sm"
+              >
+                {isThinking ? (
+                  // During streaming: plain text prevents ReactMarkdown from
+                  // re-parsing the AST on every token (which causes layout jumps).
+                  <span className="whitespace-pre-wrap">
+                    {displayContent}
+                    <span className="inline-block w-[2px] h-[1em] ml-[1px] align-text-bottom bg-foreground/70 animate-pulse" />
+                  </span>
+                ) : (
+                  // Streaming complete: render full Markdown once.
+                  <div className="prose prose-sm dark:prose-invert max-w-none">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {displayContent}
+                    </ReactMarkdown>
+                  </div>
+                )}
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
 
-          <ArtifactGallery artifacts={turn.artifacts} />
+          {!isThinking && <ArtifactGallery artifacts={turn.artifacts} />}
         </div>
       </div>
     </motion.div>
   )
-}
+})
+

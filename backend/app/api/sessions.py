@@ -11,29 +11,36 @@ from app.agents.manager import (
     create_manager,
     create_routing_agent,
     parse_routing_decision,
+    SYNTHESIS_SYSTEM_MESSAGE,
 )
+from app.agents.config import build_llm_config
 from app.agents.factory import create_executor_agent
-from app.agents.specialists.researcher import create_researcher
 from app.agents.specialists.visualizer import create_visualizer
+from app.agents.specialists.researcher import create_researcher
 from app.api.runtime import (
     AgentTeam,
     MultiAgentRunPlan,
     SpecialistSummary,
     build_synthesis_prompt,
     format_turn_history,
+    today_str,
 )
 
 
-SESSION_TTL_SECONDS = 60 * 30
-
-
 # ── Session ───────────────────────────────────────────────────────────────────
+
+
+SESSION_TTL_SECONDS = 60 * 30
 
 
 @dataclass
 class ChatSession:
     session_id: str
     team: AgentTeam
+    # The resolved model names actually used by each agent in this session.
+    # Set at creation time; immutable thereafter. Sent back to the client in
+    # session.started so the UI always shows the true backend binding.
+    agent_models: dict[str, str] = field(default_factory=dict)
     has_history: bool = False
     # Compact per-turn record for cross-turn context injection into the Router.
     # Each entry: {"user": <original prompt>, "result": <specialist findings>}
@@ -53,10 +60,11 @@ class ChatSession:
         Uses clear_history=True so previous routing exchanges don't leak in.
         """
         context_prefix = format_turn_history(self.turn_history)
+        date_prefix = f"今日日期：{today_str()}"
         routing_prompt = (
-            f"{context_prefix}\n\n当前用户问题：{prompt}"
+            f"{date_prefix}\n{context_prefix}\n\n当前用户问题：{prompt}"
             if context_prefix
-            else f"当前用户问题：{prompt}"
+            else f"{date_prefix}\n\n当前用户问题：{prompt}"
         )
 
         result = self.team.router_trigger.initiate_chat(
@@ -68,6 +76,29 @@ class ChatSession:
         )
         routing_text = result.summary or ""
         return parse_routing_decision(routing_text)
+
+    def generate_greeting(self) -> RunResponseProtocol:
+        """Call Manager to produce a short warm greeting for a new session.
+
+        Used for pre-warming: the LLM TCP connection and any HTTP keep-alive
+        pool get exercised here so the *real* first user turn is faster.
+        """
+        trigger = create_executor_agent(
+            name="Greeting_Trigger",
+            max_consecutive_auto_reply=0,
+            is_termination_msg=lambda _: True,
+        )
+        return trigger.run(
+            recipient=self.team.manager,
+            message=(
+                "请用中文简短友好地问候用户，介绍你是专业化学助手 ChemAgent，"
+                "简述你能帮助用户做什么（如查询化合物信息、绘制分子结构图、搜索文献等），"
+                "并邀请用户提问。语气自然亲切，不超过3句话。纯文本，不要使用 Markdown。"
+            ),
+            clear_history=True,
+            summary_method="last_msg",
+            silent=False,
+        )
 
     def run_turn(self, prompt: str) -> MultiAgentRunPlan:
         """Build and return a MultiAgentRunPlan.
@@ -96,6 +127,7 @@ class ChatSession:
         if not is_general:
             if "researcher" in route:
                 res_prompt = refined.get("researcher") or prompt
+                res_prompt = f"今日日期：{today_str()}\n\n{res_prompt}"
                 res_resp = self.team.researcher_executor.run(
                     recipient=self.team.researcher,
                     message=res_prompt,
@@ -107,6 +139,7 @@ class ChatSession:
 
             if "visualizer" in route:
                 vis_prompt = refined.get("visualizer") or prompt
+                vis_prompt = f"今日日期：{today_str()}\n\n{vis_prompt}"
                 vis_resp = self.team.visualizer_executor.run(
                     recipient=self.team.visualizer,
                     message=vis_prompt,
@@ -120,31 +153,23 @@ class ChatSession:
         had_history = self.has_history  # capture value BEFORE setting True
         self.has_history = True
 
+        # llm_config for synthesis is resolved once at session-creation time
+        # and stored in agent_models; no need to call build_llm_config again.
+        manager_model = self.agent_models.get("manager")
+        manager_llm_config = build_llm_config(manager_model)
+
         def synthesis_factory(
             summaries: list[SpecialistSummary],
-        ):
-            # Persist what this turn found so future turns can resolve references
+        ) -> tuple[str, str, dict]:
             result_parts = [s.summary for s in summaries if s.success and s.summary]
             self.turn_history[turn_idx]["result"] = "; ".join(result_parts) or "无结果"
-
             synthesis_prompt = build_synthesis_prompt(
                 original_prompt=prompt,
                 routing_rationale=rationale,
                 summaries=summaries,
                 is_general=is_general,
             )
-            manager_trigger = create_executor_agent(
-                name="Manager_Trigger",
-                max_consecutive_auto_reply=0,
-                is_termination_msg=lambda _: True,
-            )
-            return manager_trigger.run(
-                recipient=self.team.manager,
-                message=synthesis_prompt,
-                clear_history=not had_history,  # Manager keeps multi-turn context
-                summary_method="last_msg",
-                silent=False,
-            )
+            return synthesis_prompt, SYNTHESIS_SYSTEM_MESSAGE, manager_llm_config
 
         return MultiAgentRunPlan(
             routing_rationale=rationale,
@@ -171,15 +196,27 @@ class SessionManager:
         for sid in expired:
             self._sessions.pop(sid, None)
 
-    def create(self) -> ChatSession:
+    def create(self, agent_models: dict[str, str] | None = None) -> ChatSession:
         with self._lock:
             self._prune()
             session_id = f"sess_{uuid4().hex}"
+            models = agent_models or {}
 
-            manager = create_manager()
-            router, router_trigger = create_routing_agent()
-            visualizer, visualizer_executor = create_visualizer()
-            researcher, researcher_executor = create_researcher()
+            # Resolve each model through build_llm_config so the stored names
+            # reflect the actual values used (post-warning & fallback).
+            def _resolved(key: str) -> str:
+                return build_llm_config(models.get(key))["config_list"][0]["model"]
+
+            resolved_models = {
+                "manager": _resolved("manager"),
+                "visualizer": _resolved("visualizer"),
+                "researcher": _resolved("researcher"),
+            }
+
+            manager = create_manager(model=models.get("manager"))
+            router, router_trigger = create_routing_agent()  # always uses fast model from env
+            visualizer, visualizer_executor = create_visualizer(model=models.get("visualizer"))
+            researcher, researcher_executor = create_researcher(model=models.get("researcher"))
 
             team = AgentTeam(
                 manager=manager,
@@ -190,11 +227,17 @@ class SessionManager:
                 researcher=researcher,
                 researcher_executor=researcher_executor,
             )
-            session = ChatSession(session_id=session_id, team=team)
+            session = ChatSession(
+                session_id=session_id,
+                team=team,
+                agent_models=resolved_models,
+            )
             self._sessions[session_id] = session
             return session
 
-    def get_or_create(self, session_id: str | None) -> tuple[ChatSession, bool]:
+    def get_or_create(
+        self, session_id: str | None, agent_models: dict[str, str] | None = None
+    ) -> tuple[ChatSession, bool]:
         with self._lock:
             self._prune()
             if session_id and session_id in self._sessions:
@@ -202,7 +245,7 @@ class SessionManager:
                 session.touch()
                 return session, False
 
-        session = self.create()
+        session = self.create(agent_models=agent_models)
         return session, True
 
     def clear(self, session_id: str) -> None:
