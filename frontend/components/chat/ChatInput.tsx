@@ -1,19 +1,22 @@
 'use client'
 
 import { useState } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { Loader2, Send } from 'lucide-react'
-import { Input } from '@/components/ui/input'
+import { Send } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
+import { Loader } from '@/components/ui/loader'
+import {
+  PromptInput,
+  PromptInputTextarea,
+  PromptInputActions,
+  PromptInputAction,
+} from '@/components/ui/prompt-input'
 import { useChemAgent } from '@/hooks/useChemAgent'
 
 export function ChatInput() {
   const [value, setValue] = useState('')
   const { isStreaming, sendMessage } = useChemAgent()
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleSubmit = () => {
     const trimmed = value.trim()
     if (!trimmed || isStreaming) return
     sendMessage(trimmed)
@@ -21,53 +24,35 @@ export function ChatInput() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex items-center gap-2 w-full">
-      <Input
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        placeholder="Ask about any chemical compound…"
-        disabled={isStreaming}
-        className="flex-1"
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault()
-            handleSubmit(e as unknown as React.FormEvent)
-          }
-        }}
-      />
-
-      <AnimatePresence mode="wait">
+    <PromptInput
+      value={value}
+      onValueChange={setValue}
+      isLoading={isStreaming}
+      onSubmit={handleSubmit}
+      disabled={isStreaming}
+      className="w-full"
+    >
+      <PromptInputTextarea placeholder="Ask about any chemical compound…" />
+      <PromptInputActions className="justify-end">
         {isStreaming ? (
-          <motion.div
-            key="analyzing"
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.15 }}
-          >
-            <Badge
-              variant="secondary"
-              className="flex items-center gap-1.5 px-3 py-2 h-9 text-sm"
-            >
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Analyzing…
-            </Badge>
-          </motion.div>
+          <div className="flex items-center gap-1.5 px-3 text-sm text-muted-foreground">
+            <Loader variant="typing" size="sm" />
+            <span>Analyzing…</span>
+          </div>
         ) : (
-          <motion.div
-            key="send"
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.15 }}
-          >
-            <Button type="submit" disabled={!value.trim()} size="default">
+          <PromptInputAction tooltip="Send message">
+            <Button
+              type="button"
+              size="default"
+              disabled={!value.trim()}
+              onClick={handleSubmit}
+            >
               <Send className="h-4 w-4" />
               Send
             </Button>
-          </motion.div>
+          </PromptInputAction>
         )}
-      </AnimatePresence>
-    </form>
+      </PromptInputActions>
+    </PromptInput>
   )
 }

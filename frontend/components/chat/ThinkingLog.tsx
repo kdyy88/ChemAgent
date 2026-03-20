@@ -1,21 +1,23 @@
 'use client'
 
-import { useState, useEffect, memo } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { memo, useState, useEffect } from 'react'
 import {
-  ChevronDown,
-  ChevronRight,
   Terminal,
   CheckCircle2,
   XCircle,
   AlertTriangle,
   Loader2,
 } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible'
+  ChainOfThought,
+  ChainOfThoughtStep,
+  ChainOfThoughtTrigger,
+  ChainOfThoughtContent,
+  ChainOfThoughtItem,
+} from '@/components/ui/chain-of-thought'
+import { Steps, StepsTrigger, StepsContent } from '@/components/ui/steps'
+import { Source, SourceTrigger, SourceContent } from '@/components/ui/source'
 import type { Step, ToolMeta, TurnStatus } from '@/lib/types'
 
 // ── Web search result cards ────────────────────────────────────────────────────
@@ -32,32 +34,15 @@ function extractSearchResults(data: unknown): SearchResult[] {
   })
 }
 
-function hostname(url: string): string {
-  try { return new URL(url).hostname.replace(/^www\./, '') } catch { return url.slice(0, 40) }
-}
-
 function WebSearchResults({ results }: { results: SearchResult[] }) {
   if (results.length === 0) return null
   return (
-    <div className="flex flex-col gap-2 pt-1">
+    <div className="flex flex-wrap gap-1.5 pt-1">
       {results.map((r, i) => (
-        <a
-          key={i}
-          href={r.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="group block rounded-lg border border-stone-200 bg-white px-3 py-2 hover:border-stone-300 hover:bg-stone-50 transition-colors"
-        >
-          <p className="text-xs font-medium text-foreground group-hover:text-primary line-clamp-2 leading-snug">
-            {r.title || '(无标题)'}
-          </p>
-          {r.snippet && (
-            <p className="mt-0.5 text-[11px] text-muted-foreground line-clamp-2 leading-snug">
-              {r.snippet}
-            </p>
-          )}
-          <p className="mt-1 text-[10px] text-stone-400">{hostname(r.url)}</p>
-        </a>
+        <Source key={i} href={r.url}>
+          <SourceTrigger label={r.title || undefined} showFavicon />
+          <SourceContent title={r.title || '(无标题)'} description={r.snippet} />
+        </Source>
       ))}
     </div>
   )
@@ -65,12 +50,12 @@ function WebSearchResults({ results }: { results: SearchResult[] }) {
 
 // ── Sender badge ───────────────────────────────────────────────────────────────
 const SENDER_BADGE: Record<string, { bg: string; text: string; label: string }> = {
-  Manager:           { bg: 'bg-blue-100',   text: 'text-blue-700',   label: 'Manager' },
-  'Manager/Route':   { bg: 'bg-blue-100',   text: 'text-blue-700',   label: 'Manager' },
-  'Manager/Synthesis':{ bg: 'bg-blue-100',  text: 'text-blue-700',   label: 'Manager' },
-  Visualizer:        { bg: 'bg-green-100',  text: 'text-green-700',  label: 'Visualizer' },
-  Researcher:        { bg: 'bg-purple-100', text: 'text-purple-700', label: 'Researcher' },
-  Validator:         { bg: 'bg-amber-100',  text: 'text-amber-700',  label: 'Validator' },
+  Manager:            { bg: 'bg-blue-100',   text: 'text-blue-700',   label: 'Manager' },
+  'Manager/Route':    { bg: 'bg-blue-100',   text: 'text-blue-700',   label: 'Manager' },
+  'Manager/Synthesis':{ bg: 'bg-blue-100',   text: 'text-blue-700',   label: 'Manager' },
+  Visualizer:         { bg: 'bg-green-100',  text: 'text-green-700',  label: 'Visualizer' },
+  Researcher:         { bg: 'bg-purple-100', text: 'text-purple-700', label: 'Researcher' },
+  Validator:          { bg: 'bg-amber-100',  text: 'text-amber-700',  label: 'Validator' },
 }
 
 function SenderBadge({ sender }: { sender: string }) {
@@ -100,7 +85,6 @@ function semanticDone(tool: string, summary: string): string {
   const cleaned = summary.trim()
   switch (tool) {
     case 'web_search': {
-      // "Found N result(s) for query '...': ..." → "找到 N 条结果"
       const m = cleaned.match(/Found (\d+) result/i)
       return m ? `找到 ${m[1]} 条结果` : (cleaned.split(':')[0].slice(0, 60) || '搜索完毕')
     }
@@ -113,90 +97,85 @@ function semanticDone(tool: string, summary: string): string {
   }
 }
 
-// ── Merged tool step (pending → done/error, expandable) ───────────────────────
-function MergedToolStep({
-  step,
-}: {
-  step: Extract<Step, { kind: 'tool_call' }>
-}) {
-  const [expanded, setExpanded] = useState(false)
+// ── Tool step ─────────────────────────────────────────────────────────────────
+function ToolStep({ step }: { step: Extract<Step, { kind: 'tool_call' }> }) {
   const isPending = step.loadStatus === 'pending'
   const isError   = step.loadStatus === 'error'
 
-  if (isPending) {
-    return (
-      <div className="flex items-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2">
-        <Loader2 className="h-3.5 w-3.5 shrink-0 text-stone-400 animate-spin" />
-        <div className="min-w-0 flex-1 text-xs text-stone-500">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {step.sender && <SenderBadge sender={step.sender} />}
-            <span>{semanticAction(step.tool, step.args)}</span>
-          </div>
-        </div>
-      </div>
-    )
-  }
+  const icon = isPending ? (
+    <Loader2 className="h-3.5 w-3.5 text-stone-400 animate-spin" />
+  ) : isError ? (
+    <XCircle className="h-3.5 w-3.5 text-red-400" />
+  ) : (
+    <CheckCircle2 className="h-3.5 w-3.5 text-stone-400" />
+  )
 
-  const borderColor = isError ? 'border-red-200' : 'border-stone-200'
-  const bgColor     = isError ? 'bg-red-50'      : 'bg-stone-50'
-  const textColor   = isError ? 'text-red-700'   : 'text-stone-600'
-  const Icon = isError ? XCircle : CheckCircle2
-  const iconColor = isError ? 'text-red-400' : 'text-stone-400'
+  const label = isPending
+    ? semanticAction(step.tool, step.args)
+    : isError
+    ? `失败：${semanticAction(step.tool, step.args)}`
+    : semanticDone(step.tool, step.summary ?? '')
+
+  const hasContent = !isPending
 
   return (
-    <div className={`rounded-md border ${borderColor} ${bgColor} overflow-hidden`}>
-      <button
-        type="button"
-        onClick={() => setExpanded(!expanded)}
-        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs ${textColor} hover:brightness-95 transition-all`}
+    <ChainOfThoughtStep disabled={isPending}>
+      <ChainOfThoughtTrigger
+        leftIcon={icon}
+        swapIconOnHover={hasContent}
+        className={cn('text-xs', isError && 'text-red-600')}
       >
-        <Icon className={`h-3.5 w-3.5 shrink-0 ${iconColor}`} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {step.sender && <SenderBadge sender={step.sender} />}
-            <span className="truncate">
-              {isError
-                ? `失败：${semanticAction(step.tool, step.args)}`
-                : semanticDone(step.tool, step.summary ?? '')}
-            </span>
-          </div>
-        </div>
-        {expanded
-          ? <ChevronDown  className="h-3 w-3 shrink-0 opacity-30" />
-          : <ChevronRight className="h-3 w-3 shrink-0 opacity-30" />}
-      </button>
-
-      {expanded && (
-        <div className={`border-t ${borderColor} px-3 py-2`}>
-          {step.tool === 'web_search' ? (
-            <WebSearchResults results={extractSearchResults(step.data)} />
-          ) : (
-            <p className="text-[11px] font-mono opacity-60 whitespace-pre-wrap break-all">
-              {step.summary}
-            </p>
-          )}
-          {step.retryHint && (
-            <div className="mt-1 text-[11px] text-amber-600">↩ {step.retryHint}</div>
-          )}
-        </div>
+        <span className="flex items-center gap-1.5 flex-wrap min-w-0">
+          {step.sender && <SenderBadge sender={step.sender} />}
+          <span className={cn('truncate', isPending && 'text-stone-500')}>{label}</span>
+        </span>
+      </ChainOfThoughtTrigger>
+      {hasContent && (
+        <ChainOfThoughtContent>
+          <ChainOfThoughtItem>
+            {step.tool === 'web_search' ? (
+              <WebSearchResults results={extractSearchResults(step.data)} />
+            ) : (
+              <p className="text-[11px] font-mono opacity-60 whitespace-pre-wrap break-all">
+                {step.summary}
+              </p>
+            )}
+            {step.retryHint && (
+              <div className="mt-1 text-[11px] text-amber-600">↩ {step.retryHint}</div>
+            )}
+          </ChainOfThoughtItem>
+        </ChainOfThoughtContent>
       )}
-    </div>
+    </ChainOfThoughtStep>
   )
 }
 
-function ErrorStep({ step }: { step: Extract<Step, { kind: 'error' }> }) {
+// ── Error step ────────────────────────────────────────────────────────────────
+function ErrorStepRow({ step }: { step: Extract<Step, { kind: 'error' }> }) {
+  const long = step.content.length > 80
   return (
-    <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2">
-      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500" />
-      <p className="min-w-0 font-mono text-xs text-red-700">{step.content}</p>
-    </div>
+    <ChainOfThoughtStep>
+      <ChainOfThoughtTrigger
+        leftIcon={<AlertTriangle className="h-3.5 w-3.5 text-red-500" />}
+        swapIconOnHover={long}
+        className="text-xs text-red-700"
+      >
+        {step.content.slice(0, 80)}{long ? '…' : ''}
+      </ChainOfThoughtTrigger>
+      {long && (
+        <ChainOfThoughtContent>
+          <ChainOfThoughtItem className="font-mono text-[11px] text-red-700 break-all whitespace-pre-wrap">
+            {step.content}
+          </ChainOfThoughtItem>
+        </ChainOfThoughtContent>
+      )}
+    </ChainOfThoughtStep>
   )
 }
 
 function StepRow({ step }: { step: Step }) {
-  if (step.kind === 'tool_call') return <MergedToolStep step={step} />
-  if (step.kind === 'error')     return <ErrorStep      step={step} />
-  // agent_reply and legacy tool_result are intentionally hidden
+  if (step.kind === 'tool_call') return <ToolStep step={step} />
+  if (step.kind === 'error')     return <ErrorStepRow step={step} />
   return null
 }
 
@@ -207,27 +186,26 @@ interface ThinkingLogProps {
   startedAt: number
   finishedAt?: number
   toolCatalog: Record<string, ToolMeta>
-  /** Live status label from the backend (e.g. "正在分析请求…") */
   statusMessage?: string
 }
 
-export const ThinkingLog = memo(function ThinkingLog({ steps, status, startedAt, finishedAt, statusMessage }: ThinkingLogProps) {
-  const [open, setOpen] = useState(false)
-
-  // While thinking: always open; after done: auto-collapse after 800 ms
-  const effectiveOpen = status === 'thinking' && steps.length > 0 ? true : open
-
-  useEffect(() => {
-    if (status === 'done') {
-      const t = setTimeout(() => setOpen(false), 800)
-      return () => clearTimeout(t)
-    }
-  }, [status])
-
-  // Count only visible steps for the header label
+export const ThinkingLog = memo(function ThinkingLog({
+  steps,
+  status,
+  startedAt,
+  finishedAt,
+  statusMessage,
+}: ThinkingLogProps) {
+  const isThinking = status === 'thinking'
   const visibleSteps = steps.filter((s) => s.kind === 'tool_call' || s.kind === 'error')
+  const [open, setOpen] = useState(true)
 
-  if (visibleSteps.length === 0 && status === 'thinking') {
+  // Keep expanded while thinking; allow user to collapse once done
+  useEffect(() => {
+    if (isThinking) setOpen(true)
+  }, [isThinking])
+
+  if (visibleSteps.length === 0 && isThinking) {
     return (
       <div className="flex items-center gap-1.5 py-1 text-xs text-muted-foreground animate-pulse">
         <Terminal className="h-3.5 w-3.5 shrink-0" />
@@ -244,64 +222,34 @@ export const ThinkingLog = memo(function ThinkingLog({ steps, status, startedAt,
       : null
 
   return (
-    <Collapsible open={effectiveOpen} onOpenChange={setOpen}>
-      <CollapsibleTrigger asChild>
-        <button className="flex items-center gap-1.5 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
-          {effectiveOpen ? (
-            <ChevronDown  className="h-3.5 w-3.5 shrink-0" />
-          ) : (
-            <ChevronRight className="h-3.5 w-3.5 shrink-0" />
-          )}
-          <Terminal className="h-3.5 w-3.5 shrink-0" />
-          <span className="font-mono">
-            {status === 'thinking' ? (
-              <span className="flex items-center gap-1">
-                思考中
-                <span className="inline-flex gap-0.5">
-                  <span className="animate-bounce [animation-delay:0ms]">.</span>
-                  <span className="animate-bounce [animation-delay:150ms]">.</span>
-                  <span className="animate-bounce [animation-delay:300ms]">.</span>
-                </span>
-              </span>
-            ) : elapsed != null ? (
-              `完成 ${visibleSteps.length} 个步骤 (${elapsed}s)`
-            ) : (
-              `${visibleSteps.length} 个步骤`
-            )}
+    <Steps open={open} onOpenChange={setOpen}>
+      <StepsTrigger
+        leftIcon={<Terminal className="h-3.5 w-3.5 shrink-0" />}
+        swapIconOnHover={!isThinking}
+        className="text-xs text-muted-foreground font-mono"
+      >
+        {isThinking ? (
+          <span className="flex items-center gap-1">
+            思考中
+            <span className="inline-flex gap-0.5">
+              <span className="animate-bounce [animation-delay:0ms]">.</span>
+              <span className="animate-bounce [animation-delay:150ms]">.</span>
+              <span className="animate-bounce [animation-delay:300ms]">.</span>
+            </span>
           </span>
-        </button>
-      </CollapsibleTrigger>
-
-      <CollapsibleContent forceMount>
-        <AnimatePresence initial={false}>
-          {effectiveOpen && (
-            <motion.div
-              key="steps-content"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.22, ease: 'easeInOut' }}
-              className="overflow-hidden"
-            >
-              <div className="mt-1.5 flex flex-col gap-1.5 max-h-80 overflow-y-auto pr-0.5">
-                <AnimatePresence initial={false}>
-                  {steps.map((step, i) => (
-                    <motion.div
-                      key={i}
-                      initial={{ opacity: 0, x: -6 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ duration: 0.15 }}
-                    >
-                      <StepRow step={step} />
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </CollapsibleContent>
-    </Collapsible>
+        ) : elapsed != null ? (
+          `完成 ${visibleSteps.length} 个步骤 (${elapsed}s)`
+        ) : (
+          `${visibleSteps.length} 个步骤`
+        )}
+      </StepsTrigger>
+      <StepsContent>
+        <ChainOfThought className="max-h-80 overflow-y-auto pr-0.5">
+          {steps.map((step, i) => (
+            <StepRow key={i} step={step} />
+          ))}
+        </ChainOfThought>
+      </StepsContent>
+    </Steps>
   )
 })
-
