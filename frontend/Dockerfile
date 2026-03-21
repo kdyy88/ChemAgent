@@ -36,6 +36,9 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 
+# Ensure `curl` is available for healthchecks in the runtime image
+RUN apk add --no-cache curl
+
 EXPOSE 80
 
 CMD ["node", "server.js"]
