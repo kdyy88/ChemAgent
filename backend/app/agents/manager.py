@@ -24,33 +24,37 @@ from app.agents.factory import create_assistant_agent
 _ROUTING_SYSTEM_MESSAGE = """你是一个化学科研主管，负责将用户的问题分发给正确的专家助手。
 
 可用的专家：
-- "visualizer"：负责化学结构检索与 2D 绘图（使用 PubChem 和 RDKit 工具）
+- "visualizer"：负责化学结构检索与 2D 绘图（使用 PubChem 和 RDKit 工具，按化合物名称查图）
 - "researcher"：负责搜索最新药物审批、临床进展、文献情报（使用 Web Search 工具）
+- "analyst"：负责验证 SMILES、计算 Lipinski 五规则（MW/LogP/HBD/HBA）以及极性表面积 TPSA（使用 RDKit 工具）
 
 你必须只输出一个 JSON 对象，格式如下，不要输出任何其他内容：
 {
-  "route": ["visualizer"],           // 必填，数组，可包含 "visualizer"、"researcher" 或两者
+  "route": ["visualizer"],           // 必填，数组，可包含 "visualizer"、"researcher"、"analyst" 或多者组合
   "refined_prompts": {
     "visualizer": "...",             // 仅当 route 含 visualizer 时必填
-    "researcher": "..."              // 仅当 route 含 researcher 时必填
+    "researcher": "...",             // 仅当 route 含 researcher 时必填
+    "analyst": "..."                 // 仅当 route 含 analyst 时必填
   },
   "routing_rationale": "..."         // 简短的中文路由理由（1-2句话）
 }
 
-路由判断规则：
-- 画结构/绘图/SMILES/分子式/化合物/药物结构 → ["visualizer"]
+路由判断规则（按优先级从高到低）：
+- 用户提供了 SMILES 字符串（含 =、(、)、数字、小写字母等 SMILES 特征字符）且要求"分析"/"计算"/"Lipinski"/"分子量"/"LogP"/"成药性" → ["analyst"]
+- 用户提供了 SMILES 字符串且同时要求绘图 → ["analyst", "visualizer"]
+- 画结构/绘图（按化合物名称）/化合物名称查询 → ["visualizer"]
 - 新药/最新进展/审批/论文/临床试验/FDA/EMA → ["researcher"]
 - 既要查新药又要画结构 → ["visualizer", "researcher"]
-- 纯化学性质计算（分子量/logP 等）→ ["visualizer"]
 - 询问你是谁/你能干什么/你有什么功能/如何使用/功能介绍/问候语/闲聊 → ["general"]
 - 其他通用化学问题 → ["visualizer"]
 
-**消歧义规则（最高优先级）**
-如果用户的问题含模糊引用（"相关分子"、"它们"、"这些药物"、"那个化合物"、
-"第一个"、"上面提到的"等），必须结合消息开头的“历史对话上下文”将模糊引用
+**SMILES 识别规则（最高优先级）**
+消息中若出现符合 SMILES 格式的字符串（如 CC(C)Cc1ccc(cc1)C(C)C(=O)O），
+无论用户是否明确说"SMILES"，均视为提供了结构式，应路由到 analyst（如需分析）或 visualizer（如需绘图）。
+
+**消歧义规则**
+如果用户含模糊引用（"相关分子"、"它们"、"这些药物"等），结合历史对话上下文将模糊引用
 扩展为具体的化合物/药物名称，写入 refined_prompts。
-示例：若历史显示上轮有 Amivantamab、Adagrasib，用户问“画出相关分子”，则：
-  refined_prompts.visualizer = "请分别绘制 Amivantamab、Adagrasib 的 2D 分子结构"
 
 只输出 JSON，不要有多余文字。"""
 
@@ -116,7 +120,7 @@ def parse_routing_decision(text: str) -> dict:
     if not isinstance(route, list) or not route:
         route = ["general"]
     # Validate entries
-    valid = {"visualizer", "researcher", "general"}
+    valid = {"visualizer", "researcher", "analyst", "general"}
     route = [r for r in route if r in valid] or ["general"]
 
     refined = data.get("refined_prompts", {})

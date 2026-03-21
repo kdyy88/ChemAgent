@@ -17,6 +17,7 @@ from app.agents.config import build_llm_config
 from app.agents.factory import create_executor_agent
 from app.agents.specialists.visualizer import create_visualizer
 from app.agents.specialists.researcher import create_researcher
+from app.agents.specialists.analyst import create_analyst
 from app.api.runtime import (
     AgentTeam,
     MultiAgentRunPlan,
@@ -149,6 +150,18 @@ class ChatSession:
                 )
                 phase2_items.append(("Visualizer", vis_resp))
 
+            if "analyst" in route:
+                ana_prompt = refined.get("analyst") or prompt
+                ana_prompt = f"今日日期：{today_str()}\n\n{ana_prompt}"
+                ana_resp = self.team.analyst_executor.run(
+                    recipient=self.team.analyst,
+                    message=ana_prompt,
+                    clear_history=True,
+                    summary_method="last_msg",
+                    silent=False,
+                )
+                phase2_items.append(("Analyst", ana_resp))
+
         # ── Phase 3 factory: called after Phase 2 events are exhausted ────────
         had_history = self.has_history  # capture value BEFORE setting True
         self.has_history = True
@@ -211,12 +224,14 @@ class SessionManager:
                 "manager": _resolved("manager"),
                 "visualizer": _resolved("visualizer"),
                 "researcher": _resolved("researcher"),
+                "analyst": _resolved("analyst"),
             }
 
             manager = create_manager(model=models.get("manager"))
             router, router_trigger = create_routing_agent()  # always uses fast model from env
             visualizer, visualizer_executor = create_visualizer(model=models.get("visualizer"))
             researcher, researcher_executor = create_researcher(model=models.get("researcher"))
+            analyst, analyst_executor = create_analyst(model=models.get("analyst"))
 
             team = AgentTeam(
                 manager=manager,
@@ -226,6 +241,8 @@ class SessionManager:
                 visualizer_executor=visualizer_executor,
                 researcher=researcher,
                 researcher_executor=researcher_executor,
+                analyst=analyst,
+                analyst_executor=analyst_executor,
             )
             session = ChatSession(
                 session_id=session_id,

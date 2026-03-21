@@ -1,11 +1,16 @@
-# backend/app/tools/web_search.py
 """
-Web-search tool powered by Serper (https://serper.dev).
+Web and literature search agent tool powered by Serper (https://serper.dev).
+
+Tool registered
+---------------
+web_search   Query → Serper search results (titles, URLs, snippets)
 
 Requires SERPER_API_KEY in backend/.env.
-Falls back to an error result (rather than silently returning stale mock data)
-so the Researcher agent knows the search didn't succeed and can tell the user.
+Falls back to a structured error result so the Researcher agent can report the
+failure clearly rather than returning stale or hallucinated data.
 """
+
+from __future__ import annotations
 
 import os
 from pathlib import Path
@@ -15,16 +20,16 @@ from dotenv import load_dotenv
 
 from app.core.tooling import ToolExecutionResult, tool_registry
 
-_SERPER_URL = "https://google.serper.dev/search"
+_SERPER_URL      = "https://google.serper.dev/search"
 _TIMEOUT_SECONDS = 15
-_ENV_LOADED = False
+_ENV_LOADED      = False
 
 
 def _ensure_env() -> None:
     global _ENV_LOADED
     if _ENV_LOADED:
         return
-    env_file = Path(__file__).resolve().parents[3] / ".env"
+    env_file = Path(__file__).resolve().parents[4] / ".env"
     load_dotenv(dotenv_path=env_file, override=False)
     _ENV_LOADED = True
 
@@ -86,17 +91,14 @@ def web_search(query: str) -> ToolExecutionResult:
             artifacts=[],
         )
 
-    # Normalise Serper response into a flat list of result dicts
     results: list[dict] = []
-
     for item in data.get("organic", []):
         results.append({
-            "title":   item.get("title", ""),
-            "url":     item.get("link", ""),
+            "title":   item.get("title",   ""),
+            "url":     item.get("link",    ""),
             "snippet": item.get("snippet", ""),
         })
 
-    # Include the "answerBox" if Serper returned a direct answer
     if answer_box := data.get("answerBox"):
         answer_text = (
             answer_box.get("answer")
@@ -106,15 +108,13 @@ def web_search(query: str) -> ToolExecutionResult:
         if answer_text:
             results.insert(0, {
                 "title":   answer_box.get("title", "Direct Answer"),
-                "url":     answer_box.get("link", ""),
+                "url":     answer_box.get("link",  ""),
                 "snippet": answer_text,
             })
 
-    summary = f"Found {len(results)} result(s) for query '{query}'."
-
     return ToolExecutionResult(
         status="success",
-        summary=summary,
+        summary=f"Found {len(results)} result(s) for query '{query}'.",
         data={"query": query, "results": results},
         artifacts=[],
     )

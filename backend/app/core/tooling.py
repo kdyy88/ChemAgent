@@ -187,8 +187,15 @@ class ToolRegistry:
         package_name = "app.tools"
         package = importlib.import_module(package_name)
 
-        for module_info in pkgutil.iter_modules(package.__path__, prefix=f"{package_name}."):
-            if module_info.name.rsplit(".", 1)[-1].startswith("_"):
+        # walk_packages recurses into subpackages (e.g. app.tools.rdkit.image),
+        # enabling the platform-grouped directory structure:
+        #   app/tools/rdkit/    — RDKit agent tools
+        #   app/tools/pubchem/  — PubChem lookup tools
+        #   app/tools/search/   — web / literature search tools
+        #   app/tools/babel/    — Open Babel tools (Phase 2)
+        for module_info in pkgutil.walk_packages(package.__path__, prefix=f"{package_name}."):
+            leaf = module_info.name.rsplit(".", 1)[-1]
+            if leaf.startswith("_"):
                 continue
             importlib.import_module(module_info.name)
 

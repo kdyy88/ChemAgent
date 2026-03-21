@@ -32,33 +32,60 @@ ChemAgent 当前架构围绕四个目标设计：
 ┌─────────────────────────────────────────────┐
 │                  Frontend                   │
 │ Next.js / React / Zustand / Chat UI         │
+│ SmilesPanelSheet (Analyze / Prep tabs)      │
 └─────────────────────────────────────────────┘
                      │
-                     │ WebSocket
+           WebSocket │  REST (rdkit/babel)
                      ▼
 ┌─────────────────────────────────────────────┐
 │                 API Layer                   │
-│ FastAPI WebSocket / Protocol / Sessions     │
+│ FastAPI WebSocket / rdkit_api / babel_api   │
+│ Protocol / Sessions / EventBridge           │
 └─────────────────────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────┐
 │               Agent Runtime                 │
 │ AG2 AssistantAgent + UserProxyAgent         │
+│ Manager / Visualizer / Analyst / Researcher │
 └─────────────────────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────┐
 │             Tooling Core Layer              │
 │ ToolRegistry / ToolSpec / Result Models     │
+│ walk_packages recursive auto-discovery      │
 └─────────────────────────────────────────────┘
                      │
+         ┌───────────┴───────────┐
+         ▼                       ▼
+┌─────────────────┐   ┌─────────────────────────┐
+│  Tool Modules   │   │  Chem Computation        │
+│  tools/rdkit/   │   │  Kernel (app/chem/)      │
+│  tools/pubchem/ │──▶│  rdkit_ops.py            │
+│  tools/search/  │   │  babel_ops.py            │
+│  tools/babel/   │   │  (smina_ops.py …future)  │
+└─────────────────┘   └─────────────────────────┘
+         │                       │
+         └───────────┬───────────┘
                      ▼
-┌─────────────────────────────────────────────┐
-│                Tool Modules                 │
-│ PubChem / RDKit / future chemistry tools    │
-└─────────────────────────────────────────────┘
+         External Libraries (RDKit / Open Babel /
+                   requests / Serper)
 ```
+
+### 严格依赖方向
+
+```
+外部库
+  ↓
+app/chem/          ← 纯计算，无 HTTP / Agent 依赖
+  ↙         ↘
+app/api/   app/tools/   ← 互不依赖，只调用 chem/
+  ↓
+app/agents/        ← 不直接执行计算
+```
+
+**任何方向的逆向依赖都是架构缺陷**（如 `tools/` 导入 `api/`，或 `api/` 导入 `tools/`）。
 
 ---
 
@@ -140,6 +167,7 @@ ChemAgent 当前架构围绕四个目标设计：
 - `backend/app/agents/chemist.py` — 本地 smoke test 入口
 - `backend/app/agents/manager.py` — 路由 agent + 综合回答 agent
 - `backend/app/agents/specialists/visualizer.py` — 可视化专家
+- `backend/app/agents/specialists/analyst.py` — 分子分析专家
 - `backend/app/agents/specialists/researcher.py` — 研究检索专家
 
 当前采用**多智能体三阶段模式**：
@@ -147,11 +175,15 @@ ChemAgent 当前架构围绕四个目标设计：
 ```text
 Phase 1 — 路由
   Manager Router (AssistantAgent + UserProxyAgent, session 级持久)
-  → parse_routing_decision() → {"route": ["visualizer"] | ["researcher"] | ["visualizer","researcher"]}
+  → parse_routing_decision()
+  → {"route": ["visualizer"] | ["analyst"] | ["researcher"] | 多者组合}
 
 Phase 2 — 专家执行（可并行）
   Visualizer (AssistantAgent + UserProxyAgent)
     工具：draw_molecules_by_name（批量检索 SMILES + 渲染 2D 图，单次调用返回全部 artifacts）
+  Analyst (AssistantAgent + UserProxyAgent)
+    工具：analyze_molecule_from_smiles（SMILES → Lipinski RoF5 + 2D 图）
+          委托给 app.chem.rdkit_ops.compute_lipinski()，与 Phase 1 REST 端点共享同一实现
   Researcher (AssistantAgent + UserProxyAgent)
     工具：web_search（Serper API 真实搜索）
 
@@ -193,6 +225,19 @@ Phase 3 — 综合回答（双轨制流式输出）
 - `ToolRegistry`
 - `ToolResultStore`
 
+### 自动发现机制
+
+工具注册通过 `pkgutil.walk_packages` 递归扫描 `app/tools/` 下所有子包，自动 import 所有非下划线命名模块。每个模块内凡是被 `@tool_registry.register(...)` 装饰的函数均自动注册入 `ToolRegistry`，无需在任何清单文件中手动维护。
+
+```python
+# app/core/tooling.py
+for module_info in pkgutil.walk_packages(package.__path__, prefix=f"{package_name}."):
+    leaf = module_info.name.rsplit(".", 1)[-1]
+    if leaf.startswith("_"):
+        continue
+    importlib.import_module(module_info.name)
+```
+
 ### 设计动机
 
 旧式方案的问题通常是：
@@ -207,33 +252,58 @@ Phase 3 — 综合回答（双轨制流式输出）
 
 ## 3.5 Tool Modules 层
 
-职责：
-- 承载具体化学能力
-- 只关心输入、计算/检索、输出
-- 不关心前端 UI、session 管理和消息协议
+### 目录结构（按平台分组）
 
-当前工具：
-- `draw_molecules_by_name` — 批量分子结构流水线（PubChem + RDKit）
-- `get_smiles_by_name` — 单次 PubChem SMILES 检索（备用）
-- `generate_2d_image_from_smiles` — 单次 RDKit 渲染（备用）
-- `web_search` — Serper API 真实搜索
+```text
+app/tools/
+  rdkit/
+    __init__.py
+    image.py       ← draw_molecules_by_name, generate_2d_image_from_smiles
+    analysis.py    ← analyze_molecule_from_smiles
+  pubchem/
+    __init__.py
+    lookup.py      ← get_smiles_by_name
+  search/
+    __init__.py
+    web.py         ← web_search
+  babel/
+    __init__.py    ← Phase 2 占位（convert_molecule_format 等，待实现）
+```
 
-未来工具候选：
-- 分子量计算
-- 分子式推导
-- InChI / InChIKey
-- 3D conformer 生成
-- 子结构搜索
-- 反应模板/逆合成
-- ADMET 或理化性质估算
+### 原则
 
-### 工具层原则
+`tools/` 层是**纯粹的 Agent 适配器**，只负责：
+1. 接受结构化输入
+2. 调用 `app/chem/` 中的计算核函数（或外部 API）
+3. 将结果包装为 `ToolExecutionResult`
 
-- 输入要结构化
-- 输出要统一为 `ToolExecutionResult`
-- 不直接耦合前端显示
-- 不用字符串地兵协议
-- 批量处理逻辑封装在工具内部，剥夺模型循环控制权
+`tools/` 层**不含任何化学逻辑**，所有计算均委托给 `app/chem/` 层。例如 `analysis.py` 中的 `analyze_molecule_from_smiles` 完整委托给 `app.chem.rdkit_ops.compute_lipinski()`，与 REST 端点 `POST /api/rdkit/analyze` 共享同一实现，杜绝重复。
+
+### Chem Computation Kernel（`app/chem/`）
+
+| 文件 | 职责 | 暴露接口 |
+|------|------|----------|
+| `rdkit_ops.py` | RDKit 2D 渲染 + Lipinski 计算 | `mol_to_png_b64()`, `compute_lipinski()` |
+| `babel_ops.py` | Open Babel 格式转换 / 3D 构象 / PDBQT 对接准备 | `convert_format()`, `build_3d_conformer()`, `prepare_pdbqt()` |
+
+`app/chem/` 只依赖第三方库（rdkit、openbabel-wheel），不依赖框架层（FastAPI、AG2），可以在任何上下文中单独测试。
+
+### 当前已注册工具（Phase 1 完毕）
+
+| 工具名 | 所在模块 | 说明 |
+|--------|----------|------|
+| `draw_molecules_by_name` | `tools/rdkit/image.py` | 批量名称→PubChem→RDKit 2D 渲染 |
+| `generate_2d_image_from_smiles` | `tools/rdkit/image.py` | SMILES→PNG（备用） |
+| `analyze_molecule_from_smiles` | `tools/rdkit/analysis.py` | SMILES→Lipinski RoF5 + 2D 图 |
+| `get_smiles_by_name` | `tools/pubchem/lookup.py` | PubChem SMILES 单次检索 |
+| `web_search` | `tools/search/web.py` | Serper API 真实搜索 |
+
+### Phase 2 计划（Open Babel Agent 工具）
+
+`tools/babel/` 占位，待 Phase 1 REST 端点充分验证后实现：
+- `convert_molecule_format` — 包装 `babel_ops.convert_format()`
+- `generate_3d_conformer` — 包装 `babel_ops.build_3d_conformer()`
+- `prepare_docking_pdbqt` — 包装 `babel_ops.prepare_pdbqt()`
 
 ---
 
@@ -387,16 +457,23 @@ artifact 与 message 分离。
 
 ## 8. 可扩展性设计
 
-## 8.1 新增工具
+## 8.1 新增工具（Phase 1 → Phase 2 两步走）
 
-新增工具时，不应修改核心协议或 agent 注册主流程。
+新增工具时，严格遵循"先 REST 后 Agent"的两阶段纪律，确保计算核心在接入 Agent 前已通过独立验证。
 
-标准路径：
-1. 在 `backend/app/tools/` 下新增模块
-2. 使用 `tool_registry.register(...)`
-3. 返回 `ToolExecutionResult`
-4. 若有产物，返回 `ToolArtifact`
-5. registry 自动发现并挂载
+**Phase 1 — 独立 REST 端点**
+1. 在 `backend/app/chem/` 下实现纯计算核函数（只依赖第三方库，零框架依赖）
+2. 在 `backend/app/api/` 下新增对应 `APIRouter`，薄薄包一层 HTTP
+3. 在 `backend/app/main.py` 中注册路由
+4. 用 curl 烟雾测试验证输入输出正确性
+5. 在前端 `lib/chem-api.ts` 中添加对应 fetch 函数，`lib/types.ts` 中添加响应类型
+
+**Phase 2 — Agent 工具包装**
+1. 在 `backend/app/tools/<平台>/` 子包下新增模块
+2. 调用 Phase 1 中的 `app/chem/<xxx_ops>.py` 函数，**不重复写化学逻辑**
+3. 使用 `tool_registry.register(...)`，返回 `ToolExecutionResult`
+4. Registry 通过 `walk_packages` 自动发现并挂载，无需修改主流程
+5. 在对应 Specialist Agent 的工具授权列表中注册
 
 ## 8.2 新增 artifact 类型
 
@@ -465,27 +542,21 @@ artifact 与 message 分离。
 
 ## 11. 建议演进路线
 
-## Phase 1：稳态工程化
-- 持久化 session
-- 增加 run / tool 日志
-- 增加错误统计
-- 收敛部署配置
+## 近期（当前 Sprint）
+- **Open Babel Agent 工具 Phase 2**：将已完成且测试通过的 babel REST 端点包装为 Agent 工具（`tools/babel/`），接入 Analyst 或新增 Docking 专家
+- **Smina 对接流水线**：`chem/smina_ops.py` → `api/smina_api.py` → `tools/smina/`，端到端分子对接结果可视化
 
-## Phase 2：化学能力扩展
-- 分子式 / 分子量 / InChI
-- 多种结构可视化
-- 结构标准化与规范化
-- 相似性与子结构搜索
+## 中期
+- **持久化 session**：Redis / SQLite 替换内存态，支持多实例部署
+- **可观测性**：tool latency / success rate 统计，审计日志分层，run trace 存储
+- **InChI / 子结构搜索**：`chem/rdkit_ops.py` 中补充，同步暴露 REST + Agent 工具
+- **收敛部署配置**：CORS 锁定，接入鉴权，session 并发配额
 
-## Phase 3：可信验证层
-- 双重检索校验
-- 结果一致性检查
-- 化学规则校验器
-- 更明确的 fallback 机制
-
-## Phase 4：高级交互层
-- 历史 session 列表
-- artifact 下载
+## 远期
+- **可信验证层**：双重检索校验，结果一致性检查，化学规则校验器
+- **xTB / GNINA 支持**：`chem/xtb_ops.py`、`chem/gnina_ops.py`，高精度量子化学与深度学习对接
+- **历史 session 列表 + artifact 永久下载**
+- **Reaction Expert Agent**：逆合成与反应预测专家
 - 可视化 run trace
 - 可回放的工具链执行视图
 

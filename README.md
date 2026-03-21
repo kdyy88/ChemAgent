@@ -3,13 +3,16 @@
 ChemAgent 是一个面向化学场景的全栈智能体项目，目标是通过**权威检索 + 结构化工具调用 + 可解释流式过程展示**，尽量减少化学幻觉，并为后续分子分析工具扩展提供稳定底座。
 
 当前版本已经完成：
-- 后端插件化工具注册
+- 后端**三层解耦架构**：纯计算层（`chem/`）→ HTTP 层（`api/`）→ 智能体工具层（`tools/`）
+- 后端插件化工具注册（`tools/` 按平台分组，`walk_packages` 递归自动发现）
 - 结构化事件流式协议
 - 多轮 session memory
-- **多智能体协作架构**（Manager 路由 + Visualizer / Researcher 专家 + 综合回答器）
+- **多智能体协作架构**（Manager 路由 + Visualizer / Analyst / Researcher 专家 + 综合回答器）
 - 前端白盒推理/工具链展示（专家溯源徽章）
-- 通用 artifact 渲染（当前已支持图片类产物）
+- 通用 artifact 渲染（图片 / JSON / 文件下载）
 - 最终回答 Markdown 渲染（react-markdown + remark-gfm）
+- **Open Babel 三大工具 Phase 1 REST API**：格式转换 / 3D 构象生成 / 对接 PDBQT 准备
+- 前端 Smiles 面板新增 **Prep 标签页**（格式转换 / 三维结构 / 对接准备三合一）
 
 ---
 
@@ -44,6 +47,7 @@ ChemAgent 聚焦三个核心问题：
 - AG2 / AutoGen
 - Pydantic v2
 - RDKit
+- **Open Babel**（`openbabel-wheel`）
 - requests
 - websockets
 - python-dotenv
@@ -54,44 +58,95 @@ ChemAgent 聚焦三个核心问题：
 
 ```text
 chem-agent-project/
-├── backend/                  # FastAPI + AG2 + RDKit
+├── backend/                      # FastAPI + AG2 + RDKit + Open Babel
 │   ├── app/
+│   │   ├── chem/                 # ★ 纯计算核心层（不含 HTTP/Agent 依赖）
+│   │   │   ├── rdkit_ops.py      #   RDKit：2D 渲染、Lipinski 计算
+│   │   │   └── babel_ops.py      #   Open Babel：格式转换、3D 构象、PDBQT 准备
 │   │   ├── agents/
-│   │   │   ├── config.py         # 共享 LLM 配置加载
-│   │   │   ├── factory.py        # 通用 agent / tool 注册工厂
-│   │   │   ├── chemist.py        # 本地 smoke test 入口
-│   │   │   ├── manager.py        # 路由 agent + 综合回答 agent
+│   │   │   ├── config.py         #   共享 LLM 配置加载
+│   │   │   ├── factory.py        #   通用 agent / tool 注册工厂
+│   │   │   ├── chemist.py        #   本地 smoke test 入口
+│   │   │   ├── manager.py        #   路由 agent + 综合回答 agent
 │   │   │   └── specialists/
-│   │   │       ├── visualizer.py # 可视化专家 agent
-│   │   │       └── researcher.py # 研究检索专家 agent
-│   │   ├── api/              # WebSocket 协议、会话管理、事件桥接
-│   │   ├── core/             # 工具注册中心、结果模型、缓存
-│   │   └── tools/            # 具体化学工具实现
+│   │   │       ├── visualizer.py #   可视化专家（draw_molecules_by_name）
+│   │   │       ├── analyst.py    #   分析专家（analyze_molecule_from_smiles）
+│   │   │       └── researcher.py #   检索专家（web_search）
+│   │   ├── api/                  # HTTP 层：仅路由，不含化学逻辑
+│   │   │   ├── rdkit_api.py      #   POST /api/rdkit/analyze
+│   │   │   ├── babel_api.py      #   POST /api/babel/{convert,conformer3d,pdbqt}
+│   │   │   ├── chat.py           #   WebSocket 主入口
+│   │   │   ├── event_bridge.py   #   AG2 事件 → 前端协议帧
+│   │   │   ├── sessions.py       #   会话管理与三阶段编排
+│   │   │   ├── runtime.py        #   运行期数据模型
+│   │   │   └── protocol.py       #   WebSocket 输入输出模型
+│   │   ├── core/
+│   │   │   └── tooling.py        #   工具注册中心、结果模型、缓存
+│   │   └── tools/                # Agent 工具层（按平台分组）
+│   │       ├── rdkit/
+│   │       │   ├── image.py      #   draw_molecules_by_name, generate_2d_image_from_smiles
+│   │       │   └── analysis.py   #   analyze_molecule_from_smiles
+│   │       ├── pubchem/
+│   │       │   └── lookup.py     #   get_smiles_by_name
+│   │       ├── search/
+│   │       │   └── web.py        #   web_search
+│   │       └── babel/            #   Open Babel agent 工具（Phase 2 占位）
 │   ├── .env.example
 │   └── pyproject.toml
-├── frontend/                 # Next.js UI
-│   ├── app/                  # App Router 入口
-│   ├── components/chat/      # 聊天、日志、artifact 展示组件
-│   ├── hooks/                # 对外暴露的业务 hook
-│   ├── lib/                  # 类型与工具函数
-│   └── store/                # Zustand 状态管理
-├── README.md                 # 项目总说明
-└── SOURCE_MAP.md             # 面向后续开发的源码地图
+├── frontend/                     # Next.js UI
+│   ├── app/                      #   App Router 入口
+│   ├── components/chat/          #   聊天、日志、artifact 展示组件
+│   │   └── BabelResultCard.tsx   #   格式转换 / 3D 结构 / PDBQT 结果卡片
+│   ├── hooks/                    #   对外暴露的业务 hook
+│   ├── lib/
+│   │   ├── chem-api.ts           #   REST API 调用（rdkit + babel）
+│   │   └── types.ts              #   前端类型定义
+│   └── store/                    #   Zustand 状态管理
+├── docs/
+│   └── API.md                    # REST API 完整文档
+├── README.md
+├── ARCHITECTURE.md
+└── SOURCE_MAP.md
 ```
+
+### 依赖方向（严格执行）
+
+```
+外部库（RDKit / Open Babel / requests）
+        ↓
+   app/chem/          ← 纯计算，不依赖 FastAPI 或 Agent 框架
+      ↙       ↘
+ app/api/    app/tools/    ← 两者只调用 chem/，互不依赖
+        ↓
+   app/agents/        ← 调度专家，不直接执行计算
+```
+
+新软件（如 Smina、xTB）接入时：新增 `chem/smina_ops.py` → `api/smina_api.py` → `tools/smina/`，**不修改任何现有文件**。
 
 ---
 
 ## 4. 当前能力
 
-### 已有工具
-- `draw_molecules_by_name`  
-  批量绘制分子结构图：接受逗号分隔的化合物名称，内部自动查询 PubChem 获取 SMILES，再用 RDKit 渲染，一次调用返回全部结构图像
-- `get_smiles_by_name`  
-  基于 PubChem 名称检索标准 Canonical SMILES（供单次查询备用）
-- `generate_2d_image_from_smiles`  
-  基于 RDKit 将 SMILES 渲染为 2D 结构图（供单次渲染备用）
-- `web_search`  
-  通用网页搜索，基于 Serper API（`https://google.serper.dev/search`），供 Researcher 专家使用
+### REST API（Phase 1 — 无需 Agent，直接可用）
+
+| 端点 | 功能 | 核心依赖 |
+|---|---|---|
+| `POST /api/rdkit/analyze` | SMILES → Lipinski RoF5 + TPSA + 2D 结构图 | RDKit |
+| `POST /api/babel/convert` | 格式万能转换（SMILES ↔ SDF ↔ MOL2 ↔ PDB ↔ InChI…） | Open Babel |
+| `POST /api/babel/conformer3d` | SMILES → 力场优化 3D 构象（SDF 文件） | Open Babel |
+| `POST /api/babel/pdbqt` | SMILES → pH 加氢 → 3D 优化 → PDBQT（Gasteiger 电荷） | Open Babel |
+
+详细请求/响应格式见 [docs/API.md](docs/API.md)。
+
+### Agent 工具（Phase 2 — 由 AI 按需调用）
+
+| 工具名 | 平台 | 位置 | 功能 |
+|---|---|---|---|
+| `draw_molecules_by_name` | RDKit + PubChem | `tools/rdkit/image.py` | 批量名称 → 2D 结构图 |
+| `generate_2d_image_from_smiles` | RDKit | `tools/rdkit/image.py` | SMILES → 2D 结构图 |
+| `analyze_molecule_from_smiles` | RDKit | `tools/rdkit/analysis.py` | SMILES → Lipinski 分析 |
+| `get_smiles_by_name` | PubChem | `tools/pubchem/lookup.py` | 化合物名 → SMILES |
+| `web_search` | Serper | `tools/search/web.py` | 药物/文献检索 |
 
 ### 已有协议事件
 - `session.started`
@@ -304,17 +359,31 @@ WebSocket 层会把 AG2 的事件转换成统一前端协议，而不是解析 s
 
 ## 8. 扩展方式
 
-### 新增后端工具
-1. 在 `backend/app/tools/` 下新增文件
-2. 使用 `tool_registry.register(...)` 注册
-3. 返回 `ToolExecutionResult`
-4. 如有产物，使用 `ToolArtifact`
-5. 无需手动到 agent 中硬编码注册
+### 接入新化学软件（如 Smina、xTB、GNINA）
 
-### 新增前端 artifact 类型
-1. 在 `frontend/components/chat/ArtifactRenderer.tsx` 中增加分支
-2. 根据 `kind` / `mimeType` 渲染对应组件
-3. 保持 `Artifact` 类型契约稳定
+遵循 Phase 1 → Phase 2 路线，**先 API 测通再接入 Agent**：
+
+**Phase 1（必做）**
+1. `app/chem/smina_ops.py` — 纯 Python 计算函数，无 FastAPI 依赖
+2. `app/api/smina_api.py` — 薄路由层，调用 `smina_ops`，注册到 `main.py`
+3. `curl` / 脚本验证 API 正确性
+
+**Phase 2（测通后再做）**
+4. `app/tools/smina/` — Agent tool 包装，调用同一 `smina_ops` 函数
+5. 可选：`app/agents/specialists/` 新增专家 agent
+6. 更新 `manager.py` 路由规则
+
+### 新增 Agent 工具（现有平台）
+1. 在 `backend/app/tools/<platform>/` 下新增 `.py` 文件
+2. 使用 `@tool_registry.register(...)` 装饰器
+3. 从 `app/chem/<platform>_ops.py` 导入计算逻辑（禁止在 `tools/` 里写化学计算）
+4. 返回 `ToolExecutionResult`，如有产物附带 `ToolArtifact`
+5. `walk_packages` 自动发现，无需手动注册
+
+### 新增前端 artifact 渲染
+1. 在 `frontend/components/chat/ArtifactRenderer.tsx` 增加分支
+2. 用 `kind` / `mimeType` / `data.type` 区分
+3. 保持 `Artifact` TypeScript 类型契约稳定
 
 ---
 
@@ -333,33 +402,43 @@ WebSocket 层会把 AG2 的事件转换成统一前端协议，而不是解析 s
 
 ## 10. 后续建议路线
 
-优先级较高：
+### 近期（化学能力扩展）
 
-1. **持久化 session**  
-   当前 session 仍是内存态，适合开发，不适合生产
+1. **Open Babel Agent 工具（Phase 2）**  
+   `app/tools/babel/` 已占位，`chem/babel_ops.py` 已测通，直接包装即可
 
-2. **补充更多化学工具**  
-   如分子式、分子量、InChI、3D conformer、相似性搜索
+2. **Smina / GNINA 分子对接**  
+   PDBQT 准备（`/api/babel/pdbqt`）已就绪；下一步接入 `smina_ops.py` 执行对接打分
 
-3. **增强 artifact 体系**  
-   支持 JSON 表格、结构化报告、可下载文件等
+3. **3D 可视化**  
+   前端接入 NGL Viewer 或 3Dmol.js，渲染 `conformer3d` 返回的 SDF 内容
 
-4. **补充观测与审计**  
-   增加 run trace、tool latency、错误统计
+4. **更多 RDKit 工具**  
+   分子指纹相似度、子结构搜索、ADMET 理化性质估算
 
-5. **收敛生产配置**  
-   包括鉴权、CORS、部署域名、WSS、日志与限流
+### 中期（工程稳态）
+
+5. **持久化 session**  
+   当前 session 为内存态，正式上线前需接入 Redis 或 DB
+
+6. **补充观测与审计**  
+   run trace、tool latency、错误统计、工具调用日志
+
+7. **收敛生产配置**  
+   鉴权、CORS 收紧、WSS、限流、多实例部署
 
 ---
 
 ## 11. 相关文档
 
-- 后端说明：见 `backend/README.md`
-- 前端默认模板说明：`frontend/README.md` 可后续替换为项目专属文档
-- 源码地图：见 `SOURCE_MAP.md`
+| 文档 | 说明 |
+|---|---|
+| [docs/API.md](docs/API.md) | REST API 完整请求/响应文档（含 curl 示例） |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 系统分层架构、设计决策、可扩展性分析 |
+| [SOURCE_MAP.md](SOURCE_MAP.md) | 面向维护者的文件职责索引与排障指北 |
 
 ---
 
 ## 12. 一句话总结
 
-ChemAgent 当前已经从“能跑的 demo”升级为“具备插件化工具能力、结构化协议能力、多轮会话能力、前后端协同能力”的化学智能体工程骨架。
+ChemAgent 采用**计算核心层（chem/）→ HTTP API 层（api/）→ Agent 工具层（tools/）**严格三层解耦架构，任何新化学软件只需新增对应目录，不修改现有代码，即可同时服务 REST UI 和多智能体工作流。
