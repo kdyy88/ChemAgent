@@ -17,11 +17,16 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libexpat1 libxrender1 libxext6 libsm6 \
+    && apt-get install -y --no-install-recommends \
+         libexpat1 \
+         libxrender1 libxext6 libsm6 \
+         libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app /app
 
 EXPOSE 3030
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3030"]
+# Single worker: multiple workers would multiply the ~1 GB RDKit/OpenBabel
+# memory footprint (each worker forks a full Python process with its own heap).
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3030", "--workers", "1"]
