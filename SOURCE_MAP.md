@@ -33,11 +33,14 @@ backend/app/api/sessions.py
   ┌────────────────────────────────────────────
   │ Phase 1：manager.py → 路由决策（JSON）
   │ Phase 2：specialists/visualizer.py
+  │          specialists/analyst.py
   │          specialists/researcher.py  (可并行)
   │ Phase 3：manager.py → 综合回答（Markdown）
   └────────────────────────────────────────────
   ↓
-backend/app/core/tooling.py + backend/app/tools/*
+backend/app/core/tooling.py + backend/app/tools/**
+  ↓ (化学计算委托给)
+backend/app/chem/<rdkit_ops|babel_ops>.py
   ↓
 结构化事件（含 sender 字段）回流前端
   ↓
@@ -202,6 +205,24 @@ frontend/components/chat/*
 - 加租户维度
 - 加 session 级别权限控制
 
+### `backend/app/api/rdkit_api.py`
+**职责**
+- 薄 HTTP 路由层，暴露 RDKit 计算能力为独立 REST 端点
+- 不含任何化学逻辑，全部委托给 `app/chem/rdkit_ops.py`
+
+**端点**
+- `POST /api/rdkit/analyze` — SMILES → Lipinski Rule-of-5 + 2D 结构图
+
+### `backend/app/api/babel_api.py`
+**职责**
+- 薄 HTTP 路由层，暴露 Open Babel 计算能力为独立 REST 端点
+- 不含任何化学逻辑，全部委托给 `app/chem/babel_ops.py`
+
+**端点**
+- `POST /api/babel/convert` — 分子格式互转（130+ 格式）
+- `POST /api/babel/conformer3d` — SMILES → 3D SDF 构象（MMFF94/UFF）
+- `POST /api/babel/pdbqt` — SMILES → PDBQT 对接预处理（含加氢、Gasteiger 电荷）
+
 ---
 
 ## 3.4 Core 层
@@ -229,7 +250,8 @@ frontend/components/chat/*
 
 **这是最重要的扩展点之一**
 新增工具时，通常围绕这里的契约工作。
-
+**自动发现机制**
+使用 `pkgutil.walk_packages`（递归，区别于旧版 `iter_modules` 的浅层扫描）自动 import `app/tools/` 下所有子包中的非下划线命名模块。添加新工具无需修改任何清单文件。
 **设计约束**
 - 模型看到的是“结构化摘要 + artifact 元信息”
 - 前端收到的是完整 artifact
@@ -237,61 +259,58 @@ frontend/components/chat/*
 
 ---
 
-## 3.5 Tool 层
+## 3.5 Chem Computation Kernel 层（`app/chem/`）
 
-### `backend/app/tools/molecule_pipeline.py`
+纯计算核心，只依赖第三方库，零框架依赖。同时为 REST 端点（`app/api/`）和 Agent 工具（`app/tools/`）提供共享实现，杜绝重复化学逻辑。
+
+### `backend/app/chem/rdkit_ops.py`
 **职责**
-- 批量维度分子结构流水线：PubChem SMILES 检索 → RDKit 2D 渲染
+- RDKit 2D 分子渲染与 Lipinski 计算
 
-**导出工具**
-- `draw_molecules_by_name(chemical_names)` — 接受逗号分隔的名称列表，一次调用返回全部 artifacts
+**暴露接口**
+- `mol_to_png_b64(mol, size)` — RDKit Mol 对象 → 裸 base64 PNG
+- `compute_lipinski(smiles, name)` — SMILES → `LipinskiResult`（含 MW/LogP/HBD/HBA/TPSA、`is_valid`、`lipinski_pass`、`violations`、`structure_image`）
 
-**设计动机**
-- 剥夺模型循环控制权，幾个药物的 SMILES 检索和图像生成均在工具内部完成
-- 部分失败时仍返回成功项 artifacts，失败项以 `{name, reason}` 结构化返回
-
-### `backend/app/tools/pubchem.py`
+### `backend/app/chem/babel_ops.py`
 **职责**
-- 基于 PubChem 名称检索 Canonical SMILES
+- Open Babel 格式转换、3D 构象生成、PDBQT 对接预处理
 
+**暴露接口**
+- `convert_format(molecule_str, input_fmt, output_fmt)` → `FormatConversionResult`
+- `build_3d_conformer(smiles, name, forcefield, steps)` → `Conformer3DResult`（SDF 内容）
+- `prepare_pdbqt(smiles, name, ph)` → `PdbqtPrepResult`（PDBQT 内容，自动 Gasteiger 电荷）
+
+**关键化学不变量**
+`mol.OBMol.AddHydrogens(False, True, ph)` **先于** `mol.make3D()`，确保氢原子在力场优化前已存在。
+
+---
+
+## 3.6 Tool Modules 层（`app/tools/`，按平台分组）
+
+Agent 适配器，只包装 `app/chem/` 函数或外部 API，不含化学逻辑。
+
+### `backend/app/tools/rdkit/image.py`
 **导出工具**
-- `get_smiles_by_name(chemical_name)`
+- `draw_molecules_by_name` — 批量名称→PubChem SMILES→RDKit 2D 渲染，单次调用返回全部 artifacts
+- `generate_2d_image_from_smiles` — SMILES→PNG（备用单次渲染）
 
-**适用场景**
-- 中文名 / 英文名 / 别名 -> SMILES
-
-**常见问题**
-- 中文名查不到时，需要 agent 自动回退英文名或规范化名称
-
-### `backend/app/tools/rdkit_ui.py`
-**职责**
-- 将 SMILES 转换为 2D PNG 图像
-
+### `backend/app/tools/rdkit/analysis.py`
 **导出工具**
-- `generate_2d_image_from_smiles(smiles)`
+- `analyze_molecule_from_smiles` — SMILES → Lipinski RoF5，完整委托给 `chem/rdkit_ops.compute_lipinski()`
 
-**输出特点**
-- 成功时返回图片 artifact
-- 失败时返回结构化错误与重试提示
-
-### `backend/app/tools/web_search.py`
-**职责**
-- 通用网页搜索，供 Researcher 专家使用
-
+### `backend/app/tools/pubchem/lookup.py`
 **导出工具**
-- `web_search(query)`
+- `get_smiles_by_name` — PubChem REST API 单次 SMILES 检索
 
-**实现**
-- Serper API（`https://google.serper.dev/search`，num=8）
-- 需在 `.env` 中配置 `SERPER_API_KEY`
-- 缺失 key / 超时 / 请求失败均返回结构化错误
+### `backend/app/tools/search/web.py`
+**导出工具**
+- `web_search` — Serper API 真实搜索（供 Researcher 专家使用）；需在 `.env` 中配置 `SERPER_API_KEY`
 
-### `backend/app/tools/__init__.py`
-工具包声明。
-
-**扩展规则**
-- 在 `app/tools/` 下新增模块即可被 registry 动态发现
-- 文件名建议与能力强相关，如 `molecular_weight.py`
+### `backend/app/tools/babel/__init__.py`
+Phase 2 占位。待 REST 端点充分验证后实现：
+- `convert_molecule_format`
+- `generate_3d_conformer`
+- `prepare_docking_pdbqt`
 
 ---
 
@@ -523,19 +542,27 @@ frontend/components/chat/*
 
 ---
 
-## 7. 新增工具的标准做法
+## 7. 新增工具的标准做法（Phase 1 → Phase 2 两步走）
 
-1. 在 `backend/app/tools/` 新建文件
-2. 使用 `@tool_registry.register(...)`
-3. 函数返回 `ToolExecutionResult`
-4. 若有图片/JSON/文本产物，构造 `ToolArtifact`
-5. 启动后 registry 自动发现
-6. 前端无需写死工具名，`toolCatalog` 会自动接入
+**Phase 1 — 独立 REST 端点（先做，先验证）**
+1. 在 `backend/app/chem/` 下实现纯计算核函数（只依赖第三方库，零框架依赖）
+2. 在 `backend/app/api/` 下新增对应 `APIRouter`，薄薄包一层 HTTP
+3. 在 `backend/app/main.py` 中注册路由
+4. 用 curl 烟雾测试验证输入输出正确性
+5. 在前端 `lib/chem-api.ts` 中添加对应 fetch 函数，`lib/types.ts` 中添加响应类型
+
+**Phase 2 — Agent 工具包装（REST 验证通过后）**
+1. 在 `backend/app/tools/<平台>/` 子包下新增模块
+2. 调用 Phase 1 中的 `app/chem/<xxx_ops>.py` 函数，**不重复写化学逻辑**
+3. 使用 `@tool_registry.register(...)`，返回 `ToolExecutionResult`
+4. Registry 通过 `walk_packages` 自动发现并挂载，无需修改主流程
+5. 在对应 Specialist Agent 的工具授权列表中注册
 
 **最小示例心智模型**
-- 输入：结构化参数
-- 输出：结构化结果
-- 不要直接拼接“SUCCESS:”这类旧式字符串协议
+- 计算逻辑 → `app/chem/`
+- HTTP 层 → `app/api/`（薄）
+- Agent 适配器 → `app/tools/<平台>/`（薄）
+- 输出：统一 `ToolExecutionResult`，不返回随意字符串
 
 ---
 
@@ -628,10 +655,14 @@ frontend/components/chat/*
 - 想改路由逻辑 / 系统提示词：看 `backend/app/agents/manager.py`
 - 想改专家能力 / 工具授权：看 `backend/app/agents/specialists/`
 - 想改 LLM 配置：看 `backend/app/agents/config.py`
-- 想加工具：看 `backend/app/core/tooling.py` 和 `backend/app/tools/`
+- 想加化学计算逻辑：看 `backend/app/chem/rdkit_ops.py` 或 `backend/app/chem/babel_ops.py`
+- 想加 REST 端点：看 `backend/app/api/rdkit_api.py` 或 `backend/app/api/babel_api.py`
+- 想加 Agent 工具：看 `backend/app/tools/<平台>/` + 参考 `backend/app/core/tooling.py` 契约
+- 想改工具自动发现机制：看 `backend/app/core/tooling.py`（`walk_packages`）
 - 想改协议：看 `backend/app/api/protocol.py` 和 `frontend/lib/types.ts`
 - 想查流式事件 / sender 注入：看 `backend/app/api/event_bridge.py`
 - 想查 session / 三阶段编排：看 `backend/app/api/sessions.py`
 - 想查前端状态 / finalAnswer 路由：看 `frontend/store/chatStore.ts`
 - 想改最终气泡渲染：看 `frontend/components/chat/MessageBubble.tsx`
 - 想改思考日志 / 溯源徽章：看 `frontend/components/chat/ThinkingLog.tsx`
+- 想调用 Open Babel REST 端点（前端）：看 `frontend/lib/chem-api.ts`

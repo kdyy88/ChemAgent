@@ -1,10 +1,12 @@
 'use client'
 
-import { FlaskConical, PlusCircle } from 'lucide-react'
+import { PlusCircle } from 'lucide-react'
+import { FlaskConical } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { MessageList } from '@/components/chat/MessageList'
 import { ChatInput } from '@/components/chat/ChatInput'
 import { TeamSettingsPopover } from '@/components/chat/TeamSettingsPopover'
+import { SmilesPanelSheet } from '@/components/chat/SmilesPanelSheet'
 import { useChemAgent } from '@/hooks/useChemAgent'
 
 export default function Home() {
@@ -33,6 +35,7 @@ export default function Home() {
             <PlusCircle className="h-4 w-4" />
             <span className="hidden sm:inline text-xs">New Chat</span>
           </Button>
+          <SmilesPanelSheet />
           <TeamSettingsPopover />
         </div>
       </header>

@@ -5,7 +5,9 @@ import { Download, FileJson, FileText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { MoleculeCard } from './MoleculeCard'
+import { LipinskiCard } from './LipinskiCard'
 import type { Artifact } from '@/lib/types'
+import type { LipinskiResult } from '@/lib/chem-api'
 
 interface ArtifactRendererProps {
   artifact: Artifact
@@ -77,6 +79,14 @@ function TextArtifactCard({ artifact }: ArtifactRendererProps) {
 export function ArtifactRenderer({ artifact }: ArtifactRendererProps) {
   if (artifact.kind === 'image' && artifact.mimeType.startsWith('image/') && typeof artifact.data === 'string') {
     return <MoleculeCard image={artifact.data} title={artifact.title} />
+  }
+
+  // Discriminated Lipinski artifact — matched strictly by type tag, not by field sniffing
+  if (
+    artifact.kind === 'json' &&
+    (artifact.data as Record<string, unknown>)?.type === 'lipinski'
+  ) {
+    return <LipinskiCard data={artifact.data as LipinskiResult} />
   }
 
   if (artifact.encoding === 'json' || artifact.mimeType === 'application/json') {

@@ -56,6 +56,7 @@ const SENDER_BADGE: Record<string, { bg: string; text: string; label: string }> 
   Visualizer:         { bg: 'bg-green-100',  text: 'text-green-700',  label: 'Visualizer' },
   Researcher:         { bg: 'bg-purple-100', text: 'text-purple-700', label: 'Researcher' },
   Validator:          { bg: 'bg-amber-100',  text: 'text-amber-700',  label: 'Validator' },
+  Analyst:            { bg: 'bg-orange-100', text: 'text-orange-700', label: 'Analyst' },
 }
 
 function SenderBadge({ sender }: { sender: string }) {
@@ -76,6 +77,8 @@ function semanticAction(tool: string, args: Record<string, unknown>): string {
       return `正在解析化学名词：${String(args.chemical_name ?? '')}`
     case 'generate_2d_image_from_smiles':
       return `正在绘制 2D 结构：${String(args.name || args.smiles || '').slice(0, 40)}`
+    case 'analyze_molecule_from_smiles':
+      return `正在计算分子性质：${String(args.name || args.smiles || '').slice(0, 40)}`
     default:
       return `正在执行：${tool.replace(/_/g, ' ')}`
   }
@@ -92,6 +95,8 @@ function semanticDone(tool: string, summary: string): string {
       return cleaned.slice(0, 60) || 'SMILES 获取成功'
     case 'generate_2d_image_from_smiles':
       return '结构图生成完毕'
+    case 'analyze_molecule_from_smiles':
+      return '分子性质计算完毕'
     default:
       return cleaned.slice(0, 80) || '完成'
   }

@@ -21,6 +21,8 @@ class AgentTeam:
     visualizer_executor: object
     researcher: object
     researcher_executor: object
+    analyst: object
+    analyst_executor: object
 
 
 @dataclass
@@ -66,6 +68,7 @@ def build_synthesis_prompt(
             "你是 ChemAgent，一个化学科研 AI 助手，具备：\n"
             "- Visualizer 专家：检索化合物 SMILES（PubChem）并生成 2D 分子结构图（RDKit）\n"
             "- Researcher 专家：搜索最新药物审批、临床试验、文献情报（Web Search）\n"
+            "- Analyst 专家：验证 SMILES、计算 Lipinski 五规则（MW/LogP/HBD/HBA）及 TPSA\n"
             "回答时语气自然，不要列举工具调用细节。"
         )
 

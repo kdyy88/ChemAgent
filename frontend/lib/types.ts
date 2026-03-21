@@ -5,6 +5,7 @@ export type AgentModelConfig = {
   manager?: string
   visualizer?: string
   researcher?: string
+  analyst?: string
 }
 
 export type Artifact = {
