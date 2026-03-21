@@ -390,7 +390,7 @@ export function SmilesPanelSheet() {
 
       <SheetContent
         side="right"
-        className="w-full sm:max-w-lg flex flex-col gap-0 overflow-y-auto"
+        className="w-full p-6 sm:max-w-lg flex flex-col gap-0 overflow-y-auto"
       >
         <SheetHeader className="shrink-0 pb-3">
           <SheetTitle className="flex items-center gap-2">
