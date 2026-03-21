@@ -35,3 +35,6 @@ def read_root():
             "message": "Use the Next.js frontend for the full session-based streaming experience.",
         }
     )
+@app.get("/health")
+def health():
+    return {"status": "ok"}
