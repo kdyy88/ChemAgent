@@ -381,7 +381,7 @@ export function SmilesPanelSheet() {
         <Button
           variant="ghost"
           size="sm"
-          className="gap-1.5 text-muted-foreground hover:text-foreground"
+          className="gap-1.5 p-6 text-muted-foreground hover:text-foreground"
         >
           <FlaskConical className="h-4 w-4" />
           <span className="hidden sm:inline text-xs">分子工具箱</span>
