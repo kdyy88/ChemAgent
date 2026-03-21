@@ -17,7 +17,10 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libexpat1 libxrender1 libxext6 libsm6 \
+    && apt-get install -y --no-install-recommends \
+         libexpat1 \
+         libxrender1 libxext6 libsm6 \
+         libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app /app
