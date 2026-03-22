@@ -5,14 +5,11 @@ ChemAgent 是一个面向化学场景的全栈智能体项目，目标是通过*
 当前版本已经完成：
 - 后端**三层解耦架构**：纯计算层（`chem/`）→ HTTP 层（`api/`）→ 智能体工具层（`tools/`）
 - 后端插件化工具注册（`tools/` 按平台分组，`walk_packages` 递归自动发现）
-- 结构化事件流式协议
-- 多轮 session memory
+- 结构化事件流式协议与多轮 session memory
 - **多智能体协作架构**（Manager 路由 + Visualizer / Analyst / Researcher 专家 + 综合回答器）
-- 前端白盒推理/工具链展示（专家溯源徽章）
-- 通用 artifact 渲染（图片 / JSON / 文件下载）
-- 最终回答 Markdown 渲染（react-markdown + remark-gfm）
-- **Open Babel 三大工具 Phase 1 REST API**：格式转换 / 3D 构象生成 / 对接 PDBQT 准备
-- 前端 Smiles 面板新增 **Prep 标签页**（格式转换 / 三维结构 / 对接准备三合一）
+- 前端白盒推理/工具链展示（专家溯源徽章）与通用 artifact 渲染
+- **RDKit 与 Open Babel 的 12 大 API 工具集群**：覆盖数据清洗、物化性质、结构分析、3D 构象优化与对接预处理，以及高通量 SDF 库批量合并与拆分。
+- 前端侧边栏重构：支持“基础组件库”与“业务场景流”双视角切换，并完美接入所有 12 个强力交互表单。
 
 ---
 
@@ -127,14 +124,29 @@ chem-agent-project/
 
 ## 4. 当前能力
 
-### REST API（Phase 1 — 无需 Agent，直接可用）
+### REST API（Phase 1 — 12 大功能集群，无需 Agent 直接可用）
 
+**RDKit 工具簇：**
 | 端点 | 功能 | 核心依赖 |
 |---|---|---|
-| `POST /api/rdkit/analyze` | SMILES → Lipinski RoF5 + TPSA + 2D 结构图 | RDKit |
+| `POST /api/rdkit/validate` | SMILES 验证与规范化 | RDKit |
+| `POST /api/rdkit/salt-strip` | 分子脱盐与电荷中和 | RDKit |
+| `POST /api/rdkit/descriptors` | 综合性分子描述符（替代旧 Lipinski，含 SA Score 与 QED） | RDKit + SA_Score |
+| `POST /api/rdkit/similarity` | 摩根指纹 Tanimoto 相似度比对 | RDKit |
+| `POST /api/rdkit/substructure` | SMARTS 子结构搜索与 PAINS 获取警告 | RDKit |
+| `POST /api/rdkit/scaffold` | Bemis-Murcko 核心骨架提取 | RDKit |
+
+**Open Babel 工具簇：**
+| 端点 | 功能 | 核心依赖 |
+|---|---|---|
+| `POST /api/babel/properties` | 提取精确分子质量、净电荷、自旋多重度等核心属性 | Open Babel |
+| `POST /api/babel/partial-charges` | 计算 Gasteiger/MMFF94/QEq 等模型的原子偏电荷 | Open Babel |
 | `POST /api/babel/convert` | 格式万能转换（SMILES ↔ SDF ↔ MOL2 ↔ PDB ↔ InChI…） | Open Babel |
-| `POST /api/babel/conformer3d` | SMILES → 力场优化 3D 构象（SDF 文件） | Open Babel |
-| `POST /api/babel/pdbqt` | SMILES → pH 加氢 → 3D 优化 → PDBQT（Gasteiger 电荷） | Open Babel |
+| `POST /api/babel/conformer3d` | SMILES → 力场优化 3D 构象（附带力场 `energy_kcal_mol`） | Open Babel |
+| `POST /api/babel/pdbqt` | PDBQT 对接预处理（加质子 → 3D 优化 → Gasteiger 电荷 → 转子） | Open Babel |
+| `POST /api/babel/sdf-split` | 高通量拆分：上传单个包含多个分子的 SDF，返回 zip 压缩包 | Open Babel + FastAPI |
+| `POST /api/babel/sdf-merge` | 高通量合并：批量上传多个 SDF，合并成单个 SDF 库文件 | Open Babel + FastAPI |
+| `GET /api/babel/formats` | 工具接口：枚举支持的所有化学格式字典 | Open Babel |
 
 详细请求/响应格式见 [docs/API.md](docs/API.md)。
 
