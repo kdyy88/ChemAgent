@@ -13,6 +13,9 @@ export type MarkdownProps = {
   components?: Partial<Components>
 }
 
+import { Button } from "@/components/ui/button"
+import { useWorkspaceStore } from "@/store/workspaceStore"
+
 function parseMarkdownIntoBlocks(markdown: string): string[] {
   const tokens = marked.lexer(markdown)
   return tokens.map((token) => token.raw)
@@ -55,6 +58,25 @@ const INITIAL_COMPONENTS: Partial<Components> = {
   pre: function PreComponent({ children }) {
     return <>{children}</>
   },
+  a: function AComponent({ href, children, ...props }) {
+    if (href?.startsWith('action:apply-smiles:')) {
+      const smiles = href.replace('action:apply-smiles:', '')
+      return (
+        <Button 
+          variant="outline" 
+          size="sm" 
+          className="my-2 bg-primary/10 hover:bg-primary/20 text-primary border-primary/30"
+          onClick={(e) => {
+            e.preventDefault()
+            useWorkspaceStore.getState().setSmiles(smiles)
+          }}
+        >
+          {children || 'Apply to Workspace'}
+        </Button>
+      )
+    }
+    return <a href={href} {...props}>{children}</a>
+  }
 }
 
 const MemoizedMarkdownBlock = memo(
@@ -89,7 +111,14 @@ function MarkdownComponent({
 }: MarkdownProps) {
   const generatedId = useId()
   const blockId = id ?? generatedId
-  const blocks = useMemo(() => parseMarkdownIntoBlocks(children), [children])
+  
+  // Intercept special tag <ApplySmiles smiles="..." />
+  const processedChildren = children.replace(
+    /<ApplySmiles\s+smiles="([^"]+)"\s*(?:><\/ApplySmiles>|\/>)/g,
+    (_, smiles) => `[应用到工作台（Apply to Workspace）](action:apply-smiles:${smiles})`
+  )
+
+  const blocks = useMemo(() => parseMarkdownIntoBlocks(processedChildren), [processedChildren])
 
   return (
     <div className={className}>

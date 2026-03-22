@@ -1,22 +1,29 @@
 'use client'
 
-import { PlusCircle } from 'lucide-react'
-import { FlaskConical } from 'lucide-react'
+import Link from 'next/link'
+import { PlusCircle, FlaskConical, LayoutTemplate } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { MessageList } from '@/components/chat/MessageList'
-import { ChatInput } from '@/components/chat/ChatInput'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { TeamSettingsPopover } from '@/components/chat/TeamSettingsPopover'
-import { SmilesPanelSheet } from '@/components/chat/SmilesPanelSheet'
 import { useChemAgent } from '@/hooks/useChemAgent'
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from '@/components/ui/resizable'
+import { useMediaQuery } from '@/hooks/use-media-query'
+import { ToolSidebar } from '@/components/workspace/ToolSidebar'
+import { WorkspaceArea } from '@/components/workspace/WorkspaceArea'
+import { CopilotSidebar } from '@/components/chat/CopilotSidebar'
 
 export default function Home() {
   const { clearTurns } = useChemAgent()
+  const isDesktop = useMediaQuery('(min-width: 768px)')
 
   return (
     <main className="flex flex-col h-[100dvh] bg-background">
-      {/* Header */}
       <header className="shrink-0 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-2.5">
+        <div className="w-full px-4 md:px-6 py-3 flex items-center gap-2.5">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
             <FlaskConical className="h-4 w-4 text-primary-foreground" />
           </div>
@@ -25,7 +32,6 @@ export default function Home() {
             <p className="text-xs text-muted-foreground mt-0.5">AI Chemistry Expert</p>
           </div>
 
-          {/* Header actions */}
           <Button
             variant="ghost"
             size="sm"
@@ -35,22 +41,42 @@ export default function Home() {
             <PlusCircle className="h-4 w-4" />
             <span className="hidden sm:inline text-xs">New Chat</span>
           </Button>
-          <SmilesPanelSheet />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground" asChild>
+                <Link href="/workflow">
+                  <LayoutTemplate className="h-4 w-4" />
+                </Link>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Workflow Editor</TooltipContent>
+          </Tooltip>
           <TeamSettingsPopover />
         </div>
       </header>
 
-      {/* Chat area */}
+      {/* Main Content Resizable Split */}
       <div className="flex-1 overflow-hidden">
-        <MessageList />
+        <ResizablePanelGroup orientation={isDesktop ? 'horizontal' : 'vertical'}>
+          <ResizablePanel defaultSize={15} minSize={10}>
+            <ToolSidebar />
+          </ResizablePanel>
+          <ResizableHandle withHandle />
+          <ResizablePanel defaultSize={60} minSize={40}>
+            <div className="h-full w-full mx-auto max-w-4xl">
+              <WorkspaceArea />
+            </div>
+          </ResizablePanel>
+          <ResizableHandle withHandle />
+          <ResizablePanel defaultSize={15} minSize={10}>
+            <CopilotSidebar />
+          </ResizablePanel>
+        </ResizablePanelGroup>
       </div>
-
-      {/* Input bar */}
-      <footer className="shrink-0 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="max-w-5xl mx-auto px-4 py-3">
-          <ChatInput />
-        </div>
-        <p className="text-center text-[10px] text-muted-foreground/70 pb-2 select-none">
+      
+      {/* Footer */}
+      <footer className="shrink-0 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-t pt-1 pb-1">
+        <p className="text-center text-[10px] text-muted-foreground/70 select-none">
           © {new Date().getFullYear()} ChemAgent · Designed &amp; developed by Yuan Ye · Consulting by Kelly 
         </p>
       </footer>

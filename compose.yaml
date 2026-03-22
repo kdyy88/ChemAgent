@@ -20,9 +20,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2g       # hard ceiling — OOM kill stays inside this container
+          memory: 2.5g     # hard ceiling — OOM kill stays inside this container
         reservations:
-          memory: 768m     # guaranteed slice; kernel won't evict below this
+          memory: 1g       # guaranteed slice; kernel won't evict below this
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3030/health')"]
       interval: 15s

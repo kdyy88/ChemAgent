@@ -24,11 +24,13 @@
 
 ---
 
-## 1. RDKit 端点
+## 1. RDKit 端点 (总计 6 个)
 
-### `POST /api/rdkit/analyze`
+目前完整支持数据清洗、描述符提取、相似性与子结构警示等 6 大核心 API。以下以最经典的分析端点为例：
 
-**功能**：将 SMILES 字符串解析为 Lipinski Rule-of-5 药物相似性报告，附带 2D 结构图（base64 PNG）。
+### `POST /api/rdkit/analyze` (Legacy 兼容) / `POST /api/rdkit/descriptors`
+
+**功能**：依据 SMILES 字符串提取综合物理化学性质，包括 Lipinski RoF5、TPSA、QED、SA_Score。`analyze` 还会附带 2D 结构图（base64 PNG）。
 
 #### 请求体
 
@@ -158,7 +160,7 @@ curl -s -X POST http://localhost:8000/api/babel/convert \
 
 ### `POST /api/babel/conformer3d`
 
-**功能**：从 SMILES 生成三维构象，输出 SDF 格式，使用 MMFF94 或 UFF 力场优化。
+**功能**：从 SMILES 生成三维构象，输出 SDF 格式，使用 MMFF94/UFF 力场优化，并返回被优化的力场能量 (`energy_kcal_mol`)。
 
 #### 请求体
 
@@ -310,3 +312,14 @@ curl -s -X POST http://localhost:8000/api/babel/pdbqt \
 | `convertFormat(molecule, inputFmt, outputFmt)` | `POST /api/babel/convert` |
 | `build3DConformer(smiles, name, forcefield?, steps?)` | `POST /api/babel/conformer3d` |
 | `preparePdbqt(smiles, name, ph?)` | `POST /api/babel/pdbqt` |
+
+---
+
+### `POST /api/babel/partial-charges`
+**功能**：使用 Gasteiger/MMFF94/QEq 等模型计算每个原子的偏电荷。  
+**请求体**：`{"smiles": "...", "method": "gasteiger"}`
+
+### `POST /api/babel/sdf-split` 与 `POST /api/babel/sdf-merge`
+**功能**：SDF 文件高通量批量处理。支持 `multipart/form-data` 上传，单/多文件分割合并。
+**响应**：成功解析后返回内存处理的 `.zip` 打包下载包或 `sdf` 流文本。
+
