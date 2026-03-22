@@ -101,8 +101,8 @@ function ChargeResultCard({
         <div className="rounded-md border border-border/40 px-3 py-1">
           <InfoRow label="SMILES" value={<span className="font-mono text-[10px] break-all">{data.smiles}</span>} />
           <InfoRow label="总电荷" value={
-            <span className={data.total_charge > 0.01 ? 'text-red-500' : data.total_charge < -0.01 ? 'text-blue-500' : ''}>
-              {data.total_charge > 0 ? '+' : ''}{data.total_charge.toFixed(4)}
+            <span className={(data.total_charge ?? 0) > 0.01 ? 'text-red-500' : (data.total_charge ?? 0) < -0.01 ? 'text-blue-500' : ''}>
+              {data.total_charge != null ? (data.total_charge > 0 ? '+' : '') + data.total_charge.toFixed(4) : 'N/A'}
             </span>
           } />
           <InfoRow label="总原子数" value={data.atom_count} />
@@ -145,20 +145,21 @@ function ChargeResultCard({
 }
 
 function ChargeRow({ atom }: { atom: ChargeAtom }) {
-  const isPositive = atom.charge > 0.005
-  const isNegative = atom.charge < -0.005
+  const chargeVal = atom.charge ?? 0
+  const isPositive = chargeVal > 0.005
+  const isNegative = chargeVal < -0.005
 
   // Bar width: normalize charge to [-0.5, 0.5] range for visual
-  const barPct = Math.min(Math.abs(atom.charge) / 0.5, 1) * 50
+  const barPct = Math.min(Math.abs(chargeVal) / 0.5, 1) * 50
 
   return (
     <tr className="border-b border-border/30 last:border-0 hover:bg-muted/30 transition-colors">
       <td className="px-3 py-1.5 tabular-nums text-muted-foreground">{atom.idx}</td>
       <td className="px-3 py-1.5 font-medium">{atom.element}</td>
       <td className={`px-3 py-1.5 text-right tabular-nums font-mono ${
-        isPositive ? 'text-red-500' : isNegative ? 'text-blue-500' : 'text-muted-foreground'
+        atom.charge == null ? 'text-muted-foreground/50' : isPositive ? 'text-red-500' : isNegative ? 'text-blue-500' : 'text-muted-foreground'
       }`}>
-        {atom.charge > 0 ? '+' : ''}{atom.charge.toFixed(4)}
+        {atom.charge != null ? (atom.charge > 0 ? '+' : '') + atom.charge.toFixed(4) : 'N/A'}
       </td>
       <td className="px-3 py-1.5">
         <div className="flex items-center h-3">
