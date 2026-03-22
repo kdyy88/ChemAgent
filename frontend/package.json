@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@tailwindcss/typography": "^0.5.19",
+    "@waldiez/react": "^0.7.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "framer-motion": "^12.36.0",
@@ -20,6 +21,7 @@
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-markdown": "^10.1.0",
+    "react-resizable-panels": "^4.7.4",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "shadcn": "^4.0.7",

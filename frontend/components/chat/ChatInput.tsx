@@ -11,15 +11,23 @@ import {
   PromptInputAction,
 } from '@/components/ui/prompt-input'
 import { useChemAgent } from '@/hooks/useChemAgent'
+import { useWorkspaceStore } from '@/store/workspaceStore'
 
 export function ChatInput() {
   const [value, setValue] = useState('')
   const { isStreaming, sendMessage } = useChemAgent()
+  const { currentSmiles, activeFunctionId } = useWorkspaceStore()
 
   const handleSubmit = () => {
     const trimmed = value.trim()
     if (!trimmed || isStreaming) return
-    sendMessage(trimmed)
+    
+    // Inject context implicitly
+    const payloadContext = currentSmiles 
+      ? `\n\n[系统附加信息：用户当前正在 ${activeFunctionId} 功能面操作分子：${currentSmiles}]` 
+      : ""
+      
+    sendMessage(trimmed + payloadContext)
     setValue('')
   }
 

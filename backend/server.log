@@ -1,0 +1,28 @@
+nohup: ignoring input
+INFO:     Will watch for changes in these directories: ['/home/administrator/chem-agent-project/backend']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [56227] using StatReload
+[15:02:46] non-ring atom 0 marked aromatic
+[15:02:46] non-ring atom 0 marked aromatic
+INFO:     Started server process [56229]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:57222 - "POST /api/babel/conformer3d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57224 - "POST /api/babel/partial-charges HTTP/1.1" 200 OK
+==============================
+*** Open Babel Warning  in ReadMolecule
+  WARNING: Problems reading a MDL file
+Cannot read atom and bond count
+File ended prematurely
+
+==============================
+*** Open Babel Warning  in ReadMolecule
+  WARNING: Problems reading a MDL file
+Cannot read atom and bond count
+File ended prematurely
+
+INFO:     127.0.0.1:57229 - "POST /api/babel/sdf-split HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61736 - "WebSocket /api/chat/ws" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:59600 - "WebSocket /api/chat/ws" [accepted]
+INFO:     connection open

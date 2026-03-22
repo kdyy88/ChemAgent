@@ -1,3 +1,4 @@
 ignoredBuiltDependencies:
+  - '@waldiez/react'
   - sharp
   - unrs-resolver

@@ -20,11 +20,16 @@ Public API
 convert_format(molecule_str, input_fmt, output_fmt)   Tool 1: universal converter
 build_3d_conformer(smiles, name, forcefield, steps)   Tool 2: 3D conformer builder
 prepare_pdbqt(smiles, name, ph)                       Tool 3: docking PDBQT prep
+compute_mol_properties(smiles)                        T7: molecular properties
+list_supported_formats()                              Utility: format enumeration
 """
 
 from __future__ import annotations
 
-from openbabel import pybel
+import io
+import zipfile
+
+from openbabel import openbabel, pybel
 
 # ── Supported format sets (evaluated once at import time) ─────────────────────
 
@@ -145,6 +150,15 @@ def build_3d_conformer(
     except Exception as exc:
         return {"is_valid": False, "error": f"3D 构象生成失败：{exc}"}
 
+    # ── Extract force-field energy after optimisation ─────────────────────
+    energy_kcal_mol: float | None = None
+    try:
+        ff = pybel._forcefields[forcefield]
+        if ff.Setup(mol.OBMol):
+            energy_kcal_mol = round(ff.Energy(), 4)
+    except Exception:
+        pass  # energy is optional — don't fail the whole tool
+
     try:
         sdf_content = mol.write("sdf").strip()
     except Exception as exc:
@@ -167,6 +181,7 @@ def build_3d_conformer(
         "forcefield":       forcefield,
         "steps":            steps,
         "has_3d_coords":    has_3d,
+        "energy_kcal_mol":  energy_kcal_mol,
     }
 
 
@@ -243,4 +258,239 @@ def prepare_pdbqt(
         "has_torsdof_marker":  "TORSDOF" in pdbqt_content,
         # Warning flag: Vina/Smina accuracy degrades above 10 rotatable bonds.
         "flexibility_warning": rotatable_bonds > 10,
+    }
+
+
+# ── T7: Molecular Properties (OpenBabel) ─────────────────────────────────────
+
+
+def compute_mol_properties(smiles: str) -> dict:
+    """Compute core molecular properties using OpenBabel.
+
+    Returns formula, exact mass, formal charge, spin multiplicity, and atom counts.
+    """
+    smiles = smiles.strip()
+    try:
+        mol = pybel.readstring("smi", smiles)
+    except Exception as exc:
+        return {"type": "mol_properties", "is_valid": False, "error": f"无法解析 SMILES：{exc}"}
+
+    if mol.OBMol.NumAtoms() == 0:
+        return {"type": "mol_properties", "is_valid": False, "error": f"无法解析 SMILES：{smiles}"}
+
+    obmol = mol.OBMol
+    return {
+        "type": "mol_properties",
+        "is_valid": True,
+        "smiles": smiles,
+        "formula": mol.formula,
+        "exact_mass": round(obmol.GetExactMass(), 4),
+        "molecular_weight": round(obmol.GetMolWt(), 4),
+        "formal_charge": obmol.GetTotalCharge(),
+        "spin_multiplicity": obmol.GetTotalSpinMultiplicity(),
+        "heavy_atom_count": obmol.NumHvyAtoms(),
+        "atom_count": obmol.NumAtoms(),
+        "bond_count": obmol.NumBonds(),
+        "rotatable_bonds": obmol.NumRotors(),
+    }
+
+
+# ── Utility: Supported Format Listing ─────────────────────────────────────────
+
+
+def list_supported_formats() -> dict:
+    """List all OpenBabel-supported input and output formats.
+
+    Returns sorted lists with format code + description for each direction.
+    """
+    input_formats = [
+        {"code": code, "description": desc}
+        for code, desc in sorted(pybel.informats.items())
+    ]
+    output_formats = [
+        {"code": code, "description": desc}
+        for code, desc in sorted(pybel.outformats.items())
+    ]
+    return {
+        "input_formats": input_formats,
+        "output_formats": output_formats,
+        "input_count": len(input_formats),
+        "output_count": len(output_formats),
+    }
+
+
+# ── F2: Partial Charge Analysis ───────────────────────────────────────────────
+
+_CHARGE_METHODS = {"gasteiger", "mmff94", "qeq", "eem"}
+
+# OBElementTable is removed in newer OpenBabel builds; use a static lookup.
+_ATOMIC_SYMBOL: dict[int, str] = {
+    1: "H", 2: "He", 3: "Li", 4: "Be", 5: "B", 6: "C", 7: "N", 8: "O",
+    9: "F", 10: "Ne", 11: "Na", 12: "Mg", 13: "Al", 14: "Si", 15: "P",
+    16: "S", 17: "Cl", 18: "Ar", 19: "K", 20: "Ca", 26: "Fe", 29: "Cu",
+    30: "Zn", 33: "As", 34: "Se", 35: "Br", 53: "I",
+}
+
+
+def compute_partial_charges(smiles: str, method: str = "gasteiger") -> dict:
+    """Compute per-atom partial charges using the specified charge model.
+
+    Parameters
+    ----------
+    smiles : Standard SMILES string.
+    method : Charge model — 'gasteiger' (default), 'mmff94', 'qeq', or 'eem'.
+
+    Returns dict matching ``PartialChargeResult | BabelError`` TypeScript union.
+    """
+    smiles = smiles.strip()
+    method = method.strip().lower()
+
+    if method not in _CHARGE_METHODS:
+        return {
+            "type": "partial_charge",
+            "is_valid": False,
+            "error": f"不支持的电荷模型：'{method}'。可选：gasteiger, mmff94, qeq, eem",
+        }
+
+    try:
+        mol = pybel.readstring("smi", smiles)
+    except Exception as exc:
+        return {"type": "partial_charge", "is_valid": False, "error": f"无法解析 SMILES：{exc}"}
+
+    if mol.OBMol.NumAtoms() == 0:
+        return {"type": "partial_charge", "is_valid": False, "error": f"无法解析 SMILES：{smiles}"}
+
+    # Add hydrogens so charge distribution is physically meaningful
+    mol.OBMol.AddHydrogens()
+
+    # Compute charges via OBChargeModel
+    charge_model = openbabel.OBChargeModel.FindType(method)
+    if charge_model is None:
+        return {
+            "type": "partial_charge",
+            "is_valid": False,
+            "error": f"OpenBabel 未找到电荷模型 '{method}'，可能未编译支持。",
+        }
+
+    success = charge_model.ComputeCharges(mol.OBMol)
+    if not success:
+        return {
+            "type": "partial_charge",
+            "is_valid": False,
+            "error": f"电荷计算失败 (模型: {method})。",
+        }
+
+    partial_charges = charge_model.GetPartialCharges()
+
+    atoms = []
+    for i in range(mol.OBMol.NumAtoms()):
+        ob_atom = mol.OBMol.GetAtom(i + 1)  # OBMol is 1-indexed
+        atomic_num = ob_atom.GetAtomicNum()
+        atoms.append({
+            "idx": i,
+            "element": _ATOMIC_SYMBOL.get(atomic_num, f"#{atomic_num}"),
+            "charge": round(partial_charges[i], 4) if i < len(partial_charges) else 0.0,
+        })
+
+    # Only return heavy atoms in the summary
+    heavy_atoms = [a for a in atoms if a["element"] != "H"]
+
+    return {
+        "type": "partial_charge",
+        "is_valid": True,
+        "smiles": smiles,
+        "charge_model": method,
+        "atoms": atoms,
+        "heavy_atoms": heavy_atoms,
+        "total_charge": round(sum(a["charge"] for a in atoms), 4),
+        "atom_count": len(atoms),
+        "heavy_atom_count": len(heavy_atoms),
+    }
+
+
+# ── F3: SDF Batch Processing (Split / Merge) ─────────────────────────────────
+
+
+def sdf_split(sdf_content: str) -> dict:
+    """Split a multi-molecule SDF file into individual molecules.
+
+    Returns a dict with a list of molecule entries (SMILES + name) and
+    a ZIP archive (in-memory bytes) containing individual SDF files.
+    """
+    molecules = []
+    zip_buffer = io.BytesIO()
+
+    try:
+        # pybel.readstring can read multi-mol SDF via the supplier interface
+        mol_gen = pybel.readstring("sdf", sdf_content)
+        # Actually for multi-mol we need to split manually
+    except Exception:
+        pass
+
+    # Split by the $$$$ delimiter (standard SDF separator)
+    blocks = sdf_content.strip().split("$$$$")
+    blocks = [b.strip() for b in blocks if b.strip()]
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, block in enumerate(blocks):
+            sdf_text = block + "\n$$$$\n"
+            try:
+                mol = pybel.readstring("sdf", sdf_text)
+                mol_name = mol.title.strip() or f"molecule_{i + 1}"
+                mol_smiles = mol.write("smi").strip().split("\t")[0]
+            except Exception:
+                mol_name = f"molecule_{i + 1}"
+                mol_smiles = "parse_error"
+
+            molecules.append({
+                "index": i,
+                "name": mol_name,
+                "smiles": mol_smiles,
+            })
+
+            filename = f"{mol_name}.sdf"
+            # De-duplicate filenames
+            zf.writestr(f"{i + 1:04d}_{filename}", sdf_text)
+
+    return {
+        "type": "sdf_split",
+        "is_valid": True,
+        "molecule_count": len(molecules),
+        "molecules": molecules[:100],  # cap preview at 100
+        "zip_bytes": zip_buffer.getvalue(),
+    }
+
+
+def sdf_merge(sdf_contents: list[str]) -> dict:
+    """Merge multiple SDF file contents into a single SDF file.
+
+    Parameters
+    ----------
+    sdf_contents : List of SDF file content strings.
+    """
+    merged_blocks: list[str] = []
+    total_mols = 0
+    errors = 0
+
+    for content in sdf_contents:
+        blocks = content.strip().split("$$$$")
+        for block in blocks:
+            block = block.strip()
+            if not block:
+                continue
+            try:
+                mol = pybel.readstring("sdf", block + "\n$$$$\n")
+                merged_blocks.append(mol.write("sdf").strip())
+                total_mols += 1
+            except Exception:
+                errors += 1
+
+    merged_sdf = "\n".join(merged_blocks)
+
+    return {
+        "type": "sdf_merge",
+        "is_valid": True,
+        "molecule_count": total_mols,
+        "error_count": errors,
+        "sdf_content": merged_sdf,
     }

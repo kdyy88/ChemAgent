@@ -2,6 +2,8 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends git
+
 COPY pyproject.toml README.md ./
 RUN uv sync --no-dev --no-install-project
 
@@ -27,6 +29,6 @@ COPY --from=builder /app /app
 
 EXPOSE 3030
 
-# Single worker: multiple workers would multiply the ~1 GB RDKit/OpenBabel
-# memory footprint (each worker forks a full Python process with its own heap).
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3030", "--workers", "1"]
+# 2 workers: Balances the 4 CPU cores with the strict 4GB RAM limit.
+# Leaves enough memory headroom for the OS and potential frontend services.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3030", "--workers", "2"]
