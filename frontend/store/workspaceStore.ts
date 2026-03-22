@@ -11,18 +11,18 @@ export type FunctionId =
 
 interface WorkspaceState {
   navMode: NavMode
-  activeFunctionId: FunctionId
+  activeFunctionId: FunctionId | null
   currentSmiles: string
   currentName: string
   setNavMode: (mode: NavMode) => void
-  setActiveFunctionId: (id: FunctionId) => void
+  setActiveFunctionId: (id: FunctionId | null) => void
   setSmiles: (smiles: string) => void
   setName: (name: string) => void
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   navMode: 'business',
-  activeFunctionId: 'validate',
+  activeFunctionId: null,
   currentSmiles: '',
   currentName: '',
   setNavMode: (mode) => set({ navMode: mode }),

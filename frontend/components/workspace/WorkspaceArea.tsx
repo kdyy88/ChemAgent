@@ -1,6 +1,7 @@
 'use client'
 
 import { FlaskConical } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { useWorkspaceStore } from '@/store/workspaceStore'
 
 // ── New Tools ────────────────────────────────────────────────────────────────
@@ -13,6 +14,7 @@ import { ScaffoldTool } from './tools/ScaffoldTool'
 import { MolPropertyTool } from './tools/MolPropertyTool'
 import { PartialChargeTool } from './tools/PartialChargeTool'
 import { SdfBatchTool } from './tools/SdfBatchTool'
+import { HomeLandingPage } from './HomeLandingPage'
 
 // ── Existing Tools ───────────────────────────────────────────────────────────
 import { ConvertTool } from './tools/ConvertTool'
@@ -37,6 +39,10 @@ const TOOL_TITLES: Record<string, string> = {
 export function WorkspaceArea() {
   const { activeFunctionId } = useWorkspaceStore()
 
+  if (!activeFunctionId) {
+    return <HomeLandingPage />
+  }
+
   return (
     <div className="flex flex-col h-full bg-background overflow-hidden p-6 sm:p-8 md:p-10 lg:p-12 gap-0">
       <div className="shrink-0 pb-6 mb-6 border-b">
@@ -45,23 +51,34 @@ export function WorkspaceArea() {
           {TOOL_TITLES[activeFunctionId] || '化学主工作台'}
         </h2>
         <p className="text-sm text-muted-foreground mt-2">
-          高确定性核心流程操作区 · 左侧选择任务功能
+          核心流程操作区 · 左侧选择任务功能
         </p>
       </div>
 
-      <div className="flex-1 flex flex-col gap-4 min-h-0 pb-8 overflow-y-auto pr-2 scrollbar-thin max-w-4xl">
-        {activeFunctionId === 'validate'       && <ValidateTool />}
-        {activeFunctionId === 'salt-strip'     && <SaltStripTool />}
-        {activeFunctionId === 'descriptors'    && <DescriptorsTool />}
-        {activeFunctionId === 'mol-properties' && <MolPropertyTool />}
-        {activeFunctionId === 'partial-charge' && <PartialChargeTool />}
-        {activeFunctionId === 'similarity'     && <SimilarityTool />}
-        {activeFunctionId === 'substructure'   && <SubstructureTool />}
-        {activeFunctionId === 'scaffold'       && <ScaffoldTool />}
-        {activeFunctionId === 'convert'        && <ConvertTool />}
-        {activeFunctionId === 'conformer'      && <ConformerTool />}
-        {activeFunctionId === 'pdbqt'          && <PdbqtTool />}
-        {activeFunctionId === 'sdf-batch'       && <SdfBatchTool />}
+      <div className="flex-1 flex flex-col gap-4 min-h-0 pb-8 overflow-y-auto p-2 scrollbar-thin max-w-4xl overflow-x-hidden">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={activeFunctionId}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.15, ease: 'easeOut' }}
+            className="flex flex-col gap-4"
+          >
+            {activeFunctionId === 'validate'       && <ValidateTool />}
+            {activeFunctionId === 'salt-strip'     && <SaltStripTool />}
+            {activeFunctionId === 'descriptors'    && <DescriptorsTool />}
+            {activeFunctionId === 'mol-properties' && <MolPropertyTool />}
+            {activeFunctionId === 'partial-charge' && <PartialChargeTool />}
+            {activeFunctionId === 'similarity'     && <SimilarityTool />}
+            {activeFunctionId === 'substructure'   && <SubstructureTool />}
+            {activeFunctionId === 'scaffold'       && <ScaffoldTool />}
+            {activeFunctionId === 'convert'        && <ConvertTool />}
+            {activeFunctionId === 'conformer'      && <ConformerTool />}
+            {activeFunctionId === 'pdbqt'          && <PdbqtTool />}
+            {activeFunctionId === 'sdf-batch'      && <SdfBatchTool />}
+          </motion.div>
+        </AnimatePresence>
       </div>
     </div>
   )

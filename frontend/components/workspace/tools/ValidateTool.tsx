@@ -4,25 +4,21 @@ import { useState } from 'react'
 import { CheckCircle2, XCircle, Hash } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { useWorkspaceStore } from '@/store/workspaceStore'
+import { useMutation } from '@tanstack/react-query'
 import { validateSmiles, type ValidateResponse } from '@/lib/chem-api'
 import { ToolLayout, InfoRow, ResultCard } from './ToolLayout'
+import { ResultSkeleton } from './ResultSkeleton'
 
 export function ValidateTool() {
   const { currentSmiles } = useWorkspaceStore()
-  const [result, setResult] = useState<ValidateResponse | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
-  async function execute() {
+  const mutation = useMutation({
+    mutationFn: (smiles: string) => validateSmiles(smiles),
+  })
+
+  function execute() {
     if (!currentSmiles.trim()) return
-    setLoading(true); setError(null); setResult(null)
-    try {
-      setResult(await validateSmiles(currentSmiles.trim()))
-    } catch (err: any) {
-      setError(err.message || '验证失败')
-    } finally {
-      setLoading(false)
-    }
+    mutation.mutate(currentSmiles.trim())
   }
 
   return (
@@ -31,9 +27,15 @@ export function ValidateTool() {
       buttonLabel="验证 SMILES"
       loadingLabel="正在验证..."
       onExecute={execute}
-      loading={loading}
-      error={error}
-      resultSlot={result && <ValidateResultCard data={result} />}
+      loading={mutation.isPending}
+      error={mutation.error ? (mutation.error as Error).message : null}
+      resultSlot={
+        mutation.isPending ? (
+          <ResultSkeleton type="default" />
+        ) : mutation.data ? (
+          <ValidateResultCard data={mutation.data} />
+        ) : null
+      }
     />
   )
 }

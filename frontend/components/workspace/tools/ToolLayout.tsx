@@ -2,7 +2,7 @@
 
 import { useState, type ReactNode } from 'react'
 import { Loader2 } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { LoadingButton } from '@/components/ui/loading-button'
 import { Textarea } from '@/components/ui/textarea'
 import { useWorkspaceStore } from '@/store/workspaceStore'
 import { ExampleChips, FieldLabel, NetworkErrorAlert } from '../shared'
@@ -80,14 +80,15 @@ export function ToolLayout({
 
       {children}
 
-      <Button
+      <LoadingButton
         onClick={onExecute}
-        disabled={loading || disabled || (!showSmilesInput ? false : !currentSmiles.trim())}
+        isLoading={loading}
+        loadingText={loadingLabel}
+        disabled={disabled || (!showSmilesInput ? false : !currentSmiles.trim())}
         className="w-full"
       >
-        {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-        {loading ? loadingLabel : buttonLabel}
-      </Button>
+        {buttonLabel}
+      </LoadingButton>
 
       {error && <NetworkErrorAlert message={error} />}
       {resultSlot}
