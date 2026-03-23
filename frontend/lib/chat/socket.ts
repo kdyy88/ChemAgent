@@ -1,15 +1,22 @@
 import type { AgentModelConfig, ClientEvent, ServerEvent } from '@/lib/types'
 
+function normalizeWebSocketBaseUrl(url: string): string {
+  return url.replace('ws://localhost:', 'ws://127.0.0.1:').replace('wss://localhost:', 'wss://127.0.0.1:')
+}
+
 function resolveWebSocketUrl(): string {
   const configured = process.env.NEXT_PUBLIC_WS_URL?.trim()
   if (configured) {
-    const normalized = configured.replace(/\/$/, '')
+    const normalized = normalizeWebSocketBaseUrl(configured.replace(/\/$/, ''))
     return normalized.endsWith('/api/chat/ws') ? normalized : `${normalized}/api/chat/ws`
   }
 
   if (typeof window !== 'undefined') {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${protocol}//${window.location.host}/api/chat/ws`
+    const host = window.location.hostname === 'localhost'
+      ? `127.0.0.1${window.location.port ? `:${window.location.port}` : ''}`
+      : window.location.host
+    return `${protocol}//${host}/api/chat/ws`
   }
 
   return 'ws://127.0.0.1:3030/api/chat/ws'

@@ -75,7 +75,25 @@ const INITIAL_COMPONENTS: Partial<Components> = {
         </Button>
       )
     }
-    return <a href={href} {...props}>{children}</a>
+    // Guard: bare/relative hrefs (e.g. Chinese text used as link target) would
+    // trigger Next.js client-side navigation to a non-existent route → 404.
+    // Render them as plain styled text instead.
+    const isSafeHref =
+      !href ||
+      href.startsWith('http://') ||
+      href.startsWith('https://') ||
+      href.startsWith('mailto:') ||
+      href.startsWith('#') ||
+      href.startsWith('/') ||
+      href.startsWith('action:')
+    if (!isSafeHref) {
+      return (
+        <span className="underline decoration-dotted cursor-default" title={href}>
+          {children}
+        </span>
+      )
+    }
+    return <a href={href} target="_blank" rel="noopener noreferrer" {...props}>{children}</a>
   }
 }
 

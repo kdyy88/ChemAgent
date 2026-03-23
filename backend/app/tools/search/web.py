@@ -15,6 +15,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import time
+
 import httpx
 from dotenv import load_dotenv
 
@@ -67,26 +69,36 @@ def web_search(query: str) -> ToolExecutionResult:
             artifacts=[],
         )
 
-    try:
-        response = httpx.post(
-            _SERPER_URL,
-            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
-            json={"q": query, "num": 8},
-            timeout=_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        data = response.json()
-    except httpx.TimeoutException:
+    _MAX_RETRIES = 3
+    last_exc: Exception | None = None
+    data: dict = {}
+    for attempt in range(_MAX_RETRIES):
+        try:
+            response = httpx.post(
+                _SERPER_URL,
+                headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+                json={"q": query, "num": 8},
+                timeout=_TIMEOUT_SECONDS,
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+            data = response.json()
+            break
+        except (httpx.TimeoutException, httpx.HTTPError) as exc:
+            last_exc = exc
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(0.5)
+    else:
+        if isinstance(last_exc, httpx.TimeoutException):
+            return ToolExecutionResult(
+                status="error",
+                summary=f"Web search timed out after {_TIMEOUT_SECONDS}s for query: {query}",
+                data={"query": query},
+                artifacts=[],
+            )
         return ToolExecutionResult(
             status="error",
-            summary=f"Web search timed out after {_TIMEOUT_SECONDS}s for query: {query}",
-            data={"query": query},
-            artifacts=[],
-        )
-    except httpx.HTTPError as exc:
-        return ToolExecutionResult(
-            status="error",
-            summary=f"Web search request failed: {exc}",
+            summary=f"Web search request failed: {last_exc}",
             data={"query": query},
             artifacts=[],
         )

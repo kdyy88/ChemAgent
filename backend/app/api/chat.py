@@ -312,3 +312,15 @@ async def websocket_chat(websocket: WebSocket) -> None:
 
     except WebSocketDisconnect:
         return
+    except Exception as exc:
+        try:
+            await websocket.send_json(
+                EventEnvelope(
+                    type="run.failed",
+                    session_id=locals().get("session_id"),
+                    payload={"error": f"[Backend] {exc}"},
+                ).to_wire()
+            )
+        except Exception:
+            pass
+        return

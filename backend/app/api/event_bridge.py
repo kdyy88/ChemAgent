@@ -422,9 +422,9 @@ async def stream_synthesis_async(
     synthesis_prompt, system_message, llm_config = synthesis_factory(summaries)
     cfg = llm_config.config_list[0]
 
-    client_kwargs: dict = {"api_key": cfg["api_key"]}
+    client_kwargs: dict = {"api_key": str(cfg["api_key"])}
     if "base_url" in cfg:
-        client_kwargs["base_url"] = cfg["base_url"]
+        client_kwargs["base_url"] = str(cfg["base_url"])
     client = AsyncOpenAI(**client_kwargs)
 
     try:
