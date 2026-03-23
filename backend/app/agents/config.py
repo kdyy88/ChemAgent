@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import os
+import threading
 import warnings
 from pathlib import Path
 from typing import Any
 
+from autogen import LLMConfig
 from dotenv import load_dotenv
 
 
 _DEFAULT_MODEL = "gpt-4o-mini"
 _ENV_LOADED = False
+_ENV_LOCK = threading.Lock()
 
 # Allowlist of models known to fully support system prompts + tool calling.
 # If a user supplies a model not in this set the backend logs a warning and
@@ -41,7 +44,7 @@ def _load_environment() -> None:
     _ENV_LOADED = True
 
 
-def build_llm_config(model: str | None = None) -> dict[str, list[dict[str, Any]]]:
+def build_llm_config(model: str | None = None) -> LLMConfig:
     _load_environment()
 
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -71,8 +74,11 @@ def build_llm_config(model: str | None = None) -> dict[str, list[dict[str, Any]]
         else:
             print(f"[*] 已检测到并挂载自定义 BASE_URL: {normalized_base_url}")
 
-    return {"config_list": [config]}
+    # LLMConfig wraps a single flat config dict — the modern AG2 typed API.
+    # ConversableAgent accepts LLMConfig directly; synthesis (event_bridge) reads
+    # .config_list[0] for raw api_key / base_url / model access.
+    return LLMConfig(config)
 
 
-def get_fast_llm_config() -> dict[str, list[dict[str, Any]]]:
+def get_fast_llm_config() -> LLMConfig:
     return build_llm_config(os.environ.get("FAST_MODEL", _DEFAULT_MODEL))

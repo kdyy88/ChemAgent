@@ -1,0 +1,53 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Backend (uvicorn debug)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "app.main:app",
+        "--reload",
+        "--host", "0.0.0.0",
+        "--port", "8000"
+      ],
+      "cwd": "${workspaceFolder}/backend",
+      "python": "${workspaceFolder}/backend/.venv/bin/python",
+      "justMyCode": false,
+      "presentation": {
+        "group": "chem-agent",
+        "order": 1
+      }
+    },
+    {
+      "name": "Frontend (Next.js)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev"],
+      "cwd": "${workspaceFolder}/frontend",
+      "serverReadyAction": {
+        "pattern": "Local:\\s+http://localhost:(\\d+)",
+        "uriFormat": "http://localhost:%s",
+        "action": "openExternally"
+      },
+      "skipFiles": ["<node_internals>/**"],
+      "presentation": {
+        "group": "chem-agent",
+        "order": 2
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "🚀 ChemAgent (Full Stack)",
+      "configurations": ["Backend (uvicorn debug)", "Frontend (Next.js)"],
+      "stopAll": true,
+      "presentation": {
+        "group": "chem-agent",
+        "order": 0
+      }
+    }
+  ]
+}

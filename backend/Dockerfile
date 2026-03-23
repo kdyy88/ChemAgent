@@ -29,6 +29,9 @@ COPY --from=builder /app /app
 
 EXPOSE 3030
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:3030/api/health')" || exit 1
+
 # 2 workers: Balances the 4 CPU cores with the strict 4GB RAM limit.
 # Leaves enough memory headroom for the OS and potential frontend services.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3030", "--workers", "2"]

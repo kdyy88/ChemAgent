@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
+from autogen import ConversableAgent, LLMConfig
 from autogen.io.run_response import RunResponseProtocol
+
+if TYPE_CHECKING:
+    from autogen.tools import Tool
 
 
 def today_str() -> str:
@@ -14,15 +18,30 @@ def today_str() -> str:
 
 @dataclass
 class AgentTeam:
-    manager: object
-    router: object
-    router_trigger: object
-    visualizer: object
-    visualizer_executor: object
-    researcher: object
-    researcher_executor: object
-    analyst: object
-    analyst_executor: object
+    """Transient bundle of AG2 agent objects for a single WebSocket turn.
+
+    Refactored from v1 (9 objects: manager + 3×(assistant+executor) + router pair)
+    to the modern single-agent pattern (6 objects: router + 3×(agent+tools)).
+
+    Router is now a plain ConversableAgent — no UserProxyAgent trigger needed.
+    Sessions call router.run(max_turns=1) and exhaust events to obtain .summary.
+    Specialists use ConversableAgent.run(tools=...) so ag2's built-in
+    _create_or_get_executor handles tool invocations internally.
+    The dead ``manager`` AssistantAgent has been removed — synthesis goes through
+    raw AsyncOpenAI (stream_synthesis_async) which bypasses AG2 entirely.
+
+    Created at the start of each turn and deleted (``del team``) after streaming
+    completes so Python GC can reclaim memory immediately (~6 objects vs ~9).
+    """
+    # Router: single ConversableAgent, single-shot run() (modern AG2 pattern)
+    router: ConversableAgent
+    # Specialist agents + their Tool lists for runtime execution
+    visualizer: ConversableAgent
+    visualizer_tools: list["Tool"]
+    researcher: ConversableAgent
+    researcher_tools: list["Tool"]
+    analyst: ConversableAgent
+    analyst_tools: list["Tool"]
 
 
 @dataclass
@@ -39,7 +58,7 @@ class MultiAgentRunPlan:
     routing_rationale: str
     phase2_items: list[tuple[str, RunResponseProtocol]]
     # Returns (synthesis_prompt, system_message, llm_config) for direct streaming.
-    synthesis_factory: Callable[[list[SpecialistSummary]], tuple[str, str, dict]]
+    synthesis_factory: Callable[[list[SpecialistSummary]], tuple[str, str, LLMConfig]]
 
 
 def format_turn_history(history: list[dict[str, str]], limit: int = 3) -> str:

@@ -6,25 +6,20 @@ Responsible for:
   - Validating SMILES strings using RDKit
   - Computing Lipinski Rule-of-5 parameters (MW, LogP, HBD, HBA)
   - Reporting TPSA as a display-only reference value
-  - Generating a 2D structure image embedded in the JSON artifact
 
-Tools registered: name == "analyze_molecule_from_smiles"
-
-Design principle (Agentic UI / Phase 2):
-  The underlying computation is identical to the Phase 1 deterministic REST
-  endpoint (`POST /api/chem/analyze`). The Analyst agent wraps it as an
-  AI-callable tool so the multi-agent pipeline can invoke the same logic
-  when the user describes their intent in natural language via the chat UI.
+Returns (ConversableAgent, list[Tool]) via the modern single-agent pattern:
+  agent.run(message=..., tools=tools) — the temp-executor handles tool invocation.
 """
 
-from autogen import AssistantAgent, UserProxyAgent
+from autogen import ConversableAgent
+from autogen.tools import Tool
 
 from app.agents.config import build_llm_config
-from app.agents.factory import create_tool_agent_pair, describe_tools, get_tool_specs
+from app.agents.factory import create_specialist_agent, describe_tools, get_tool_specs
 
 
 def _build_system_message() -> str:
-    specs = get_tool_specs(lambda spec: spec.name == "analyze_molecule_from_smiles")
+    specs = get_tool_specs(lambda spec: spec.category == "analysis")
     tool_descriptions = describe_tools(specs)
 
     return f"""你是一名专业的计算药物化学家，专门评估小分子候选药物的成药性（Drug-likeness）。
@@ -59,15 +54,21 @@ def _build_system_message() -> str:
 - 完成后在消息末尾追加 TERMINATE。"""
 
 
-def create_analyst(model: str | None = None) -> tuple[AssistantAgent, UserProxyAgent]:
-    """创建并返回 Analyst 专家智能体对 (assistant, executor)。"""
+def create_analyst(model: str | None = None) -> tuple[ConversableAgent, list[Tool]]:
+    """Create and return the Analyst specialist (agent, tools).
+
+    Pluggable: selects all tools with category="analysis" from the registry.
+    Currently includes:
+      - analyze_molecule_from_smiles  (RDKit Lipinski / descriptors analysis)
+    Any future analysis tool added to tools/ will be auto-discovered and
+    assigned here without editing this file.
+    """
     llm_config = build_llm_config(model)
-    specs = get_tool_specs(lambda spec: spec.name == "analyze_molecule_from_smiles")
-    return create_tool_agent_pair(
-        assistant_name="Analyst",
-        executor_name="Analyst_Executor",
+    specs = get_tool_specs(lambda spec: spec.category == "analysis")
+    return create_specialist_agent(
+        name="Analyst",
         system_message=_build_system_message(),
         llm_config=llm_config,
         specs=specs,
-        max_consecutive_auto_reply=3,
+        max_consecutive_auto_reply=6,  # tool call + possible follow-up + summary
     )

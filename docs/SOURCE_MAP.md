@@ -666,3 +666,21 @@ Phase 2 占位。待 REST 端点充分验证后实现：
 - 想改最终气泡渲染：看 `frontend/components/chat/MessageBubble.tsx`
 - 想改思考日志 / 溯源徽章：看 `frontend/components/chat/ThinkingLog.tsx`
 - 想调用 Open Babel REST 端点（前端）：看 `frontend/lib/chem-api.ts`
+- 想改 Redis 连接/连接池配置：看 `backend/app/core/redis_client.py`
+- 想改全局线程池大小：看 `backend/app/core/executor.py`
+- 想改限流策略：看 `backend/app/core/limiter.py`
+- 想查健康检查逻辑：看 `backend/app/api/health.py`
+- 想加 ARQ 异步任务：看 `backend/app/workers/chem_tasks.py` + `backend/app/workers/main.py`
+
+---
+
+## 14. v2 新增文件索引
+
+| 文件 | 职责 | 关键符号 |
+|---|---|---|
+| `backend/app/core/redis_client.py` | 异步 Redis 连接池 (max 100) + 同步客户端 (max 50) | `init_redis`, `get_redis`, `get_sync_redis`, `close_redis` |
+| `backend/app/core/executor.py` | 全局有界线程池 IO_POOL | `IO_POOL` (ThreadPoolExecutor, 16 workers) |
+| `backend/app/core/limiter.py` | slowapi 限流器 + Redis 存储 | `limiter`, `CHAT_RATE`, `COMPUTE_RATE` |
+| `backend/app/api/health.py` | 基础设施健康检查端点 | `GET /api/health`, `GET /api/health/queue` |
+| `backend/app/workers/chem_tasks.py` | ARQ 异步任务函数（重计算） | `task_build_3d_conformer`, `task_prepare_pdbqt`, `task_compute_descriptors` |
+| `backend/app/workers/main.py` | ARQ WorkerSettings 入口 | `WorkerSettings` (max_jobs=4, timeout=120s) |

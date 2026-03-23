@@ -1,37 +1,42 @@
 """
-Open Babel REST endpoints — Phase 1 (standalone API, no agents).
+Open Babel REST endpoints — v2 concurrent architecture.
 
-Route handlers delegate entirely to ``app.chem.babel_ops`` — no chemistry
-logic lives here.  Route handlers are synchronous ``def`` (not ``async``) so
-FastAPI dispatches Open Babel's blocking C++ calls through its thread-pool executor.
+Light endpoints (convert, properties, partial-charges, formats, sdf-split,
+sdf-merge) remain synchronous FastAPI handlers — Open Babel's C++ calls are
+fast enough that blocking the thread-pool is acceptable.
+
+Heavy endpoints (conformer3d, pdbqt) run in asyncio.to_thread() so the
+event loop is never blocked, but results are returned synchronously in the
+same HTTP request.  The previous ARQ-queue pattern was removed because the
+frontend expects a synchronous 200 response — it does not implement polling.
 
 Routes (all under the /api prefix added in main.py):
-  POST /api/babel/convert         — Tool 1: universal format converter
-  POST /api/babel/conformer3d     — Tool 2: 3D conformer builder (+ energy)
-  POST /api/babel/pdbqt           — Tool 3: docking PDBQT prep
-  POST /api/babel/properties      — T7: molecular properties
-  GET  /api/babel/formats         — Utility: supported format list
-  POST /api/babel/partial-charges — F2: atom partial charge analysis
-  POST /api/babel/sdf-split       — F3: split multi-mol SDF → ZIP
-  POST /api/babel/sdf-merge       — F3: merge multiple SDF → single SDF
-
-Always returns HTTP 200. Use ``is_valid`` to distinguish success from failure.
+  POST /api/babel/convert           — universal format converter (sync)
+  POST /api/babel/conformer3d       — 3D conformer builder (sync, threaded)
+  POST /api/babel/pdbqt             — docking PDBQT prep   (sync, threaded)
+  POST /api/babel/properties        — molecular properties (sync)
+  GET  /api/babel/formats           — supported format list (sync)
+  POST /api/babel/partial-charges   — atom partial charges (sync)
+  POST /api/babel/sdf-split         — split multi-mol SDF → ZIP (async upload)
+  GET  /api/babel/sdf-split-download
+  POST /api/babel/sdf-merge         — merge SDF files (async upload)
+  GET  /api/babel/sdf-merge-download
 """
 
 from __future__ import annotations
 
+import asyncio
+import io
+
 from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-import io
 
 from app.chem.babel_ops import (
-    build_3d_conformer,
     compute_mol_properties,
     compute_partial_charges,
     convert_format,
     list_supported_formats,
-    prepare_pdbqt,
     sdf_merge,
     sdf_split,
 )
@@ -76,7 +81,7 @@ class PartialChargeRequest(BaseModel):
     method: str = Field("gasteiger", description="Charge model: gasteiger, mmff94, qeq, eem")
 
 
-# ── Route handlers ────────────────────────────────────────────────────────────
+# ── Sync light endpoints ──────────────────────────────────────────────────────
 
 
 def convert(req: ConvertRequest) -> dict:
@@ -84,46 +89,59 @@ def convert(req: ConvertRequest) -> dict:
     return convert_format(req.molecule, req.input_format, req.output_format)
 
 
-def conformer3d(req: Conformer3DRequest) -> dict:
-    """Generate a force-field-optimised 3D conformer (now includes energy)."""
-    return build_3d_conformer(req.smiles, req.name, req.forcefield, req.steps)
-
-
-def pdbqt(req: DockingPrepRequest) -> dict:
-    """Prepare a ligand PDBQT file for AutoDock-family docking."""
-    return prepare_pdbqt(req.smiles, req.name, req.ph)
-
-
 def properties(req: MolPropertiesRequest) -> dict:
-    """T7: Compute core molecular properties using OpenBabel."""
+    """Compute core molecular properties using OpenBabel."""
     return compute_mol_properties(req.smiles)
 
 
 def partial_charges(req: PartialChargeRequest) -> dict:
-    """F2: Compute per-atom partial charges."""
+    """Compute per-atom partial charges."""
     return compute_partial_charges(req.smiles, req.method)
 
 
 def formats() -> dict:
-    """Utility: List all supported input and output formats."""
+    """List all supported input and output formats."""
     return list_supported_formats()
 
 
-# ── File-based route handlers (multipart) ─────────────────────────────────────
+# ── Heavy endpoints — synchronous, run in thread (asyncio.to_thread) ─────────
+# build_3d_conformer and prepare_pdbqt are CPU-bound Open Babel calls.
+# asyncio.to_thread offloads them without blocking the event loop.
+# The frontend already handles synchronous 200 responses; no polling required.
+
+
+async def conformer3d(req: Conformer3DRequest) -> dict:
+    """Generate a 3D conformer synchronously (runs Babel in a thread)."""
+    from app.chem.babel_ops import build_3d_conformer
+    return await asyncio.to_thread(
+        build_3d_conformer,
+        req.smiles,
+        req.name,
+        req.forcefield,
+        req.steps,
+    )
+
+
+async def pdbqt(req: DockingPrepRequest) -> dict:
+    """Prepare a docking PDBQT file synchronously (runs Babel in a thread)."""
+    from app.chem.babel_ops import prepare_pdbqt
+    return await asyncio.to_thread(
+        prepare_pdbqt,
+        req.smiles,
+        req.name,
+        req.ph,
+    )
+
+
+# ── File-based endpoints (multipart) ──────────────────────────────────────────
 
 
 async def handle_sdf_split(file: UploadFile = File(...)):
-    """F3-Split: Upload a multi-molecule SDF → receive ZIP of individual SDFs.
-
-    Returns the JSON report with molecule list. Download ZIP via /sdf-split-download.
-    """
+    """Upload a multi-molecule SDF → receive JSON report. Download ZIP separately."""
     content = (await file.read()).decode("utf-8", errors="replace")
     result = sdf_split(content)
 
-    # Strip zip_bytes from the JSON response — it's served via download endpoint
     zip_bytes = result.pop("zip_bytes", b"")
-
-    # Store zip in a module-level cache for the download endpoint
     _SDF_SPLIT_CACHE["latest_zip"] = zip_bytes
     _SDF_SPLIT_CACHE["filename"] = (file.filename or "split").replace(".sdf", "") + "_split.zip"
 
@@ -146,10 +164,7 @@ async def handle_sdf_split_download():
 
 
 async def handle_sdf_merge(files: list[UploadFile] = File(...)):
-    """F3-Merge: Upload multiple SDF files → receive merged single SDF.
-
-    Returns JSON with merged molecule count. Download SDF via /sdf-merge-download.
-    """
+    """Upload multiple SDF files → receive merged single SDF."""
     sdf_contents = []
     for f in files:
         content = (await f.read()).decode("utf-8", errors="replace")
@@ -179,19 +194,19 @@ async def handle_sdf_merge_download():
     )
 
 
-# Simple in-memory cache for latest batch results (single-user dev environment)
 _SDF_SPLIT_CACHE: dict = {}
 _SDF_MERGE_CACHE: dict = {}
 
 
-# ── Register all routes ───────────────────────────────────────────────────────
+# ── Register routes ───────────────────────────────────────────────────────────
+
 router.add_api_route("/convert",              convert,                    methods=["POST"])
 router.add_api_route("/conformer3d",          conformer3d,                methods=["POST"])
-router.add_api_route("/pdbqt",                pdbqt,                     methods=["POST"])
-router.add_api_route("/properties",           properties,                methods=["POST"])
-router.add_api_route("/partial-charges",      partial_charges,           methods=["POST"])
-router.add_api_route("/formats",              formats,                   methods=["GET"])
-router.add_api_route("/sdf-split",            handle_sdf_split,          methods=["POST"])
-router.add_api_route("/sdf-split-download",   handle_sdf_split_download, methods=["GET"])
-router.add_api_route("/sdf-merge",            handle_sdf_merge,          methods=["POST"])
-router.add_api_route("/sdf-merge-download",   handle_sdf_merge_download, methods=["GET"])
+router.add_api_route("/pdbqt",                pdbqt,                      methods=["POST"])
+router.add_api_route("/properties",           properties,                 methods=["POST"])
+router.add_api_route("/partial-charges",      partial_charges,            methods=["POST"])
+router.add_api_route("/formats",              formats,                    methods=["GET"])
+router.add_api_route("/sdf-split",            handle_sdf_split,           methods=["POST"])
+router.add_api_route("/sdf-split-download",   handle_sdf_split_download,  methods=["GET"])
+router.add_api_route("/sdf-merge",            handle_sdf_merge,           methods=["POST"])
+router.add_api_route("/sdf-merge-download",   handle_sdf_merge_download,  methods=["GET"])

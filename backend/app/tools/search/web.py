@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import requests
+import httpx
 from dotenv import load_dotenv
 
 from app.core.tooling import ToolExecutionResult, tool_registry
@@ -68,7 +68,7 @@ def web_search(query: str) -> ToolExecutionResult:
         )
 
     try:
-        response = requests.post(
+        response = httpx.post(
             _SERPER_URL,
             headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
             json={"q": query, "num": 8},
@@ -76,14 +76,14 @@ def web_search(query: str) -> ToolExecutionResult:
         )
         response.raise_for_status()
         data = response.json()
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return ToolExecutionResult(
             status="error",
             summary=f"Web search timed out after {_TIMEOUT_SECONDS}s for query: {query}",
             data={"query": query},
             artifacts=[],
         )
-    except requests.exceptions.RequestException as exc:
+    except httpx.HTTPError as exc:
         return ToolExecutionResult(
             status="error",
             summary=f"Web search request failed: {exc}",

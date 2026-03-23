@@ -1,44 +1,378 @@
-# 🌟 Context Initialization: ChemAgent Project (AIDD Multi-Agent System)
+# ChemAgent — Project Context (AI Onboarding Reference)
 
-你好！我们需要继续开发当前的化学多智能体项目。为了让你快速了解上下文，以下是当前项目的架构设计、技术栈和已完成的功能清单：
+> **Purpose**: This document gives any new AI assistant or developer an accurate,
+> complete picture of ChemAgent's architecture, conventions, and current state.
+> Read this before making any changes.
+>
+> **Last updated**: 2026-03-24 (v2.2.0)
 
-## 1. 技术栈 (Tech Stack)
-* **后端 (Backend)**: Python 3.12+, FastAPI, `uv` (包管理)
-* **前端 (Frontend)**: Next.js (App Router), React, Tailwind CSS, Shadcn UI, Zustand (状态管理)
-* **Agent 框架**: AG2 (`ag2` 包，非微软 `autogen-agentchat`)
-* **化学引擎**: RDKit, Open Babel (`openbabel-wheel`)
-* **可视化编排**: Waldiez (`@waldiez/react` + `waldiez` python 包)
+---
 
-## 2. 核心系统架构 (Core Architecture)
-项目采用了**高内聚、插件化**的白盒多智能体架构，并在前端实现了现代化的 **三栏 IDE 响应式工作台**：
+## 1. What Is ChemAgent?
 
-### 2.1 后端多智能体路由 (Three-Phase Routing)
-Manager 接收请求 -> 路由给对应的 Specialist (专家智能体，如 Visualizer, Analyst, Preparator) -> 并行执行 -> Manager 综合输出最终 Markdown 回答。
+ChemAgent is an AI-driven drug-discovery assistant. It combines:
 
-### 2.2 前端三栏 IDE 布局 (v2.0 Workspace Layout)
-基于 `react-resizable-panels` 实现了灵活的 15/60/25 拆分：
-* **区域 A: 导航侧边栏 ([ToolSidebar.tsx](cci:7://file:///home/administrator/chem-agent-project/frontend/components/workspace/ToolSidebar.tsx:0:0-0:0) / 15%)**
-  复刻了 VS Code 的双态侧边栏（50px 宽度 Activity Bar + 展开的二级 Tree Menu），支持按“底层软件 (RDKit/Babel)”和“业务场景 (数据准备/生信对接)”双重维度切换功能流。
-* **区域 B: 主操作工作台 ([WorkspaceArea.tsx](cci:7://file:///home/administrator/chem-agent-project/frontend/components/workspace/WorkspaceArea.tsx:0:0-0:0) / 60%)**
-  承载确定性的化学专业表单。最新版本已扩充至 **12 大专业化学工具**，覆盖四大领域：
-  - 数据清洗（SMILES 验证、脱盐与中和）
-  - 物化性质（综合描述符与 Lipinski、原子偏电荷）
-  - 结构分析（指纹相似度、子结构与 PAINS、Murcko 骨架）
-  - 3D 与对接处理（万能格式转换、力场 3D 构象并提取能量、PDBQT准备、SDF 高通量文件拆分合并）
-  所有组件高度复用 `<ToolLayout>`，UI 加入了 `max-w-4xl` 版心约束以保障阅读体验。
-* **区域 C: AI Copilot ([CopilotSidebar.tsx](cci:7://file:///home/administrator/chem-agent-project/frontend/components/chat/CopilotSidebar.tsx:0:0-0:0) / 25%)**
-  停靠在屏幕最右侧的智能体对话面板。
+- A **FastAPI backend** running a pluggable multi-agent pipeline (AG2 0.11.4)
+- A **Next.js frontend** providing a three-panel IDE-style workspace with an
+  embedded AI Copilot chat panel
+- **RDKit** and **Open Babel** for cheminformatics operations
+- **Redis** (Docker Compose) for session storage and async task queuing (arq)
 
-## 3. 已实现的黑魔法机制 (Core Mechanics)
+Users interact via natural language in the chat panel. The backend routes the
+request to specialist agents, each with domain-specific tools, and streams the
+synthesised answer back over WebSocket.
 
-### 3.1 隐式上下文穿透 (Context Injection)
-彻底打通了左右两侧的阻隔！用户在右侧 Copilot 输入纯自然语言时（如“帮我看看这个分子的毒性”），[ChatInput.tsx](cci:7://file:///home/administrator/chem-agent-project/frontend/components/chat/ChatInput.tsx:0:0-0:0) 会在底层自动调取 Zustand 状态库中的 `currentSmiles` 和 `activeFunctionId`，拼接成隐式的系统级提示语（`[系统附加信息：用户当前正在 xxx 功能操作分子：xxx]`）发给后端，AI 因此拥有了“视觉”。
+---
 
-### 3.2 Actionable UI (前端 Markdown 的逆向操纵)
-赋能前端闭环互动：赋予 AI 生成 `<ApplySmiles smiles="..." />` 自定义标签的能力。前端 Markdown 渲染器会拦截该标签，将其渲染为可交互的 Shadcn `<Button>`。用户点击后，会直接触发 `Zustand.setSmiles()`，从而自动改变中栏工作台的输入框内容，达成“AI 建议 -> 自动落表”的体验。
+## 2. Tech Stack
 
-### 3.3 极简原生交互 (Elegant Implementation)
-在表单重构中，极其注重视图解耦与性能。果断抛弃了臃肿的第三方树状组件和 Select 交互状态，直接使用 Tailwind 手写侧边树，并使用原生 HTML5 的 `<input list="...">` 联合 `<datalist>` 极简实现了“既支持下拉选择，又支持手写”的双态格式选择器。
+| Layer | Technology | Notes |
+|---|---|---|
+| Language | Python 3.12 | `uv` for package management |
+| Web framework | FastAPI | uvicorn with lifespan |
+| Agent framework | `ag2` 0.11.4 | NOT `autogen-agentchat`; package import is `autogen` |
+| LLM config | `autogen.LLMConfig` | Never use raw dict — see §7 |
+| Cheminformatics | RDKit, openbabel-wheel | Wrapped in `app/chem/` |
+| Session / queue | Redis 7-alpine | Docker Compose only; `arq` workers |
+| Frontend | Next.js 14 (App Router) | pnpm, Tailwind CSS, Shadcn UI, Zustand |
+| State management | Zustand | `chatStore.ts`, `workspaceStore.ts` |
+| Container / infra | Docker Compose, Nginx | `compose.yaml`, `deploy/nginx/` |
 
-## 4. 当前目标 (Current Objective)
-请阅读并理解以上系统状态。我们的前后端管道已打通，前端形态确立为三栏专业 IDE 级视图。我们将基于此进行下一步的深度开发或特性追加。
+---
+
+## 3. Repository Layout
+
+```
+chem-agent-project/
+├── backend/
+│   └── app/
+│       ├── main.py              # FastAPI app + lifespan (tool registry init)
+│       ├── agents/              # AG2 agent construction
+│       │   ├── config.py        # build_llm_config() → LLMConfig
+│       │   ├── factory.py       # create_specialist_agent(), create_router_agent()
+│       │   ├── manager.py       # create_routing_agent(), SYNTHESIS_SYSTEM_MESSAGE
+│       │   └── specialists/     # visualizer.py, researcher.py, analyst.py
+│       ├── api/                 # FastAPI routers + orchestration engine
+│       │   ├── chat.py          # WebSocket /ws/{session_id}
+│       │   ├── sessions.py      # Three-phase per-turn orchestration
+│       │   ├── runtime.py       # AgentTeam, MultiAgentRunPlan dataclasses
+│       │   ├── event_bridge.py  # AG2 events → WebSocket frames + synthesis streaming
+│       │   ├── rdkit_api.py     # /rdkit/* REST endpoints
+│       │   ├── babel_api.py     # /babel/* REST endpoints
+│       │   └── health.py        # /health
+│       ├── chem/                # Pure-Python chem wrappers (no AG2)
+│       │   ├── rdkit_ops.py     # RDKit operations
+│       │   └── babel_ops.py     # Open Babel operations
+│       ├── core/
+│       │   ├── tooling.py       # ToolRegistry, ToolSpec, @tool_registry.register
+│       │   ├── redis_client.py  # AsyncRedis Protocol
+│       │   ├── executor.py      # Specialist run helper
+│       │   ├── limiter.py       # Rate limiter
+│       │   └── network.py       # HTTP client helpers
+│       ├── tools/               # Pluggable tool packages (auto-discovered)
+│       │   ├── rdkit/           # category="analysis" + "visualization"
+│       │   ├── pubchem/         # category="retrieval"
+│       │   ├── search/          # category="retrieval"
+│       │   └── babel/           # category="conversion", "3d", "docking" (future)
+│       └── workers/             # arq background workers
+├── frontend/
+│   ├── app/                     # Next.js App Router pages
+│   │   ├── page.tsx             # Root → chat UI
+│   │   └── workflow/page.tsx    # (Agent flow editor, experimental)
+│   ├── components/
+│   │   ├── chat/                # ChatInput, MessageList, MoleculeCard, etc.
+│   │   ├── workspace/           # Three-panel IDE layout, tool forms
+│   │   └── ui/                  # Shadcn UI primitives
+│   ├── hooks/useChemAgent.ts    # WebSocket hook — primary data flow
+│   ├── lib/chem-api.ts          # REST client for /rdkit, /babel endpoints
+│   ├── store/chatStore.ts       # Zustand: messages, session, streaming state
+│   └── store/workspaceStore.ts  # Zustand: currentSmiles, activeFunctionId
+└── docs/
+    ├── Context.md               # ← This file
+    ├── CHANGELOG.md             # Versioned change history
+    ├── ARCHITECTURE.md          # Deep architecture notes
+    ├── API.md                   # REST + WebSocket API reference
+    └── SOURCE_MAP.md            # File-by-file responsibility map
+```
+
+---
+
+## 4. Three-Phase Orchestration Pipeline
+
+Every user turn runs three sequential phases in `backend/app/api/sessions.py`.
+
+### Phase 1 — Routing
+
+```
+Router (single ConversableAgent)
+  .run(message=routing_prompt, max_turns=1, silent=True)
+  → JSON: {"specialists": ["visualizer", "researcher"]}
+```
+
+- Router is a single `ConversableAgent` created by `create_routing_agent()` in `manager.py`.
+- Uses `max_turns=1`; events exhausted with `for _ in result.events: pass` to make `result.summary` available.
+- Routing decision is parsed from `result.summary`.
+- Routing system message (`_ROUTING_SYSTEM_MESSAGE`) describes all specialists and their tool capabilities.
+
+### Phase 2 — Parallel Specialist Execution
+
+```
+For each selected specialist (visualizer / researcher / analyst):
+  agent.run(message=specialist_prompt, tools=tools, max_turns=...)
+  → SpecialistSummary(role, summary, tool_calls, images)
+```
+
+- Specialists run concurrently via `asyncio.gather`.
+- Tools are passed into `.run(tools=...)` — **never pre-registered** before calling `.run()`.
+- Each specialist receives only the tools whose `category` matches its predicate.
+- Events are forwarded to the WebSocket in real time via `event_bridge.py`.
+
+### Phase 3 — Synthesis
+
+```
+AsyncOpenAI(streaming=True)
+  prompt = SYNTHESIS_SYSTEM_MESSAGE + all specialist summaries
+  → Markdown stream back to WebSocket
+```
+
+- Phase 3 **intentionally bypasses AG2** and calls the LLM API directly for full streaming control.
+- `stream_synthesis_async()` in `event_bridge.py` constructs the client from `LLMConfig`.
+
+---
+
+## 5. Pluggable Tool Registry
+
+### Registration (`app/core/tooling.py`)
+
+```python
+@tool_registry.register(
+    name="analyze_molecule_from_smiles",
+    category="analysis",
+    tags=["rdkit", "lipinski", "descriptors"],
+    description="...",
+    output_kinds=["json"],
+)
+def analyze_molecule_from_smiles(smiles: str) -> dict: ...
+```
+
+Tools are discovered automatically at startup via `pkgutil.walk_packages` over the `app/tools/` namespace. The `@tool_registry.register()` decorator fires when the module is imported, adding a `ToolSpec` to `ToolRegistry._tools`.
+
+### Specialist → Category Mapping
+
+| Specialist | Predicate | Tools (v2.2.0) |
+|---|---|---|
+| Visualizer | `spec.category == "visualization"` | `draw_molecules_by_name`, `generate_2d_image_from_smiles` |
+| Researcher | `spec.category == "retrieval"` | `web_search`, `get_smiles_by_name` |
+| Analyst | `spec.category == "analysis"` | `analyze_molecule_from_smiles` |
+
+### Adding a New Tool (Zero Existing-File Edits)
+
+1. Create a new file in `backend/app/tools/<package>/your_tool.py`.
+2. Decorate with `@tool_registry.register(category="<category>", ...)`.
+3. The tool is auto-discovered at startup and routed to the matching specialist automatically.
+
+### Future: Babel-Tool Categories
+
+Future tools in `app/tools/babel/` should use these category strings:
+
+| Category | Meaning |
+|---|---|
+| `"conversion"` | Format conversion (SDF↔SMILES, MOL2, PDB…) |
+| `"3d"` | 3D conformer generation, energy minimization |
+| `"docking"` | PDBQT preparation, docking setup |
+
+A future **Preparator** specialist would use `spec.category in {"conversion", "3d", "docking"}` and require no edits to the existing three specialist files.
+
+---
+
+## 6. Agent Construction API (AG2 0.11.4)
+
+### LLMConfig — ALWAYS use; NEVER pass raw dict
+
+```python
+from autogen import LLMConfig
+
+# Correct — flat dict positional arg
+llm_config = LLMConfig({"model": "gpt-4o", "api_key": "sk-..."})
+
+# Wrong — keyword arg not supported in 0.11.4
+# llm_config = LLMConfig(config_list=[{"model": "..."}])  # TypeError
+
+# Wrong — never pass dict directly to an agent
+# agent = ConversableAgent(llm_config={"config_list": [...]})
+```
+
+Accessing values:
+
+```python
+# llm_config.config_list[0] returns a dict-like object
+model    = llm_config.config_list[0]["model"]
+api_key  = llm_config.config_list[0]["api_key"]
+base_url = llm_config.config_list[0].get("base_url")
+```
+
+### ConversableAgent — the only agent class to use for new code
+
+```python
+from autogen import ConversableAgent
+
+router = ConversableAgent(
+    name="Manager_Router",
+    system_message="...",
+    llm_config=llm_config,          # LLMConfig object
+    max_consecutive_auto_reply=1,
+    human_input_mode="NEVER",
+    code_execution_config=False,
+)
+```
+
+### Running an Agent
+
+```python
+# Single-shot routing
+result = router.run(
+    message=routing_prompt,
+    max_turns=1,
+    clear_history=True,
+    summary_method="last_msg",
+    silent=True,
+)
+for _ in result.events:             # exhaust queue → populates result.summary
+    pass
+decision = result.summary or ""
+
+# Specialist with tools (passed at call time, not at construction)
+result = specialist.run(
+    message=task_prompt,
+    tools=tools,
+    max_turns=10,
+    silent=True,
+)
+```
+
+### Deprecated patterns — DO NOT USE
+
+| Pattern | Replacement |
+|---|---|
+| `AssistantAgent` | `ConversableAgent` |
+| `UserProxyAgent` | Not needed for routing |
+| `initiate_chat(target, ...)` | `agent.run(message=..., max_turns=N)` |
+| `result.process()` | `for _ in result.events: pass` (prints to console) |
+| `AssistantAgent + UserProxyAgent` pair for routing | Single `ConversableAgent.run()` |
+
+---
+
+## 7. LLM Configuration (`app/agents/config.py`)
+
+`build_llm_config(model)` reads `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, and `LLM_MODEL` from the environment and returns `LLMConfig({"model": ..., "api_key": ..., "base_url": ...})`.
+
+`get_fast_llm_config()` uses `FAST_MODEL` (defaults to `LLM_MODEL`) for the router's quick one-shot calls.
+
+Environment variables (`.env` in `backend/`):
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `OPENAI_API_KEY` | LLM API key | required |
+| `LLM_MODEL` | Primary model | `gpt-4o` |
+| `FAST_MODEL` | Router / fast calls | same as `LLM_MODEL` |
+| `OPENAI_BASE_URL` | Custom endpoint (OpenRouter, etc.) | not set |
+| `REDIS_URL` | Redis connection | `redis://localhost:6379/0` |
+
+---
+
+## 8. Redis
+
+- **Purpose**: HTTP session storage (turn history, model selections) + `arq` async task queue.
+- **Dev setup**: Docker Compose service `redis:7-alpine` on port 6379. System-level `redis-server` is disabled.
+- **Client**: `AsyncRedis` Protocol in `app/core/redis_client.py` — type-safe interface over `redis.asyncio`.
+- **Pinned**: `redis>=5.3,<6` due to `arq` compatibility constraint.
+
+---
+
+## 9. Frontend Architecture
+
+### Three-Panel IDE Workspace
+
+The workspace (Next.js App Router, `app/page.tsx`) is split with `react-resizable-panels`:
+
+| Panel | Default Width | Component | Purpose |
+|---|---|---|---|
+| A — Navigation | 15% | `ToolSidebar.tsx` | VS Code-style activity bar + tree menu |
+| B — Main workbench | 60% | `WorkspaceArea.tsx` | 12 professional chemistry tool forms |
+| C — AI Copilot | 25% | `CopilotSidebar.tsx` | Chat panel with streaming Markdown |
+
+### Key Mechanisms
+
+**Implicit Context Injection**: When the user types in the Copilot panel, `ChatInput.tsx` reads `currentSmiles` and `activeFunctionId` from Zustand and appends a hidden system annotation to the message (`[System context: user is operating molecule <SMILES> in tool <id>]`). This gives the AI "sight" of the current workspace state without the user doing anything extra.
+
+**Actionable UI (Markdown → Button)**: The AI can respond with custom tags like `<ApplySmiles smiles="CCO" />`. The Markdown renderer intercepts this and renders a Shadcn `<Button>`. On click it calls `zustand.setSmiles(smiles)`, updating the centre-panel form automatically — completing the AI-suggests → auto-apply loop.
+
+**WebSocket hook**: `hooks/useChemAgent.ts` manages the WebSocket connection to `ws://<host>/ws/{session_id}`. Server frames: `thinking`, `tool_call`, `tool_result`, `token`, `done`, `error`.
+
+### Chemistry Tool Forms (WorkspaceArea)
+
+Twelve tool forms across four domains, all using the shared `<ToolLayout>` component:
+
+| Domain | Tools |
+|---|---|
+| Data cleaning | SMILES validation, desalting & neutralization |
+| Physicochemical properties | Full descriptor + Lipinski panel, atomic partial charges |
+| Structure analysis | Fingerprint similarity, substructure & PAINS filter, Murcko scaffold |
+| 3D & docking | Format converter, 3D conformer + energy, PDBQT preparation, SDF batch split/merge |
+
+---
+
+## 10. Running Locally
+
+```bash
+# 1. Start Redis
+docker compose up redis -d
+
+# 2. Start backend
+cd backend
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+# 3. Start frontend (separate terminal)
+cd frontend
+pnpm dev
+```
+
+Or use the VS Code task **🚀 Start ChemAgent (Full Stack)** to launch both in parallel.
+
+---
+
+## 11. Conventions & Rules
+
+### Never Do
+
+| Rule | Reason |
+|---|---|
+| Pass raw `dict` as `llm_config` | AG2 0.11.4 requires `LLMConfig` object |
+| Pre-register tools before `.run()` | Pass tools into `.run(tools=...)` instead |
+| Use `initiate_chat()` | Replaced by `agent.run()` |
+| Use `AssistantAgent` or `UserProxyAgent` for new code | Use `ConversableAgent` |
+| Call `result.process()` | Prints to console; use `for _ in result.events: pass` |
+| Use name-exact predicates in specialists (`spec.name == "..."`) | Use `spec.category == "..."` for pluggability |
+| Subscript `llm_config["config_list"]` | Use attribute: `llm_config.config_list` |
+
+### Always Do
+
+| Rule | Reason |
+|---|---|
+| Register new tools with `category=` | Required for specialist routing |
+| Use `uv run` for Python commands | Ensures the correct virtualenv |
+| Import from `autogen` (not `pyautogen`) | Project uses `ag2` package which exposes `autogen` |
+| Keep `app/chem/` pure (no AG2) | Allows REST endpoints and agents to share chem logic |
+
+---
+
+## 12. Version History Summary
+
+| Version | Key Change |
+|---|---|
+| 2.2.0 | Category-based specialist predicates; single `ConversableAgent` router; `LLMConfig` migration |
+| 2.1.0 | Full AG2 migration (`ConversableAgent` throughout); Redis dev environment; bug fixes |
+| 2.0.0 | Three-panel IDE frontend; 12 chemistry tool forms; Actionable UI |
+| 1.x | Initial multi-agent prototype |
+
+Full details in [CHANGELOG.md](CHANGELOG.md).

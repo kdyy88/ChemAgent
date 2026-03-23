@@ -1,15 +1,69 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: chemagent-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+      --appendonly no
+    volumes:
+      - redis-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 576m
+        reservations:
+          memory: 64m
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  arq-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chemagent-arq-worker
+    restart: unless-stopped
+    command: ["uv", "run", "arq", "app.workers.main.WorkerSettings"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      REDIS_URL: redis://redis:6379/0
+      MALLOC_TRIM_THRESHOLD_: "65536"
+      PYTHONMALLOC: malloc
+    deploy:
+      resources:
+        limits:
+          memory: 768m     # 4 个并发化学计算任务的内存上限
+        reservations:
+          memory: 256m
+
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: chemagent-backend
     restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       SERPER_API_KEY: ${SERPER_API_KEY:-}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}
+      REDIS_URL: redis://redis:6379/0
       # Tell glibc to aggressively return freed memory back to the OS.
       # Without this, Python's allocator holds onto large heaps (RDKit / OpenBabel
       # import spikes) even after the objects are GC'd, which exhausts host RAM.
@@ -24,11 +78,12 @@ services:
         reservations:
           memory: 512m     # 降低预留，提升主机调度灵活性
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3030/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3030/api/health')"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 40s   # RDKit + OpenBabel cold-import can take 20-30 s
+
 
   frontend:
     build:
@@ -78,3 +133,7 @@ services:
           memory: 96m
         reservations:
           memory: 32m
+
+volumes:
+  redis-data:
+    driver: local

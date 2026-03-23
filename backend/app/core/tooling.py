@@ -4,8 +4,6 @@ import importlib
 import inspect
 import json
 import pkgutil
-import threading
-import time
 from dataclasses import dataclass, field
 from functools import wraps
 from typing import Any, Callable, Literal
@@ -58,31 +56,43 @@ class ToolExecutionResult(BaseModel):
 
 @dataclass
 class ToolResultStore:
-    _results: dict[str, tuple[float, ToolExecutionResult]] = field(default_factory=dict)
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+    """Redis-backed tool result store.
+
+    Uses the *sync* Redis client (``get_sync_redis()``) because tool callable
+    wrappers run inside IO_POOL threads — an asyncio event loop is not
+    available there (Gotcha 1 fix).  TTL is 600 s (matches ARQ keep_result).
+    """
+
     ttl_seconds: int = 60 * 10
 
     def put(self, result: ToolExecutionResult) -> None:
-        with self._lock:
-            self._prune_locked()
-            self._results[result.result_id] = (time.time(), result)
+        from app.core.redis_client import get_sync_redis  # late import avoids circular dep
+
+        try:
+            get_sync_redis().setex(
+                f"tool_result:{result.result_id}",
+                self.ttl_seconds,
+                result.model_dump_json(),
+            )
+        except Exception:  # Redis unavailable — degrade gracefully
+            pass
 
     def get(self, result_id: str | None) -> ToolExecutionResult | None:
         if not result_id:
             return None
+        from app.core.redis_client import get_sync_redis
 
-        with self._lock:
-            self._prune_locked()
-            entry = self._results.get(result_id)
-            if entry is None:
-                return None
-            return entry[1]
+        try:
+            raw = get_sync_redis().get(f"tool_result:{result_id}")
+        except Exception:
+            return None
 
-    def _prune_locked(self) -> None:
-        cutoff = time.time() - self.ttl_seconds
-        expired = [key for key, (created_at, _value) in self._results.items() if created_at < cutoff]
-        for key in expired:
-            self._results.pop(key, None)
+        if raw is None:
+            return None
+        try:
+            return ToolExecutionResult.model_validate_json(raw)
+        except Exception:
+            return None
 
 
 @dataclass(slots=True)

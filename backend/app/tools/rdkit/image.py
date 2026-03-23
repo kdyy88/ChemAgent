@@ -13,7 +13,9 @@ PubChem HTTP lookup required by the batch tool.
 
 from __future__ import annotations
 
-import requests
+from urllib.parse import quote as _url_quote
+
+import httpx
 from rdkit import Chem
 
 from app.chem.rdkit_ops import mol_to_png_b64
@@ -61,11 +63,11 @@ def draw_molecules_by_name(chemical_names: str) -> ToolExecutionResult:
         # ── PubChem SMILES lookup ─────────────────────────────────────────
         url = (
             "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/"
-            f"{requests.utils.quote(name)}/property/CanonicalSMILES/TXT"
+            f"{_url_quote(name)}/property/CanonicalSMILES/TXT"
         )
         try:
-            resp = requests.get(url, timeout=12)
-        except requests.exceptions.RequestException as exc:
+            resp = httpx.get(url, timeout=12.0)
+        except httpx.HTTPError as exc:
             failed_items.append({"name": name, "reason": f"网络错误 – {exc}"})
             continue
 

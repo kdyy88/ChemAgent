@@ -8,7 +8,7 @@ get_smiles_by_name   Compound name → PubChem Canonical SMILES
 
 from __future__ import annotations
 
-import requests
+import httpx
 
 from app.core.tooling import ToolExecutionResult, tool_registry
 
@@ -39,7 +39,7 @@ def get_smiles_by_name(chemical_name: str) -> ToolExecutionResult:
     )
 
     try:
-        response = requests.get(url, timeout=10)
+        response = httpx.get(url, timeout=10.0)
 
         if response.status_code == 200:
             smiles = response.text.strip()
@@ -66,7 +66,7 @@ def get_smiles_by_name(chemical_name: str) -> ToolExecutionResult:
             retry_hint="请稍后重试，或切换为更规范的化学名称再次检索。",
         )
 
-    except requests.exceptions.RequestException as exc:
+    except httpx.RequestError as exc:
         return ToolExecutionResult(
             status="error",
             summary="请求 PubChem 数据库时发生网络超时或连接错误。",

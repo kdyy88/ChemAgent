@@ -14,6 +14,7 @@ ServerEventType = Literal[
     "run.finished",
     "run.failed",
     "turn.status",
+    "turn.started",
     "assistant.message",
     "tool.call",
     "tool.result",
@@ -28,7 +29,7 @@ class SessionControlMessage(BaseModel):
 
 class UserMessage(BaseModel):
     type: UserMessageType
-    content: str
+    content: str = ""  # empty default: session.clear messages carry no content
     turn_id: str | None = None
     agent_models: dict[str, str] | None = None
 

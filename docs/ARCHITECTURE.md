@@ -592,3 +592,139 @@ artifact 与 message 分离。
 ## 13. 一句话架构总结
 
 ChemAgent 当前采用的是一种**前端事件驱动 + 后端 session 驱动 + 三阶段多智能体路由编排 + 插件化专家扩展**的分层架构，重点不是“单次回答”，而是“可信、可解释、可扩展的化学任务执行系统”。
+---
+
+## 14. 并发架构 v2 — 无状态 + 异步化
+
+### 背景
+
+v1 架构在 4 GB RAM 服务器、50 并发用户场景下面临 OOM 雪崩风险：
+
+- 每个 session 持久化 9 个 AG2 agent 对象（~500 MB RSS for 50 sessions）
+- 每轮次创建独立 `ThreadPoolExecutor`（线程数无上界）
+- 工具层全部使用同步 `requests` 库阻塞事件循环
+- 状态完全在 Python 进程内存中，进程重启即丢失
+
+v2 架构两个核心原则：**状态外置（Stateless）** + **计算异步化（Async）**
+
+---
+
+### 内存预算
+
+| 组件 | v1 (50 用户) | v2 (50 用户) |
+|---|---|---|
+| AG2 agent 对象 | ~500 MB (持久化) | ~0 MB (逐轮创建销毁) |
+| Session state | Python dict (无上界) | Redis (TTL 1800s) |
+| Thread pool | N 个独立 executor | 1 × IO_POOL(16 workers) |
+| 工具结果缓存 | Python dict (无上界) | Redis (TTL 600s) |
+
+---
+
+### 基础设施拓扑
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│                      Docker Compose                          │
+│                                                              │
+│  ┌──────────┐    ┌──────────────────┐    ┌───────────────┐  │
+│  │  redis   │    │  backend (×2w)   │    │  arq-worker   │  │
+│  │ 7-alpine │◄───│  FastAPI uvicorn │───►│  max_jobs=4   │  │
+│  │ 512 MB   │    │  1.8 GB limit    │    │  768 MB limit │  │
+│  │ allkeys- │    │                  │    │               │  │
+│  │ lru      │    │  IO_POOL(×16)    │    │ babel heavy   │  │
+│  └──────────┘    │  asyncio.Lock/ws │    │ tasks run here│  │
+│                  └──────────────────┘    └───────────────┘  │
+│                          ▲                                   │
+│                     WebSocket                                │
+│                          │                                   │
+│                   ┌──────────────┐                           │
+│                   │   frontend   │                           │
+│                   │   Next.js    │                           │
+│                   └──────────────┘                           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Redis Key Schema
+
+| Key | Type | TTL | 用途 |
+|---|---|---|---|
+| `session:{id}` | hash | 1800s | session 元数据 (created_at, agent_models_json) |
+| `session:{id}:turns` | list | 1800s | 最近 3 轮对话摘要 (LTRIM) |
+| `tool_result:{id}` | string | 600s | 工具执行结果 JSON |
+| `arq:queue:default` | list | — | ARQ 任务队列 |
+| `arq:in-progress` | set | — | 运行中任务 job_id 集合 |
+| `arq:health-check` | string | — | Worker 心跳时间戳 |
+
+---
+
+### 每轮 Turn 生命周期
+
+```text
+WebSocket message received
+        │
+        ▼
+asyncio.Lock.acquire()          # connection-scoped, no threading.Lock
+        │
+        ▼
+await sessions.get_turn_history()   # Redis LRANGE < 1 ms
+        │
+        ▼
+await asyncio.to_thread(build_run_plan, ...)
+  │  Phase 1: Router AG2 call (blocking LLM I/O)
+  │  9 AG2 objects created — live only during this thread call
+        │
+        ▼
+IO_POOL.submit(stream_specialists, ...)
+  │  Phase 2: specialist LLM calls (blocking, in IO_POOL threads)
+  │  _drain_specialists_parallel → shared IO_POOL, not per-turn pool
+        │
+        ▼
+await _pump_queue_to_websocket()    # drain Queue without blocking loop
+        │
+        ▼
+await stream_synthesis_async()      # AsyncOpenAI, fully async
+        │
+        ▼
+del agent_team                      # GC frees 9 AG2 objects immediately
+        │
+        ▼
+await sessions.push_turn()          # Redis RPUSH + LTRIM < 1 ms
+        │
+        ▼
+asyncio.Lock.release()
+```
+
+---
+
+### 重 endpoint → ARQ 任务队列
+
+`POST /api/babel/conformer3d` 和 `POST /api/babel/pdbqt` 原本同步运行
+Open Babel 的 3D 构象生成（高 CPU，10–60s），现在立即返回 **HTTP 202**：
+
+```json
+{"status": "queued", "job_id": "arq:job:abc123"}
+```
+
+客户端轮询 `GET /api/babel/jobs/{job_id}` 直到 `status == "complete"`。
+实际计算由 `arq-worker` 容器异步执行，不占用 uvicorn 进程线程池。
+
+---
+
+### 健康检查端点
+
+| Endpoint | 用途 |
+|---|---|
+| `GET /api/health` | Redis PING + Worker 心跳检测 (HTTP 200/503) |
+| `GET /api/health/queue` | 当前队列深度 + 压力等级 (low/medium/high) |
+
+---
+
+### Gotcha 修复记录
+
+| Gotcha | 问题 | 修复方式 |
+|---|---|---|
+| 1 | IO_POOL 线程中无事件循环，不能用 `asyncio.run()` | 两套 Redis 客户端：async (WS 处理) + sync (工具线程) |
+| 2 | AG2 `_oai_messages` 含 Pydantic 对象，无法直接 JSON 序列化 | `sanitize_messages()` in manager.py 深度转换为标准 dict |
+| 3 | Redis 连接池默认 10 连接，50 并发下耗尽 | `max_connections=100` in redis_client.py |

@@ -1,10 +1,26 @@
 {
   "version": "2.0.0",
   "tasks": [
+    // ── Infrastructure ──────────────────────────────────────────────────────────────────
+    {
+      "label": "📦 Start Dev Redis",
+      "type": "shell",
+      // Uses the project's compose-defined redis:7-alpine container (port 6379:6379).
+      // Do NOT use a system redis-server — it conflicts with Docker's port mapping.
+      "command": "docker compose up -d redis",
+      "isBackground": false,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared",
+        "group": "chem-agent"
+      }
+    },
+    // ── Backend & Frontend ────────────────────────────────────────────────────────
     {
       "label": "Start Backend",
       "type": "shell",
-      "command": "cd backend && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
+      "command": "fuser -k 8000/tcp 2>/dev/null; cd backend && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
       "isBackground": true,
       "problemMatcher": [],
       "presentation": {
@@ -25,6 +41,7 @@
         "group": "chem-agent"
       }
     },
+    // ── Compound tasks ────────────────────────────────────────────────────────────
     {
       "label": "🚀 Start ChemAgent (Full Stack)",
       "dependsOn": ["Start Backend", "Start Frontend"],
@@ -33,6 +50,15 @@
         "kind": "build",
         "isDefault": true
       },
+      "problemMatcher": []
+    },
+    {
+      // Recommended for first-time dev setup or after a reboot.
+      // Starts Redis container first (blocking), then Backend + Frontend in parallel.
+      "label": "🧪 ChemAgent Dev (Redis + Full Stack)",
+      "dependsOn": ["📦 Start Dev Redis", "🚀 Start ChemAgent (Full Stack)"],
+      "dependsOrder": "sequence",
+      "group": "build",
       "problemMatcher": []
     }
   ]
