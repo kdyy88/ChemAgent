@@ -68,8 +68,10 @@ services:
         condition: service_healthy
     ports:
       - "80:80"
+      - "443:443" # 映射 HTTPS 端口
     volumes:
       - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - /root/.acme.sh/bluesothis.com_ecc:/etc/nginx/ssl/:ro
     deploy:
       resources:
         limits:
