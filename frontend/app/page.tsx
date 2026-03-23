@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { PlusCircle, FlaskConical, LayoutTemplate } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -15,10 +16,20 @@ import { useMediaQuery } from '@/hooks/use-media-query'
 import { ToolSidebar } from '@/components/workspace/ToolSidebar'
 import { WorkspaceArea } from '@/components/workspace/WorkspaceArea'
 import { CopilotSidebar } from '@/components/chat/CopilotSidebar'
+import GlobalLoading from './loading'
 
 export default function Home() {
   const { clearTurns } = useChemAgent()
   const isDesktop = useMediaQuery('(min-width: 768px)')
+  const [isMounted, setIsMounted] = useState(false)
+
+  useEffect(() => {
+    setIsMounted(true)
+  }, [])
+
+  if (!isMounted) {
+    return <GlobalLoading />
+  }
 
   return (
     <main className="flex flex-col h-[100dvh] bg-background">
@@ -62,8 +73,8 @@ export default function Home() {
             <ToolSidebar />
           </ResizablePanel>
           <ResizableHandle withHandle />
-          <ResizablePanel defaultSize={60} minSize={40}>
-            <div className="h-full w-full mx-auto max-w-4xl">
+          <ResizablePanel defaultSize={60} minSize={40} className="bg-zinc-50/50 dark:bg-zinc-950/50">
+            <div className="h-full w-full mx-auto max-w-4xl ">
               <WorkspaceArea />
             </div>
           </ResizablePanel>
