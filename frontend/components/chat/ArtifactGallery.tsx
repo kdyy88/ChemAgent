@@ -23,8 +23,11 @@ export function ArtifactGallery({ artifacts }: ArtifactGalleryProps) {
       a.mimeType.startsWith('image/') &&
       typeof a.data === 'string',
   )
+  // Everything that won't be rendered as a MoleculeCard falls through to
+  // ArtifactRenderer — including image artifacts whose data is not a string.
   const otherArtifacts = artifacts.filter(
-    (a) => !(a.kind === 'image' && a.mimeType.startsWith('image/')),
+    (a) =>
+      !(a.kind === 'image' && a.mimeType.startsWith('image/') && typeof a.data === 'string'),
   )
 
   return (

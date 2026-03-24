@@ -69,5 +69,5 @@ def create_analyst(model: str | None = None) -> tuple[AssistantAgent, UserProxyA
         system_message=_build_system_message(),
         llm_config=llm_config,
         specs=specs,
-        max_consecutive_auto_reply=3,
+        max_consecutive_auto_reply=5,
     )

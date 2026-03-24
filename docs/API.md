@@ -8,7 +8,7 @@
 
 | 项目 | 说明 |
 |------|------|
-| 基础 URL | `http://localhost:8000` |
+| 基础 URL | 开发环境：`http://localhost:8000`；Compose：`http://localhost:3030` 或同域 `/api/*` |
 | Content-Type | `application/json` |
 | 成功响应 | `200 OK`，body 含 `"is_valid": true` |
 | 失败响应 | `200 OK`（业务错误）或 `422`（请求体校验失败），body 含 `"is_valid": false` + `"error": "<原因>"` |
@@ -321,5 +321,10 @@ curl -s -X POST http://localhost:8000/api/babel/pdbqt \
 
 ### `POST /api/babel/sdf-split` 与 `POST /api/babel/sdf-merge`
 **功能**：SDF 文件高通量批量处理。支持 `multipart/form-data` 上传，单/多文件分割合并。
-**响应**：成功解析后返回内存处理的 `.zip` 打包下载包或 `sdf` 流文本。
+
+**响应**：成功后返回 JSON 摘要 + `download_id`，随后通过下载端点获取真实文件内容：
+- `GET /api/babel/sdf-split-download?result_id=<download_id>`
+- `GET /api/babel/sdf-merge-download?result_id=<download_id>`
+
+`download_id` 对应的 Redis 缓存默认保留 5 分钟，过期后需重新执行任务。
 

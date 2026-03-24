@@ -55,23 +55,26 @@ ChemAgent 聚焦三个核心问题：
 
 ```text
 chem-agent-project/
+├── .env                          # ★ 统一环境变量（本地开发 + Docker 共用）
+├── .env.example                  #   环境变量模板，复制后填写真实值
+├── dev.sh                        #   一键本地启动脚本
+├── compose.yaml                  #   Docker Compose 全栈配置
 ├── backend/                      # FastAPI + AG2 + RDKit + Open Babel
 │   ├── app/
 │   │   ├── chem/                 # ★ 纯计算核心层（不含 HTTP/Agent 依赖）
-│   │   │   ├── rdkit_ops.py      #   RDKit：2D 渲染、Lipinski 计算
+│   │   │   ├── rdkit_ops.py      #   RDKit：描述符、相似度、骨架、SA Score
 │   │   │   └── babel_ops.py      #   Open Babel：格式转换、3D 构象、PDBQT 准备
 │   │   ├── agents/
 │   │   │   ├── config.py         #   共享 LLM 配置加载
 │   │   │   ├── factory.py        #   通用 agent / tool 注册工厂
-│   │   │   ├── chemist.py        #   本地 smoke test 入口
 │   │   │   ├── manager.py        #   路由 agent + 综合回答 agent
 │   │   │   └── specialists/
 │   │   │       ├── visualizer.py #   可视化专家（draw_molecules_by_name）
 │   │   │       ├── analyst.py    #   分析专家（analyze_molecule_from_smiles）
 │   │   │       └── researcher.py #   检索专家（web_search）
 │   │   ├── api/                  # HTTP 层：仅路由，不含化学逻辑
-│   │   │   ├── rdkit_api.py      #   POST /api/rdkit/analyze
-│   │   │   ├── babel_api.py      #   POST /api/babel/{convert,conformer3d,pdbqt}
+│   │   │   ├── rdkit_api.py      #   POST /api/rdkit/*
+│   │   │   ├── babel_api.py      #   POST /api/babel/*
 │   │   │   ├── chat.py           #   WebSocket 主入口
 │   │   │   ├── event_bridge.py   #   AG2 事件 → 前端协议帧
 │   │   │   ├── sessions.py       #   会话管理与三阶段编排
@@ -81,19 +84,14 @@ chem-agent-project/
 │   │   │   └── tooling.py        #   工具注册中心、结果模型、缓存
 │   │   └── tools/                # Agent 工具层（按平台分组）
 │   │       ├── rdkit/
-│   │       │   ├── image.py      #   draw_molecules_by_name, generate_2d_image_from_smiles
 │   │       │   └── analysis.py   #   analyze_molecule_from_smiles
-│   │       ├── pubchem/
-│   │       │   └── lookup.py     #   get_smiles_by_name
 │   │       ├── search/
 │   │       │   └── web.py        #   web_search
 │   │       └── babel/            #   Open Babel agent 工具（Phase 2 占位）
-│   ├── .env.example
 │   └── pyproject.toml
 ├── frontend/                     # Next.js UI
 │   ├── app/                      #   App Router 入口
 │   ├── components/chat/          #   聊天、日志、artifact 展示组件
-│   │   └── BabelResultCard.tsx   #   格式转换 / 3D 结构 / PDBQT 结果卡片
 │   ├── hooks/                    #   对外暴露的业务 hook
 │   ├── lib/
 │   │   ├── chem-api.ts           #   REST API 调用（rdkit + babel）
@@ -102,8 +100,7 @@ chem-agent-project/
 ├── docs/
 │   └── API.md                    # REST API 完整文档
 ├── README.md
-├── ARCHITECTURE.md
-└── SOURCE_MAP.md
+└── deploy/nginx/default.conf     # nginx 反代配置
 ```
 
 ### 依赖方向（严格执行）
@@ -155,9 +152,7 @@ chem-agent-project/
 | 工具名 | 平台 | 位置 | 功能 |
 |---|---|---|---|
 | `draw_molecules_by_name` | RDKit + PubChem | `tools/rdkit/image.py` | 批量名称 → 2D 结构图 |
-| `generate_2d_image_from_smiles` | RDKit | `tools/rdkit/image.py` | SMILES → 2D 结构图 |
-| `analyze_molecule_from_smiles` | RDKit | `tools/rdkit/analysis.py` | SMILES → Lipinski 分析 |
-| `get_smiles_by_name` | PubChem | `tools/pubchem/lookup.py` | 化合物名 → SMILES |
+| `analyze_molecule_from_smiles` | RDKit | `tools/rdkit/analysis.py` | SMILES → 描述符分析 |
 | `web_search` | Serper | `tools/search/web.py` | 药物/文献检索 |
 
 ### 已有协议事件
@@ -180,124 +175,164 @@ chem-agent-project/
 
 ## 5. 本地启动
 
-## 5.1 后端准备
+### 前置准备（三种方式共用）
 
-进入 backend：
+**1. 配置环境变量**
 
-```bash
-cd backend
-```
-
-创建环境变量文件：
+根目录的 `.env` 是整个项目唯一的环境变量文件，本地开发和 Docker 均从此处读取。
 
 ```bash
 cp .env.example .env
+# 用编辑器填写真实值：
+vim .env
 ```
 
-至少配置：
-- `OPENAI_API_KEY` 必填
-- `OPENAI_BASE_URL` 可选
-- `SERPER_API_KEY` 可选（缺失时 web_search 返回错误提示）
+至少需要填写：
 
-同步依赖并启动：
+| 变量 | 说明 |
+|---|---|
+| `OPENAI_API_KEY` | **必填**，LLM API Key |
+| `OPENAI_BASE_URL` | 可选，中转站 URL |
+| `SERPER_API_KEY` | 可选，填写后启用真实网页搜索 |
+
+其余变量均有合理默认值，开箱即用。
+
+**2. 安装依赖（首次）**
 
 ```bash
-uv sync
-uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# 后端
+cd backend && uv sync && cd ..
+# 前端
+cd frontend && pnpm install && cd ..
 ```
-
-后端健康检查：
-- http://localhost:8000/
-- WebSocket: `ws://localhost:8000/api/chat/ws`
-
-## 5.2 前端准备
-
-进入 frontend：
-
-```bash
-cd frontend
-pnpm install
-```
-
-开发启动：
-
-```bash
-pnpm dev
-```
-
-默认前端地址：
-- http://localhost:3000
-
-如果前端需要显式指定后端地址，可配置：
-- `NEXT_PUBLIC_WS_URL=ws://localhost:8000`
 
 ---
 
-## 5.3 Docker 部署（单机上线）
+### 方式一：手动分终端启动
 
-当前仓库已补充：
-- 根目录 [compose.yaml](compose.yaml)
-- 前端镜像 [frontend/Dockerfile](frontend/Dockerfile)
-- 后端镜像 [backend/Dockerfile](backend/Dockerfile)
-- 同域名反代配置 [deploy/nginx/default.conf](deploy/nginx/default.conf)
+适合需要单独观察每个进程日志、调试单一服务的场景。开 4 个终端：
 
-默认上线拓扑：
-- 对外前端入口：`80`
-- 对外后端入口：`3030`
-- 浏览器默认通过同域名 `/api/chat/ws` 访问后端，不再依赖写死某个 IP
+**终端 1 — Redis**
+```bash
+redis-server --port 6379 --maxmemory 128mb --maxmemory-policy allkeys-lru --save "" --appendonly no
+```
 
-部署前先在根目录创建 `.env`（参考 [.env.example](.env.example)）：
-- `OPENAI_API_KEY`：必填
-- `OPENAI_BASE_URL`：可选
-- `SERPER_API_KEY`：可选，接入真实网页搜索
-- `CORS_ALLOWED_ORIGINS`：建议填写你的实际公网域名或 IP，例如 `http://your-server-ip`
-- `NEXT_PUBLIC_WS_URL`：通常留空；留空时前端会自动走同源 WebSocket
+**终端 2 — 后端 API**
+```bash
+cd backend
+set -a && source ../.env && set +a
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 3030
+```
 
-启动：
+**终端 3 — 计算 Worker**
+```bash
+cd backend
+set -a && source ../.env && set +a
+uv run arq app.worker.WorkerSettings
+```
+
+**终端 4 — 前端**
+```bash
+cd frontend
+pnpm dev
+```
+
+服务地址：
+- 前端：http://localhost:3000
+- 后端文档：http://localhost:3030/docs
+
+---
+
+### 方式二：dev.sh 一键启动
+
+适合日常开发，所有进程统一管理，**Ctrl+C 一次性关闭全部**。
+
+```bash
+./dev.sh
+```
+
+运行时终端输出会按颜色区分各进程：
+
+| 颜色 | 服务 |
+|---|---|
+| 紫色 | Redis |
+| 蓝色 | 后端 API |
+| 绿色 | 计算 Worker |
+| 黄色 | 前端 Next.js |
+
+日志文件同步写入 `.dev-logs/` 目录（`redis.log`、`backend.log`、`worker.log`、`frontend.log`）。
+
+可选参数：
+```bash
+./dev.sh --no-redis   # 跳过启动 Redis（已有外部 Redis 时使用）
+```
+
+---
+
+### 方式三：Docker 启动基础服务 + 本地前端
+
+适合**前端高频改动**的场景：Redis、后端、Worker 跑在 Docker 里保持稳定，前端在本地热更新。
+
+**步骤 1：用 Docker 启动 Redis、后端、Worker**
+
+```bash
+docker compose up -d --build redis backend worker
+```
+
+服务启动后验证后端健康：
+```bash
+curl http://127.0.0.1:3030/health
+```
+
+**步骤 2：本地启动前端**
+
+```bash
+cd frontend
+pnpm dev
+```
+
+前端会自动读取根目录 `.env` 中的 `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:3030`，直接对接 Docker 中的后端，无需任何额外配置。
+
+> **说明：** `compose.yaml` 中 `REDIS_URL` 的 Docker 默认值是 `redis://redis:6379/0`（容器内部网络），会自动覆盖 `.env` 里的 `127.0.0.1:6379`，无需手动修改。
+
+---
+
+### 方式四：全栈 Docker 部署（生产 / 单机上线）
 
 ```bash
 docker compose up -d --build
 ```
 
-启动后：
-- 前端访问：`http://your-server-ip/`
-- 后端健康检查：`http://your-server-ip:3030/`
+| 服务 | 对外地址 |
+|---|---|
+| 前端（nginx） | `http://your-server-ip/` |
+| 后端 | `http://your-server-ip:3030/` |
 
-说明：
-- 如果未来接入 HTTPS，前端会根据页面协议自动切换到 `wss://`
-- 当前 session 仍是内存态，因此建议单机单后端实例部署
-- 当前 `web_search` 已接入 Serper 真实搜索接口
+> 接入 HTTPS 后，前端会自动切换到 `wss://` WebSocket。
 
 ---
 
 ## 6. 开发工作流
 
-推荐使用两个终端：
+日常开发推荐使用 **方式二（dev.sh）** 一键拉起全栈，或 **方式三** 仅在本地跑前端。
 
-### 终端 A：后端
+### 常用检查命令
+
 ```bash
-cd backend
-uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
+# 前端 TypeScript 类型检查
+cd frontend && pnpm tsc --noEmit
 
-### 终端 B：前端
-```bash
-cd frontend
-pnpm dev
-```
+# 前端 lint
+cd frontend && pnpm lint
 
-常用检查：
+# 后端语法检查
+cd backend && uv run python -m py_compile app/main.py
 
-### 前端 lint
-```bash
-cd frontend
-pnpm lint
-```
-
-### 后端快速本地 agent 测试
-```bash
-cd backend
-uv run python -m app.agents.chemist
+# 接口联调（验证后端是否正常）
+curl http://127.0.0.1:3030/health
+curl -s -X POST http://127.0.0.1:3030/api/rdkit/validate \
+  -H 'Content-Type: application/json' \
+  -d '{"smiles": "CC(=O)Oc1ccccc1C(=O)O"}'
 ```
 
 ---

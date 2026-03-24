@@ -7,21 +7,14 @@ import { Loader } from '@/components/ui/loader'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ThinkingLog } from './ThinkingLog'
 import { ArtifactGallery } from './ArtifactGallery'
-import type { ToolMeta, Turn } from '@/lib/types'
+import type { Turn } from '@/lib/types'
 
 interface MessageBubbleProps {
   turn: Turn
-  toolCatalog: Record<string, ToolMeta>
 }
 
-export const MessageBubble = memo(function MessageBubble({ turn, toolCatalog }: MessageBubbleProps) {
-  // Prefer the dedicated finalAnswer (Manager synthesis) when available;
-  // fall back only for legacy sessions whose agent replies had no sender.
-  const displayContent =
-    turn.finalAnswer ??
-    ([...turn.steps].reverse().find((s) => s.kind === 'agent_reply' && !s.sender) as
-      | { kind: 'agent_reply'; content: string }
-      | undefined)?.content
+export const MessageBubble = memo(function MessageBubble({ turn }: MessageBubbleProps) {
+  const displayContent = turn.finalAnswer
 
   const isThinking = turn.status === 'thinking'
   const showSkeleton = isThinking && !displayContent
@@ -55,7 +48,6 @@ export const MessageBubble = memo(function MessageBubble({ turn, toolCatalog }: 
             status={turn.status}
             startedAt={turn.startedAt}
             finishedAt={turn.finishedAt}
-            toolCatalog={toolCatalog}
             statusMessage={turn.statusMessage}
           />
 

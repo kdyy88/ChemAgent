@@ -1,9 +1,8 @@
 """
 Open Babel REST endpoints — Phase 1 (standalone API, no agents).
 
-Route handlers delegate entirely to ``app.chem.babel_ops`` — no chemistry
-logic lives here.  Route handlers are synchronous ``def`` (not ``async``) so
-FastAPI dispatches Open Babel's blocking C++ calls through its thread-pool executor.
+Route handlers delegate heavy work to the dedicated Redis-backed worker so the
+FastAPI process remains lightweight and WebSocket-friendly under load.
 
 Routes (all under the /api prefix added in main.py):
   POST /api/babel/convert         — Tool 1: universal format converter
@@ -21,20 +20,12 @@ Always returns HTTP 200. Use ``is_valid`` to distinguish success from failure.
 from __future__ import annotations
 
 from fastapi import APIRouter, File, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 import io
 
-from app.chem.babel_ops import (
-    build_3d_conformer,
-    compute_mol_properties,
-    compute_partial_charges,
-    convert_format,
-    list_supported_formats,
-    prepare_pdbqt,
-    sdf_merge,
-    sdf_split,
-)
+from app.core.task_bridge import run_via_worker
+from app.core.task_queue import read_artifact
 
 router = APIRouter(prefix="/babel", tags=["openbabel"])
 
@@ -79,34 +70,55 @@ class PartialChargeRequest(BaseModel):
 # ── Route handlers ────────────────────────────────────────────────────────────
 
 
-def convert(req: ConvertRequest) -> dict:
+async def convert(req: ConvertRequest) -> dict:
     """Convert a molecule between any two Open Babel-supported formats."""
-    return convert_format(req.molecule, req.input_format, req.output_format)
+    return await run_via_worker(
+        "babel.convert_format",
+        {
+            "molecule_str": req.molecule,
+            "input_fmt": req.input_format,
+            "output_fmt": req.output_format,
+        },
+    )
 
 
-def conformer3d(req: Conformer3DRequest) -> dict:
+async def conformer3d(req: Conformer3DRequest) -> dict:
     """Generate a force-field-optimised 3D conformer (now includes energy)."""
-    return build_3d_conformer(req.smiles, req.name, req.forcefield, req.steps)
+    return await run_via_worker(
+        "babel.build_3d_conformer",
+        {
+            "smiles": req.smiles,
+            "name": req.name,
+            "forcefield": req.forcefield,
+            "steps": req.steps,
+        },
+    )
 
 
-def pdbqt(req: DockingPrepRequest) -> dict:
+async def pdbqt(req: DockingPrepRequest) -> dict:
     """Prepare a ligand PDBQT file for AutoDock-family docking."""
-    return prepare_pdbqt(req.smiles, req.name, req.ph)
+    return await run_via_worker(
+        "babel.prepare_pdbqt",
+        {"smiles": req.smiles, "name": req.name, "ph": req.ph},
+    )
 
 
-def properties(req: MolPropertiesRequest) -> dict:
+async def properties(req: MolPropertiesRequest) -> dict:
     """T7: Compute core molecular properties using OpenBabel."""
-    return compute_mol_properties(req.smiles)
+    return await run_via_worker("babel.compute_mol_properties", {"smiles": req.smiles})
 
 
-def partial_charges(req: PartialChargeRequest) -> dict:
+async def partial_charges(req: PartialChargeRequest) -> dict:
     """F2: Compute per-atom partial charges."""
-    return compute_partial_charges(req.smiles, req.method)
+    return await run_via_worker(
+        "babel.compute_partial_charges",
+        {"smiles": req.smiles, "method": req.method},
+    )
 
 
-def formats() -> dict:
+async def formats() -> dict:
     """Utility: List all supported input and output formats."""
-    return list_supported_formats()
+    return await run_via_worker("babel.list_supported_formats", {})
 
 
 # ── File-based route handlers (multipart) ─────────────────────────────────────
@@ -118,30 +130,31 @@ async def handle_sdf_split(file: UploadFile = File(...)):
     Returns the JSON report with molecule list. Download ZIP via /sdf-split-download.
     """
     content = (await file.read()).decode("utf-8", errors="replace")
-    result = sdf_split(content)
-
-    # Strip zip_bytes from the JSON response — it's served via download endpoint
-    zip_bytes = result.pop("zip_bytes", b"")
-
-    # Store zip in a module-level cache for the download endpoint
-    _SDF_SPLIT_CACHE["latest_zip"] = zip_bytes
-    _SDF_SPLIT_CACHE["filename"] = (file.filename or "split").replace(".sdf", "") + "_split.zip"
-
-    return result
+    return await run_via_worker(
+        "babel.sdf_split",
+        {
+            "sdf_content": content,
+            "filename_base": file.filename or "split",
+        },
+        timeout=120.0,
+    )
 
 
-async def handle_sdf_split_download():
-    """Download the latest split ZIP file."""
-    zip_bytes = _SDF_SPLIT_CACHE.get("latest_zip", b"")
-    filename = _SDF_SPLIT_CACHE.get("filename", "split.zip")
+async def handle_sdf_split_download(result_id: str | None = None):
+    """Download a previously generated split ZIP file by result_id."""
+    if not result_id:
+        return JSONResponse({"is_valid": False, "error": "缺少 result_id，请先执行拆分操作。"})
 
-    if not zip_bytes:
-        return {"is_valid": False, "error": "没有可下载的文件，请先执行拆分操作。"}
+    artifact = await read_artifact(result_id)
+    if artifact is None:
+        return JSONResponse({"is_valid": False, "error": "下载结果已过期，请重新执行拆分操作。"})
+
+    zip_bytes, meta = artifact
 
     return StreamingResponse(
         io.BytesIO(zip_bytes),
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        media_type=meta["media_type"],
+        headers={"Content-Disposition": f'attachment; filename="{meta["filename"]}"'},
     )
 
 
@@ -155,33 +168,33 @@ async def handle_sdf_merge(files: list[UploadFile] = File(...)):
         content = (await f.read()).decode("utf-8", errors="replace")
         sdf_contents.append(content)
 
-    result = sdf_merge(sdf_contents)
-    merged_sdf = result.pop("sdf_content", "")
-
-    _SDF_MERGE_CACHE["latest_sdf"] = merged_sdf
-    _SDF_MERGE_CACHE["filename"] = "merged_library.sdf"
-
-    return result
-
-
-async def handle_sdf_merge_download():
-    """Download the latest merged SDF file."""
-    sdf_content = _SDF_MERGE_CACHE.get("latest_sdf", "")
-    filename = _SDF_MERGE_CACHE.get("filename", "merged.sdf")
-
-    if not sdf_content:
-        return {"is_valid": False, "error": "没有可下载的文件，请先执行合并操作。"}
-
-    return StreamingResponse(
-        io.BytesIO(sdf_content.encode("utf-8")),
-        media_type="chemical/x-mdl-sdfile",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    filename_base = files[0].filename if len(files) == 1 else "merged_library"
+    return await run_via_worker(
+        "babel.sdf_merge",
+        {
+            "sdf_contents": sdf_contents,
+            "filename_base": filename_base,
+        },
+        timeout=120.0,
     )
 
 
-# Simple in-memory cache for latest batch results (single-user dev environment)
-_SDF_SPLIT_CACHE: dict = {}
-_SDF_MERGE_CACHE: dict = {}
+async def handle_sdf_merge_download(result_id: str | None = None):
+    """Download a previously generated merged SDF file by result_id."""
+    if not result_id:
+        return JSONResponse({"is_valid": False, "error": "缺少 result_id，请先执行合并操作。"})
+
+    artifact = await read_artifact(result_id)
+    if artifact is None:
+        return JSONResponse({"is_valid": False, "error": "下载结果已过期，请重新执行合并操作。"})
+
+    sdf_bytes, meta = artifact
+
+    return StreamingResponse(
+        io.BytesIO(sdf_bytes),
+        media_type=meta["media_type"],
+        headers={"Content-Disposition": f'attachment; filename="{meta["filename"]}"'},
+    )
 
 
 # ── Register all routes ───────────────────────────────────────────────────────

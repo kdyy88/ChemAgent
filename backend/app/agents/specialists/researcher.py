@@ -44,5 +44,5 @@ def create_researcher(model: str | None = None) -> tuple[AssistantAgent, UserPro
         system_message=_build_system_message(),
         llm_config=llm_config,
         specs=specs,
-        max_consecutive_auto_reply=4,
+        max_consecutive_auto_reply=6,
     )

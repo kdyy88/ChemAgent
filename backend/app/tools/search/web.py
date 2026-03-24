@@ -13,25 +13,13 @@ failure clearly rather than returning stale or hallucinated data.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import requests
-from dotenv import load_dotenv
 
 from app.core.tooling import ToolExecutionResult, tool_registry
 
 _SERPER_URL      = "https://google.serper.dev/search"
 _TIMEOUT_SECONDS = 15
-_ENV_LOADED      = False
-
-
-def _ensure_env() -> None:
-    global _ENV_LOADED
-    if _ENV_LOADED:
-        return
-    env_file = Path(__file__).resolve().parents[4] / ".env"
-    load_dotenv(dotenv_path=env_file, override=False)
-    _ENV_LOADED = True
 
 
 @tool_registry.register(
@@ -57,7 +45,6 @@ def web_search(query: str) -> ToolExecutionResult:
     Args:
         query: The search query string (e.g. 'FDA approved lung cancer drugs 2024').
     """
-    _ensure_env()
     api_key = os.environ.get("SERPER_API_KEY", "").strip()
     if not api_key:
         return ToolExecutionResult(

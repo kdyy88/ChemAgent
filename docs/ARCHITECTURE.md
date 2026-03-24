@@ -139,13 +139,18 @@ app/agents/        ← 不直接执行计算
 
 当前 session 是**内存态**：
 - 每个 session 对应一组 agent 实例
-- session 带有 TTL
+- session 带有 TTL（当前 15 分钟）
 - 同 session 内多轮消息复用历史
 
 当前适合：
 - 本地开发
 - 单实例运行
 - 原型验证
+
+当前生产部署策略：
+- `uvicorn` 固定单 worker，避免多进程下 WebSocket session 分裂
+- RDKit / OpenBabel 重计算迁移到独立 Redis + ARQ worker
+- WebSocket 通过应用层 `ping` / `pong` 心跳清理半连接
 
 后续若要生产化，建议迁移到：
 - Redis + 数据库存储 session 元信息
@@ -364,6 +369,11 @@ MessageBubble → ReactMarkdown 渲染
 → 返回 session_id
 → session_id 存入 localStorage
 
+连接存活期间
+→ backend 周期性发送 ping
+→ frontend 自动回 pong
+→ 超时未收到 pong 则后端主动断开连接
+
 下一轮继续提问
 → 前端复用同一个 WebSocket / session_id
 → backend 恢复对应 ChatSession
@@ -377,6 +387,7 @@ MessageBubble → ReactMarkdown 渲染
 前后端之间不传“拼接日志文本”，而是传**结构化事件**。
 
 当前事件集合：
+- `ping`
 - `session.started`
 - `run.started`
 - `tool.call`

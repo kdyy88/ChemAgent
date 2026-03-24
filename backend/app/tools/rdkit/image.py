@@ -1,193 +1,128 @@
 """
-RDKit 2D image agent tools.
+RDKit molecular visualization agent tool.
 
-Tools registered
-----------------
-draw_molecules_by_name        Batch: compound name → PubChem SMILES → RDKit 2D PNG
-generate_2d_image_from_smiles Single: SMILES → RDKit 2D PNG
+Tool registered
+---------------
+draw_molecules_by_name   compound names → PubChem SMILES → RDKit 2D structure images
 
-Computation is delegated to ``app.chem.rdkit_ops`` (the single source of truth
-for all RDKit logic).  This file only handles tool registration and the
-PubChem HTTP lookup required by the batch tool.
+Accepts a comma-separated list of compound names in English, resolves each to
+a canonical SMILES via the PubChem REST API, then renders a 2D structure image
+using RDKit.  Each image is returned as a base64-encoded PNG artifact.
 """
 
 from __future__ import annotations
 
-import requests
+import urllib.parse
+import urllib.request
+import json
+
 from rdkit import Chem
 
 from app.chem.rdkit_ops import mol_to_png_b64
 from app.core.tooling import ToolArtifact, ToolExecutionResult, tool_registry
 
+_PUBCHEM_URL = (
+    "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name"
+    "/{name}/property/IsomericSMILES/JSON"
+)
 
-# ── Tool 1: Batch name → image ────────────────────────────────────────────────
+
+def _fetch_smiles(name: str) -> str | None:
+    """Return canonical SMILES from PubChem for a compound name, or None."""
+    url = _PUBCHEM_URL.format(name=urllib.parse.quote(name.strip()))
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "chem-agent/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode())
+        props = payload["PropertyTable"]["Properties"]
+        entry = props[0]
+        # PubChem may return either key depending on stereo data availability
+        return entry.get("IsomericSMILES") or entry.get("SMILES")
+    except Exception:
+        return None
 
 
 @tool_registry.register(
     name="draw_molecules_by_name",
     description=(
-        "批量根据化合物名称绘制 2D 分子结构图。"
-        "接受逗号分隔的化合物名称列表（中英文均可），例如 \"Aspirin, Caffeine, Ibuprofen\"。"
-        "工具内部自动查询 PubChem 获取 SMILES，再用 RDKit 渲染每一张结构图，"
-        "一次调用即可返回全部结构图像。无需分别调用 get_smiles 和 generate_image。"
+        "接收一个或多个化合物的英文名称（以英文逗号分隔），通过 PubChem 查询对应的 SMILES，"
+        "然后使用 RDKit 生成每个化合物的 2D 分子结构图，以 PNG 图像产物返回。"
+        "如果某个化合物无法找到，结果中的 data.failed 列表会记录失败原因。"
+        "示例输入：\"aspirin, caffeine, ibuprofen\""
     ),
-    display_name="Generating Molecule Images…",
+    display_name="Drawing Structures…",
     category="visualization",
     reflection_hint=(
-        "若某化合物检索失败，请用英文学名、IUPAC 名或 INN 名重新列出全部待绘化合物再次调用。"
+        "若某化合物解析失败，请检查名称是否为标准英文名（INN、IUPAC 或常用名）。"
+        "混合物、商品名或过于模糊的名称可能导致 PubChem 查询失败，可尝试使用 SMILES 直接绘制。"
     ),
-    output_kinds=("image", "json"),
-    tags=("rdkit", "pubchem", "batch", "smiles", "image"),
+    output_kinds=("image",),
+    tags=("rdkit", "pubchem", "structure", "visualization"),
 )
 def draw_molecules_by_name(chemical_names: str) -> ToolExecutionResult:
     """
-    批量根据逗号分隔的化合物名称绘制 2D 分子结构图。
-    chemical_names: 逗号分隔的化合物名称，例如 "Aspirin, Caffeine, Ibuprofen"
+    将化合物英文名称解析为 SMILES，并生成 2D 结构图。
+
+    参数
+    ----
+    chemical_names : str
+        英文化合物名称，多个名称用英文逗号分隔。
     """
     names = [n.strip() for n in chemical_names.split(",") if n.strip()]
     if not names:
         return ToolExecutionResult(
             status="error",
-            summary="未提供任何化合物名称，请传入逗号分隔的名称列表。",
-            data={},
-            error_code="no_input",
+            summary="未提供任何化合物名称。",
+            error_code="EMPTY_INPUT",
         )
 
-    all_artifacts: list[ToolArtifact] = []
-    successes:     list[str]          = []
-    failed_items:  list[dict]         = []
+    artifacts: list[ToolArtifact] = []
+    failed: list[dict] = []
 
     for name in names:
-        # ── PubChem SMILES lookup ─────────────────────────────────────────
-        url = (
-            "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/"
-            f"{requests.utils.quote(name)}/property/CanonicalSMILES/TXT"
-        )
+        smiles = _fetch_smiles(name)
+        if smiles is None:
+            failed.append({"name": name, "reason": "PubChem 未找到该化合物"})
+            continue
+
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            failed.append({"name": name, "reason": f"RDKit 无法解析 SMILES：{smiles}"})
+            continue
+
         try:
-            resp = requests.get(url, timeout=12)
-        except requests.exceptions.RequestException as exc:
-            failed_items.append({"name": name, "reason": f"网络错误 – {exc}"})
+            png_b64 = mol_to_png_b64(mol, size=(400, 400))
+        except Exception as exc:
+            failed.append({"name": name, "reason": f"图像生成失败：{exc}"})
             continue
 
-        if resp.status_code == 404:
-            failed_items.append({
-                "name": name,
-                "reason": "PubChem 数据库未收录此名称，请改用英文 INN/USAN 学名或 IUPAC 名",
-            })
-            continue
-        if resp.status_code != 200:
-            failed_items.append({
-                "name": name,
-                "reason": f"PubChem 返回异常状态码 {resp.status_code}",
-            })
-            continue
-
-        smiles = resp.text.strip()
-
-        # ── RDKit render ──────────────────────────────────────────────────
-        try:
-            mol = Chem.MolFromSmiles(smiles)
-            if mol is None:
-                failed_items.append({"name": name, "reason": "RDKit 无法解析 SMILES，结构可能有误"})
-                continue
-            img_b64 = mol_to_png_b64(mol, size=(400, 400))
-        except Exception as exc:  # noqa: BLE001
-            failed_items.append({"name": name, "reason": f"RDKit 渲染异常 – {exc}"})
-            continue
-
-        all_artifacts.append(
+        artifacts.append(
             ToolArtifact(
                 kind="image",
                 mime_type="image/png",
-                data=img_b64,
                 encoding="base64",
+                data=png_b64,
                 title=name,
-                description=f"2D structure of {name}",
+                description=f"{name} 的 2D 结构图（SMILES: {smiles}）",
             )
         )
-        successes.append(name)
 
-    # ── Build result ──────────────────────────────────────────────────────────
-    if not all_artifacts:
-        per_item = "；".join(f"[{i['name']}] {i['reason']}" for i in failed_items)
-        return ToolExecutionResult(
-            status="error",
-            summary=f"全部 {len(names)} 个化合物均处理失败。逐项原因：{per_item}",
-            data={"requested": names, "succeeded": [], "failed": failed_items},
-            error_code="all_failed",
-            retry_hint="请对每个失败名称单独反思并改用英文 INN/USAN 名或 IUPAC 系统名后重新调用。",
-        )
+    success_count = len(artifacts)
+    fail_count = len(failed)
 
-    summary_parts = [f"已成功生成 {len(successes)}/{len(names)} 个分子结构图：{', '.join(successes)}。"]
-    if failed_items:
-        per_item = "；".join(f"[{i['name']}] {i['reason']}" for i in failed_items)
-        summary_parts.append(f"以下名称处理失败，请逐一核查并重试：{per_item}")
+    if success_count == 0:
+        summary = f"所有 {fail_count} 个化合物均解析失败。"
+        status = "error"
+    elif fail_count == 0:
+        summary = f"成功绘制 {success_count} 个结构图。"
+        status = "success"
+    else:
+        summary = f"成功绘制 {success_count} 个结构图，{fail_count} 个解析失败。"
+        status = "success"
 
     return ToolExecutionResult(
-        status="success",
-        summary=" ".join(summary_parts),
-        data={"requested": names, "succeeded": successes, "failed": failed_items},
-        artifacts=all_artifacts,
+        status=status,
+        summary=summary,
+        data={"failed": failed},
+        artifacts=artifacts,
     )
-
-
-# ── Tool 2: Single SMILES → image ─────────────────────────────────────────────
-
-
-@tool_registry.register(
-    name="generate_2d_image_from_smiles",
-    description=(
-        "将标准 SMILES 转换为高质量 2D 分子结构图，并以 PNG Base64 产物返回。"
-        "可选传入化合物名称 name 用于标注图片标题。"
-    ),
-    display_name="Generating 2D Structure…",
-    category="visualization",
-    reflection_hint=(
-        "若 RDKit 解析失败，请重新检查环闭合、芳香性、原子价态与括号层级，修正 SMILES 后重试。"
-    ),
-    output_kinds=("image",),
-    tags=("rdkit", "image", "smiles"),
-)
-def generate_2d_image_from_smiles(smiles: str, name: str = "") -> ToolExecutionResult:
-    """
-    接收 SMILES 字符串，使用 RDKit 解析并生成 2D 图像。
-    name 可选，传入化合物名作为图片标题（如 "Aspirin"）。
-    """
-    try:
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
-            return ToolExecutionResult(
-                status="error",
-                summary=f"RDKit 无法解析 SMILES: {smiles}",
-                data={"smiles": smiles},
-                error_code="invalid_smiles",
-                retry_hint="请检查环闭合、芳香性、括号匹配和原子价态，修正后再重新绘图。",
-            )
-
-        img_b64 = mol_to_png_b64(mol, size=(400, 400))
-        label   = name.strip() if name and name.strip() else smiles
-
-        return ToolExecutionResult(
-            status="success",
-            summary="已成功生成 2D 分子结构图。",
-            data={"smiles": smiles, "image_format": "png"},
-            artifacts=[
-                ToolArtifact(
-                    kind="image",
-                    mime_type="image/png",
-                    data=img_b64,
-                    encoding="base64",
-                    title=label,
-                    description=f"RDKit generated structure for {name or smiles}",
-                )
-            ],
-        )
-
-    except Exception as exc:  # noqa: BLE001
-        return ToolExecutionResult(
-            status="error",
-            summary="RDKit 工具发生未知异常。",
-            data={"smiles": smiles, "detail": str(exc)},
-            error_code="rdkit_exception",
-            retry_hint="请确认输入是标准 SMILES；若仍失败，可先重新检索更权威的结构来源。",
-        )

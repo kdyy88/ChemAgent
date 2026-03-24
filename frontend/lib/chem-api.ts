@@ -5,10 +5,20 @@
  * The `data:image/png;base64,` URI prefix is added exclusively in JSX.
  */
 
-const BASE_URL =
-  (process.env.NEXT_PUBLIC_WS_URL ?? 'ws://localhost:8000')
-    .replace(/^ws/, 'http')
-    .replace(/\/$/, '')
+function resolveApiBaseUrl(): string {
+  const configuredApi = process.env.NEXT_PUBLIC_API_BASE_URL?.trim()
+  if (configuredApi) {
+    return configuredApi.replace(/\/$/, '')
+  }
+
+  if (typeof window !== 'undefined') {
+    return window.location.origin
+  }
+
+  return 'http://127.0.0.1:3030'
+}
+
+const BASE_URL = resolveApiBaseUrl()
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Shared error shape
@@ -489,6 +499,7 @@ export type SdfSplitResult = {
   is_valid: true
   molecule_count: number
   molecules: SdfMolEntry[]
+  download_id: string
 }
 
 export type SdfMergeResult = {
@@ -496,6 +507,7 @@ export type SdfMergeResult = {
   is_valid: true
   molecule_count: number
   error_count: number
+  download_id: string
 }
 
 export async function sdfSplit(file: File): Promise<SdfSplitResult | ChemError> {
@@ -520,10 +532,10 @@ export async function sdfMerge(files: File[]): Promise<SdfMergeResult | ChemErro
   return res.json() as Promise<SdfMergeResult | ChemError>
 }
 
-export function getSdfSplitDownloadUrl(): string {
-  return `${BASE_URL}/api/babel/sdf-split-download`
+export function getSdfSplitDownloadUrl(resultId: string): string {
+  return `${BASE_URL}/api/babel/sdf-split-download?result_id=${encodeURIComponent(resultId)}`
 }
 
-export function getSdfMergeDownloadUrl(): string {
-  return `${BASE_URL}/api/babel/sdf-merge-download`
+export function getSdfMergeDownloadUrl(resultId: string): string {
+  return `${BASE_URL}/api/babel/sdf-merge-download?result_id=${encodeURIComponent(resultId)}`
 }

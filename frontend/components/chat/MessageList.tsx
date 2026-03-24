@@ -11,7 +11,7 @@ import { MessageBubble } from './MessageBubble'
 import { useChemAgent } from '@/hooks/useChemAgent'
 
 export function MessageList() {
-  const { turns, toolCatalog } = useChemAgent()
+  const { turns } = useChemAgent()
 
   return (
     <div className="relative h-full">
@@ -33,7 +33,7 @@ export function MessageList() {
             </div>
           ) : (
             turns.map((turn) => (
-              <MessageBubble key={turn.id} turn={turn} toolCatalog={toolCatalog} />
+              <MessageBubble key={turn.id} turn={turn} />
             ))
           )}
           <ChatContainerScrollAnchor />

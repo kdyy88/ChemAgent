@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { AgentModelConfig, ClientEvent, ToolMeta, Turn } from '@/lib/types'
 import { connectChatSocket } from '@/lib/chat/socket'
+import { loadStoredSessionId, persistSessionId } from '@/lib/chat/session'
 import { applyServerEvent, applySocketClosed, createTurn, type ChatStateSlice, type PendingTurn } from '@/lib/chat/state'
 
 const STORAGE_KEY = 'chemagent_model_prefs'
@@ -26,10 +27,39 @@ function saveStoredModels(config: AgentModelConfig): void {
 interface ChatStore extends ChatStateSlice {
   wsRef: WebSocket | null
   pendingTurn: PendingTurn | null
+  reconnectTimer: number | null
+  reconnectAttempts: number
   initialize: () => void
   setAgentModels: (config: AgentModelConfig) => void
   sendMessage: (prompt: string) => void
   clearTurns: () => void
+}
+
+function clearReconnectTimer(timer: number | null): void {
+  if (timer !== null && typeof window !== 'undefined') {
+    window.clearTimeout(timer)
+  }
+}
+
+function scheduleReconnect(
+  set: (updater: Partial<ChatStore> | ((state: ChatStore) => Partial<ChatStore>)) => void,
+  get: () => ChatStore,
+): void {
+  if (typeof window === 'undefined') return
+
+  const state = get()
+  if (state.reconnectTimer !== null) return
+
+  const delay = Math.min(1000 * 2 ** state.reconnectAttempts, 10000)
+  const timer = window.setTimeout(() => {
+    set((current) => ({
+      reconnectTimer: null,
+      reconnectAttempts: current.reconnectAttempts + 1,
+    }))
+    connectSocket(set, get)
+  }, delay)
+
+  set({ reconnectTimer: timer })
 }
 
 const flushPendingTurn = (get: () => ChatStore): boolean => {
@@ -63,6 +93,8 @@ const connectSocket = (
       set((state) => applyServerEvent(state, msg))
 
       if (msg.type === 'session.started') {
+        persistSessionId(msg.session_id)
+        set({ reconnectAttempts: 0 })
         // If a greeting is about to stream, defer flushing any pending turn
         // until the greeting finishes — otherwise the user's queued message
         // races with the greeting turn and both appear simultaneously.
@@ -92,18 +124,22 @@ const connectSocket = (
         ...applySocketClosed(state.turns),
         wsRef: null,
       }))
+      scheduleReconnect(set, get)
     },
   })
-  set({ wsRef: ws })
+  clearReconnectTimer(get().reconnectTimer)
+  set({ wsRef: ws, reconnectTimer: null })
 }
 
 export const useChatStore = create<ChatStore>((set, get) => ({
-  sessionId: null,
+  sessionId: loadStoredSessionId(),
   turns: [],
   isStreaming: false,
   wsRef: null,
   toolCatalog: {} as Record<string, ToolMeta>,
   pendingTurn: null,
+  reconnectTimer: null,
+  reconnectAttempts: 0,
   agentModels: loadStoredModels(),
 
   // Connect the WebSocket eagerly (called on page mount) so the greeting
@@ -148,6 +184,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       ws.send(JSON.stringify(message))
     }
 
+    persistSessionId(null)
     set({ turns: [], sessionId: null, pendingTurn: null })
   },
 }))

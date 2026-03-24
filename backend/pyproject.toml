@@ -1,21 +1,19 @@
 [project]
 name = "backend"
 version = "0.1.0"
-description = "Add your description here"
+description = "ChemAgent — multi-agent AI Copilot + deterministic chemistry toolkit (RDKit / Open Babel)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "ag2[openai]>=0.11.2",
+    "arq>=0.26",
     "fastapi>=0.135.1",
     "openbabel-wheel>=3.1.1.23",
     "python-dotenv>=1.1.1",
     "python-multipart>=0.0.22",
     "rdkit>=2025.9.6",
+    "redis[hiredis]>=5.0",
     "requests>=2.32.5",
     "uvicorn>=0.41.0",
-    "waldiez>=0.7.1",
     "websockets>=16.0",
 ]
-
-[tool.uv.sources]
-waldiez = { git = "https://github.com/waldiez/waldiez.git" }

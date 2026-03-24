@@ -19,7 +19,7 @@ type SocketCallbacks = {
   getSessionId: () => string | null
   getAgentModels: () => AgentModelConfig
   onEvent: (event: ServerEvent) => void
-  onClosed: () => void
+  onClosed: (event: CloseEvent | Event) => void
 }
 
 export function connectChatSocket({ getSessionId, getAgentModels, onEvent, onClosed }: SocketCallbacks): WebSocket {
@@ -35,14 +35,22 @@ export function connectChatSocket({ getSessionId, getAgentModels, onEvent, onClo
 
   ws.onmessage = (event: MessageEvent) => {
     try {
-      onEvent(JSON.parse(event.data as string) as ServerEvent)
+      const message = JSON.parse(event.data as string) as ServerEvent
+      if (message.type === 'ping') {
+        const pong: ClientEvent = { type: 'pong' }
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(pong))
+        }
+        return
+      }
+      onEvent(message)
     } catch {
       // Ignore malformed frames.
     }
   }
 
-  ws.onerror = () => onClosed()
-  ws.onclose = () => onClosed()
+  ws.onerror = (event) => onClosed(event)
+  ws.onclose = (event) => onClosed(event)
 
   return ws
 }

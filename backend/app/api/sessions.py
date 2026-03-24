@@ -31,7 +31,7 @@ from app.api.runtime import (
 # ── Session ───────────────────────────────────────────────────────────────────
 
 
-SESSION_TTL_SECONDS = 60 * 30
+SESSION_TTL_SECONDS = 60 * 15
 
 
 @dataclass
@@ -163,7 +163,6 @@ class ChatSession:
                 phase2_items.append(("Analyst", ana_resp))
 
         # ── Phase 3 factory: called after Phase 2 events are exhausted ────────
-        had_history = self.has_history  # capture value BEFORE setting True
         self.has_history = True
 
         # llm_config for synthesis is resolved once at session-creation time
@@ -267,7 +266,18 @@ class SessionManager:
 
     def clear(self, session_id: str) -> None:
         with self._lock:
-            self._sessions.pop(session_id, None)
+            session = self._sessions.pop(session_id, None)
+
+        if session is None:
+            return
+
+        session.turn_history.clear()
+        session.has_history = False
+
+    def active_count(self) -> int:
+        with self._lock:
+            self._prune()
+            return len(self._sessions)
 
 
 session_manager = SessionManager()

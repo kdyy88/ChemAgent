@@ -18,7 +18,7 @@ import {
 } from '@/components/ui/chain-of-thought'
 import { Steps, StepsTrigger, StepsContent } from '@/components/ui/steps'
 import { Source, SourceTrigger, SourceContent } from '@/components/ui/source'
-import type { Step, ToolMeta, TurnStatus } from '@/lib/types'
+import type { Step, TurnStatus } from '@/lib/types'
 
 // ── Web search result cards ────────────────────────────────────────────────────
 type SearchResult = { title: string; url: string; snippet: string }
@@ -73,12 +73,11 @@ function semanticAction(tool: string, args: Record<string, unknown>): string {
   switch (tool) {
     case 'web_search':
       return `正在查阅：「${String(args.query ?? '').slice(0, 60)}」`
-    case 'get_smiles_by_name':
-      return `正在解析化学名词：${String(args.chemical_name ?? '')}`
-    case 'generate_2d_image_from_smiles':
-      return `正在绘制 2D 结构：${String(args.name || args.smiles || '').slice(0, 40)}`
+
     case 'analyze_molecule_from_smiles':
       return `正在计算分子性质：${String(args.name || args.smiles || '').slice(0, 40)}`
+    case 'draw_molecules_by_name':
+      return `正在绘制：${String(args.chemical_names ?? '').slice(0, 60)}`
     default:
       return `正在执行：${tool.replace(/_/g, ' ')}`
   }
@@ -91,12 +90,10 @@ function semanticDone(tool: string, summary: string): string {
       const m = cleaned.match(/Found (\d+) result/i)
       return m ? `找到 ${m[1]} 条结果` : (cleaned.split(':')[0].slice(0, 60) || '搜索完毕')
     }
-    case 'get_smiles_by_name':
-      return cleaned.slice(0, 60) || 'SMILES 获取成功'
-    case 'generate_2d_image_from_smiles':
-      return '结构图生成完毕'
     case 'analyze_molecule_from_smiles':
       return '分子性质计算完毕'
+    case 'draw_molecules_by_name':
+      return cleaned.slice(0, 80) || '结构图绘制完成'
     default:
       return cleaned.slice(0, 80) || '完成'
   }
@@ -190,7 +187,6 @@ interface ThinkingLogProps {
   status: TurnStatus
   startedAt: number
   finishedAt?: number
-  toolCatalog: Record<string, ToolMeta>
   statusMessage?: string
 }
 
