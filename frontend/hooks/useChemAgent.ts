@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useChatStore } from '@/store/chatStore'
+import type { ConnectionStatus } from '@/store/chatStore'
 import type { AgentModelConfig, ToolMeta, Turn } from '@/lib/types'
 
 /**
@@ -14,19 +15,29 @@ import type { AgentModelConfig, ToolMeta, Turn } from '@/lib/types'
 export function useChemAgent(): {
   turns: Turn[]
   isStreaming: boolean
+  connectionStatus: ConnectionStatus
   toolCatalog: Record<string, ToolMeta>
   agentModels: AgentModelConfig
+  autoApprove: boolean
   setAgentModels: (config: AgentModelConfig) => void
   sendMessage: (prompt: string) => void
   clearTurns: () => void
+  approvePlan: (feedback?: string) => void
+  rejectPlan: () => void
+  setAutoApprove: (enabled: boolean) => void
 } {
   const turns = useChatStore((s) => s.turns)
   const isStreaming = useChatStore((s) => s.isStreaming)
+  const connectionStatus = useChatStore((s) => s.connectionStatus)
   const toolCatalog = useChatStore((s) => s.toolCatalog)
   const agentModels = useChatStore((s) => s.agentModels)
+  const autoApprove = useChatStore((s) => s.autoApprove)
   const setAgentModels = useChatStore((s) => s.setAgentModels)
   const sendMessage = useChatStore((s) => s.sendMessage)
   const clearTurns = useChatStore((s) => s.clearTurns)
+  const approvePlan = useChatStore((s) => s.approvePlan)
+  const rejectPlan = useChatStore((s) => s.rejectPlan)
+  const setAutoApprove = useChatStore((s) => s.setAutoApprove)
   const initialize = useChatStore((s) => s.initialize)
 
   // Connect once on mount — idempotent, safe to call multiple times.
@@ -34,5 +45,18 @@ export function useChemAgent(): {
     initialize()
   }, [initialize])
 
-  return { turns, isStreaming, toolCatalog, agentModels, setAgentModels, sendMessage, clearTurns }
+  return {
+    turns,
+    isStreaming,
+    connectionStatus,
+    toolCatalog,
+    agentModels,
+    autoApprove,
+    setAgentModels,
+    sendMessage,
+    clearTurns,
+    approvePlan,
+    rejectPlan,
+    setAutoApprove,
+  }
 }

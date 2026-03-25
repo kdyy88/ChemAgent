@@ -7,7 +7,13 @@ from pydantic import BaseModel, Field
 
 
 SessionControlType = Literal["session.start", "session.resume"]
-UserMessageType = Literal["user.message", "session.clear"]
+UserMessageType = Literal[
+    "user.message",
+    "session.clear",
+    "plan.approve",
+    "plan.reject",
+    "plan.modify",
+]
 HeartbeatClientType = Literal["pong"]
 ServerEventType = Literal[
     "ping",
@@ -19,6 +25,12 @@ ServerEventType = Literal[
     "assistant.message",
     "tool.call",
     "tool.result",
+    # ── HITL state-machine events ──
+    "plan.proposed",
+    "plan.status",
+    "todo.progress",
+    # ── Settings ──
+    "settings.updated",
 ]
 
 

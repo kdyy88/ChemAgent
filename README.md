@@ -3,13 +3,14 @@
 ChemAgent 是一个面向化学场景的全栈智能体项目，目标是通过**权威检索 + 结构化工具调用 + 可解释流式过程展示**，尽量减少化学幻觉，并为后续分子分析工具扩展提供稳定底座。
 
 当前版本已经完成：
-- 后端**三层解耦架构**：纯计算层（`chem/`）→ HTTP 层（`api/`）→ 智能体工具层（`tools/`）
-- 后端插件化工具注册（`tools/` 按平台分组，`walk_packages` 递归自动发现）
+- 后端 **ChemBrain + Executor 双 Agent HITL 状态机**：async-first，使用 AG2 `a_run()` API
+- **HITL 计划审批**：规划 → 用户批准/拒绝 → 执行，支持自动批准模式
+- **7 个化学工具**：tenacity 重试 + async worker 卸载
 - 结构化事件流式协议与多轮 session memory
-- **多智能体协作架构**（Manager 路由 + Visualizer / Analyst / Researcher 专家 + 综合回答器）
-- 前端白盒推理/工具链展示（专家溯源徽章）与通用 artifact 渲染
-- **RDKit 与 Open Babel 的 12 大 API 工具集群**：覆盖数据清洗、物化性质、结构分析、3D 构象优化与对接预处理，以及高通量 SDF 库批量合并与拆分。
-- 前端侧边栏重构：支持“基础组件库”与“业务场景流”双视角切换，并完美接入所有 12 个强力交互表单。
+- 前端白盒推理/工具链展示与 HITL 计划审批 UI
+- **RDKit 与 Open Babel 的 12 大 API 工具集群**：覆盖数据清洗、物化性质、结构分析、3D 构象优化与对接预处理
+- 前端侧边栏重构：支持"基础组件库"与"业务场景流"双视角切换
+- **测试覆盖**：后端 23 tests + 前端 328 tests
 
 ---
 
@@ -56,7 +57,7 @@ ChemAgent 聚焦三个核心问题：
 ```text
 chem-agent-project/
 ├── .env                          # ★ 统一环境变量（本地开发 + Docker 共用）
-├── .env.example                  #   环境变量模板，复制后填写真实值
+├── .env.example                  #   环境变量模板
 ├── dev.sh                        #   一键本地启动脚本
 ├── compose.yaml                  #   Docker Compose 全栈配置
 ├── backend/                      # FastAPI + AG2 + RDKit + Open Babel
@@ -65,38 +66,32 @@ chem-agent-project/
 │   │   │   ├── rdkit_ops.py      #   RDKit：描述符、相似度、骨架、SA Score
 │   │   │   └── babel_ops.py      #   Open Babel：格式转换、3D 构象、PDBQT 准备
 │   │   ├── agents/
-│   │   │   ├── config.py         #   共享 LLM 配置加载
-│   │   │   ├── factory.py        #   通用 agent / tool 注册工厂
-│   │   │   ├── manager.py        #   路由 agent + 综合回答 agent
-│   │   │   └── specialists/
-│   │   │       ├── visualizer.py #   可视化专家（draw_molecules_by_name）
-│   │   │       ├── analyst.py    #   分析专家（analyze_molecule_from_smiles）
-│   │   │       └── researcher.py #   检索专家（web_search）
-│   │   ├── api/                  # HTTP 层：仅路由，不含化学逻辑
+│   │   │   ├── __init__.py       #   create_agent_pair() 工厂（双 Agent）
+│   │   │   ├── brain.py          #   ChemBrain 系统提示
+│   │   │   ├── config.py         #   LLMConfig 构建
+│   │   │   └── executor.py       #   Executor 哨兵工厂
+│   │   ├── api/                  # HTTP / WebSocket 层
 │   │   │   ├── rdkit_api.py      #   POST /api/rdkit/*
 │   │   │   ├── babel_api.py      #   POST /api/babel/*
-│   │   │   ├── chat.py           #   WebSocket 主入口
-│   │   │   ├── event_bridge.py   #   AG2 事件 → 前端协议帧
-│   │   │   ├── sessions.py       #   会话管理与三阶段编排
-│   │   │   ├── runtime.py        #   运行期数据模型
-│   │   │   └── protocol.py       #   WebSocket 输入输出模型
+│   │   │   ├── chat.py           #   WebSocket 主入口（async，HITL 路由）
+│   │   │   ├── events.py         #   AG2 事件 → 前端协议帧（async drain）
+│   │   │   ├── sessions.py       #   会话管理（2 Agent，asyncio.Lock）
+│   │   │   └── protocol.py       #   Pydantic 协议模型（含 HITL 事件）
 │   │   ├── core/
-│   │   │   └── tooling.py        #   工具注册中心、结果模型、缓存
-│   │   └── tools/                # Agent 工具层（按平台分组）
-│   │       ├── rdkit/
-│   │       │   └── analysis.py   #   analyze_molecule_from_smiles
-│   │       ├── search/
-│   │       │   └── web.py        #   web_search
-│   │       └── babel/            #   Open Babel agent 工具（Phase 2 占位）
+│   │   │   └── tooling.py        #   ToolArtifact / ToolResultStore
+│   │   └── tools/                # Agent 工具
+│   │       ├── __init__.py       #   ALL_TOOLS + public_catalog()
+│   │       └── chem_tools.py     #   7 个工具（async + retry + worker）
+│   ├── tests/                    # pytest 测试套件（23 tests）
 │   └── pyproject.toml
 ├── frontend/                     # Next.js UI
 │   ├── app/                      #   App Router 入口
-│   ├── components/chat/          #   聊天、日志、artifact 展示组件
+│   ├── components/chat/          #   聊天、日志、HITL UI、artifact 展示
 │   ├── hooks/                    #   对外暴露的业务 hook
 │   ├── lib/
 │   │   ├── chem-api.ts           #   REST API 调用（rdkit + babel）
-│   │   └── types.ts              #   前端类型定义
-│   └── store/                    #   Zustand 状态管理
+│   │   └── types.ts              #   前端类型定义（含 HITL 类型）
+│   └── store/                    #   Zustand 状态管理（含 HITL actions）
 ├── docs/
 │   └── API.md                    # REST API 完整文档
 ├── README.md
@@ -147,26 +142,40 @@ chem-agent-project/
 
 详细请求/响应格式见 [docs/API.md](docs/API.md)。
 
-### Agent 工具（Phase 2 — 由 AI 按需调用）
+### Agent 工具（由 AI 按需调用，7 个）
 
-| 工具名 | 平台 | 位置 | 功能 |
-|---|---|---|---|
-| `draw_molecules_by_name` | RDKit + PubChem | `tools/rdkit/image.py` | 批量名称 → 2D 结构图 |
-| `analyze_molecule_from_smiles` | RDKit | `tools/rdkit/analysis.py` | SMILES → 描述符分析 |
-| `web_search` | Serper | `tools/search/web.py` | 药物/文献检索 |
+| 工具名 | 类型 | 功能 |
+|---|---|---|
+| `get_molecule_smiles` | sync | 名称/CAS → SMILES（PubChem，tenacity 重试） |
+| `analyze_molecule` | async | 综合描述符 + Lipinski |
+| `extract_murcko_scaffold` | async | Murcko 骨架提取 |
+| `draw_molecule_structure` | async | 2D SVG 渲染 |
+| `search_web` | sync | Serper 文献检索（tenacity 重试） |
+| `compute_molecular_similarity` | async | Tanimoto 相似度 |
+| `check_substructure` | async | 子结构 / SMARTS 匹配 |
 
 ### 已有协议事件
-- `session.started`
-- `run.started`
-- `tool.call`
-- `tool.result`
+
+**Server → Client：**
+- `session.started` / `run.started` / `run.finished` / `run.failed`
+- `turn.status` — 阶段状态（planning / executing）
+- `tool.call` / `tool.result`
 - `assistant.message`
-- `run.finished`
-- `run.failed`
+- `plan.proposed` — 执行计划
+- `plan.status` — 计划状态（awaiting_approval / rejected）
+- `todo.progress` — 执行进度
+- `settings.updated` — 设置变更确认
+
+**Client → Server：**
+- `user.message` / `session.start` / `session.resume` / `session.clear`
+- `plan.approve` / `plan.reject` — HITL 审批
+- `settings.update` — 切换 auto_approve
 
 ### 已有前端表现
 - 聊天输入与多轮会话
-- 工具链思考日志（含专家溯源徽章：Visualizer 绿 / Researcher 紫 / Manager 蓝）
+- 工具链思考日志（ThinkingLog：plan=蓝、todo=绿、工具调用链）
+- HITL 计划审批 UI（PlanApprovalCard：批准/拒绝按钮）
+- 自动批准模式切换（TeamSettingsPopover）
 - 最终回答 Markdown 渲染（粗体、有序列表、代码块等完整支持）
 - artifact 独立渲染
 - session 恢复与清空
@@ -325,6 +334,12 @@ cd frontend && pnpm tsc --noEmit
 # 前端 lint
 cd frontend && pnpm lint
 
+# 前端测试（328 tests）
+cd frontend && npx vitest run
+
+# 后端测试（23 tests）
+cd backend && uv run pytest tests/ -v
+
 # 后端语法检查
 cd backend && uv run python -m py_compile app/main.py
 
@@ -341,47 +356,31 @@ curl -s -X POST http://127.0.0.1:3030/api/rdkit/validate \
 
 ## 7.1 后端：插件化工具架构
 
-后端不再把工具硬编码在 agent 文件中，而是通过 `ToolRegistry` 统一注册。
+7 个化学工具在 `app/tools/chem_tools.py` 中定义，使用 `Annotated` 类型注释 + docstring 作为 LLM schema。
 
-每个工具需要声明：
-- 工具名
-- 描述
-- 展示名称
-- 分类
-- 输出类型
-- 反思提示
+工具执行后统一返回精简 JSON（`success` + `result_id` + `summary`），重型制品存入 `ToolResultStore`。
 
-工具执行后统一返回 `ToolExecutionResult`，包含：
-- `status`
-- `summary`
-- `data`
-- `artifacts`
-- `retry_hint`
-- `error_code`
-
-这使前端、模型、协议层都可以围绕一套稳定结构进行处理。
+错误恢复使用 tenacity 重试（PubChem / Serper API），async 工具支持 worker 卸载。
 
 ## 7.2 后端：结构化事件层
 
-WebSocket 层会把 AG2 的事件转换成统一前端协议，而不是解析 stdout 文本。
+WebSocket 层使用 `async for event in response.events` 非阻塞迭代 AG2 事件，转换为统一前端协议帧。
 
 当前这层已经拆成：
-- `backend/app/api/chat.py`：处理 WebSocket 生命周期与 turn 启动
-- `backend/app/api/event_bridge.py`：负责 AG2 事件到协议帧的转换
+- `backend/app/api/chat.py`：处理 WebSocket 生命周期、HITL 消息路由
+- `backend/app/api/events.py`：负责 AG2 事件到协议帧的转换（async drain）
 
-优点：
-- 更稳定
-- 更适合前端增量渲染
-- 更适合调试与扩展
-- 更容易接入更多工具类型
+完全 async-first：无线程、无 Queue、无 run_in_executor。
 
-## 7.2 后端：多智能体路由架构
+## 7.3 后端：双 Agent HITL 状态机
 
-当前采用三阶段协作模式：
+当前采用 **ChemBrain + Executor** 双 Agent 两阶段模式：
 
-1. **Phase 1 — 路由**：Manager 路由 agent 判断本轮需要哪些专家（Visualizer / Researcher / 两者都要），结果为 JSON，带跨轮上下文消歧义。
-2. **Phase 2 — 专家执行**：多个专家可并行运行（ThreadPoolExecutor），每个专家只拥有与自身职责相关的工具。事件流上携带 `sender` 字段用于前端溯源。
-3. **Phase 3 — 综合回答**：Manager 综合 agent 基于专家报告生成 Markdown 格式最终答案，通过 `assistant.message` 事件发回前端，被路由至 `Turn.finalAnswer` 而非工具链日志。
+1. **Phase 1 — 规划**：ChemBrain 分析请求，输出 `<plan>` 执行计划 + `[AWAITING_APPROVAL]` 哨兵
+2. **HITL 审批门**：
+   - `auto_approve=True` → 自动执行
+   - 否则 → 前端显示 `PlanApprovalCard`，等待用户 `plan.approve` 或 `plan.reject`
+3. **Phase 2 — 执行**：ChemBrain 逐步调用工具，输出 `<todo>` 进度，最终 `[TERMINATE]`
 
 ## 7.3 前端：白盒 UI
 
@@ -420,12 +419,12 @@ WebSocket 层会把 AG2 的事件转换成统一前端协议，而不是解析 s
 5. 可选：`app/agents/specialists/` 新增专家 agent
 6. 更新 `manager.py` 路由规则
 
-### 新增 Agent 工具（现有平台）
-1. 在 `backend/app/tools/<platform>/` 下新增 `.py` 文件
-2. 使用 `@tool_registry.register(...)` 装饰器
-3. 从 `app/chem/<platform>_ops.py` 导入计算逻辑（禁止在 `tools/` 里写化学计算）
-4. 返回 `ToolExecutionResult`，如有产物附带 `ToolArtifact`
-5. `walk_packages` 自动发现，无需手动注册
+### 新增 Agent 工具
+1. 在 `backend/app/chem/` 下实现计算逻辑
+2. 在 `backend/app/tools/chem_tools.py` 中添加工具函数（返回 `_slim_response()`）
+3. 在 `backend/app/tools/__init__.py` 的 `ALL_TOOLS` 中注册
+4. 在 `backend/app/agents/__init__.py` 的 `create_agent_pair()` 中用 `register_function()` 绑定
+5. 如需网络重试，使用 `@_retry_transient` 装饰器
 
 ### 新增前端 artifact 渲染
 1. 在 `frontend/components/chat/ArtifactRenderer.tsx` 增加分支
@@ -437,13 +436,15 @@ WebSocket 层会把 AG2 的事件转换成统一前端协议，而不是解析 s
 ## 9. 当前已验证的关键能力
 
 - 单轮结构化流式完成闭环
+- 两阶段 HITL 流程：plan → approve/reject → execute
+- 自动批准模式（auto_approve toggle）
 - 生成分子 2D 结构图后能正确结束 run
 - 图片 artifact 不再塞进正文流，而是独立渲染
-- 多轮会话能保留上下文（`turn_history` 跨轮消歧义）
+- 多轮会话能保留上下文
 - 第二轮可引用上一轮分子结果继续回答
-- 多智能体路由：Visualizer / Researcher 按需单路或并行执行
-- Manager 综合回答 Markdown 格式化，在气泡中正确渲染
-- ThinkingLog 专家溯源徽章（颜色区分 Manager / Visualizer / Researcher）
+- Async-first：全链路无线程、无 Queue
+- tenacity 重试：PubChem / Serper API 瞬态故障自动恢复
+- 后端测试 23 passed / 前端测试 328 passed
 
 ---
 
@@ -488,4 +489,4 @@ WebSocket 层会把 AG2 的事件转换成统一前端协议，而不是解析 s
 
 ## 12. 一句话总结
 
-ChemAgent 采用**计算核心层（chem/）→ HTTP API 层（api/）→ Agent 工具层（tools/）**严格三层解耦架构，任何新化学软件只需新增对应目录，不修改现有代码，即可同时服务 REST UI 和多智能体工作流。
+ChemAgent 采用 **ChemBrain + Executor 双 Agent HITL 状态机**（async-first），计算核心层（`chem/`）→ HTTP API 层（`api/`）→ Agent 工具层（`tools/`）严格三层解耦。支持 HITL 计划审批、tenacity 错误恢复和 async worker 卸载。

@@ -1,5 +1,14 @@
 # Backend
 
+## 架构
+
+后端采用 **ChemBrain + Executor 双 Agent HITL 状态机**，async-first（无线程），使用 AG2 的 `a_run()` API。
+
+- **ChemBrain**：持有 LLM，负责推理、规划和工具调用
+- **Executor**：无 LLM 哨兵，负责执行工具函数
+- 7 个化学工具，支持 tenacity 重试和 async worker 卸载
+- HITL 两阶段：规划 → 用户批准 → 执行
+
 ## 环境变量
 
 在 `backend` 目录下创建 `.env`（可参考 `.env.example`）：
@@ -20,9 +29,26 @@
 
 在 `backend` 目录执行：
 
-- `uv run python -m app.agents.chemist`（智能体 smoke test）
 - `uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`（API / WebSocket 网关）
 - `uv run arq app.worker.WorkerSettings`（RDKit / OpenBabel 计算 worker）
+
+## 测试
+
+```bash
+# 运行全部后端测试（23 tests）
+uv run pytest tests/ -v
+
+# 只运行工具测试
+uv run pytest tests/test_tools.py -v
+
+# 只运行事件桥接测试
+uv run pytest tests/test_events.py -v
+
+# 只运行会话管理测试
+uv run pytest tests/test_sessions.py -v
+```
+
+测试使用 `pytest-asyncio`（asyncio_mode = auto），所有 async 测试函数自动在事件循环中运行。
 
 ## Docker / 线上环境
 

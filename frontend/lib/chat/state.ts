@@ -1,4 +1,4 @@
-import type { Artifact, AgentModelConfig, ServerEvent, Step, ToolMeta, Turn } from '@/lib/types'
+import type { Artifact, AgentModelConfig, ServerEvent, Step, ToolMeta, Turn, TurnStatus } from '@/lib/types'
 
 export type PendingTurn = {
   turnId: string
@@ -11,6 +11,7 @@ export type ChatStateSlice = {
   isStreaming: boolean
   toolCatalog: Record<string, ToolMeta>
   agentModels: AgentModelConfig
+  autoApprove: boolean
 }
 
 function createTurnId(): string {
@@ -180,6 +181,111 @@ export function applyServerEvent(state: ChatStateSlice, msg: ServerEvent): Parti
           statusMessage: msg.message,
         })),
       }
+
+    // ── HITL events ──────────────────────────────────────────────────────
+
+    case 'plan.proposed':
+      return {
+        turns: updateTurn(state.turns, msg.turn_id, (turn) => ({
+          ...turn,
+          steps: [...turn.steps, { kind: 'plan' as const, plan: msg.plan }],
+        })),
+      }
+
+    case 'plan.status':
+      if (msg.status === 'awaiting_approval') {
+        return {
+          turns: updateTurn(state.turns, msg.turn_id, (turn) => ({
+            ...turn,
+            status: 'awaiting_approval' as const,
+            statusMessage: '等待批准执行计划…',
+          })),
+          // Stop blocking input so the user can click approve/reject
+          isStreaming: false,
+        }
+      }
+      if (msg.status === 'rejected') {
+        return {
+          turns: updateTurn(state.turns, msg.turn_id, (turn) => ({
+            ...turn,
+            status: 'done' as const,
+            statusMessage: '计划已拒绝',
+            finishedAt: Date.now(),
+          })),
+          isStreaming: false,
+        }
+      }
+      return {}
+
+    case 'todo.progress':
+      return {
+        turns: updateTurn(state.turns, msg.turn_id, (turn) => {
+          // Replace the last todo step (if any) so the checklist updates
+          // in-place instead of spawning duplicate entries.
+          const lastTodoIdx = turn.steps.findLastIndex((s) => s.kind === 'todo')
+          if (lastTodoIdx >= 0) {
+            const newSteps = [...turn.steps]
+            newSteps[lastTodoIdx] = { kind: 'todo' as const, todo: msg.todo }
+            return { ...turn, steps: newSteps }
+          }
+          return { ...turn, steps: [...turn.steps, { kind: 'todo' as const, todo: msg.todo }] }
+        }),
+      }
+
+    case 'thinking.delta':
+      return {
+        turns: updateTurn(state.turns, msg.turn_id, (turn) => {
+          // Append content to the last thinking step, or create a new one
+          const lastThinkIdx = turn.steps.findLastIndex((s) => s.kind === 'thinking')
+          if (lastThinkIdx >= 0) {
+            const newSteps = [...turn.steps]
+            const existing = newSteps[lastThinkIdx] as Extract<Step, { kind: 'thinking' }>
+            newSteps[lastThinkIdx] = { kind: 'thinking' as const, content: existing.content + msg.content }
+            return { ...turn, steps: newSteps }
+          }
+          return { ...turn, steps: [...turn.steps, { kind: 'thinking' as const, content: msg.content }] }
+        }),
+      }
+
+    case 'state.snapshot': {
+      // Reconnect replay — reconstruct a Turn from the server snapshot
+      const snapshotTurnId = msg.turn_id
+      if (!snapshotTurnId) return {}
+      // Skip if a turn with this ID already exists (avoid duplicates)
+      if (state.turns.some((t) => t.id === snapshotTurnId)) return {}
+
+      const snapshotSteps: Step[] = []
+      if (msg.last_plan) {
+        snapshotSteps.push({ kind: 'plan' as const, plan: msg.last_plan })
+      }
+      if (msg.last_todo) {
+        snapshotSteps.push({ kind: 'todo' as const, todo: msg.last_todo })
+      }
+
+      const snapshotStatus: TurnStatus =
+        msg.state === 'awaiting_approval' ? 'awaiting_approval' : 'done'
+
+      const restoredTurn: Turn = {
+        id: snapshotTurnId,
+        userMessage: '',
+        runId: msg.run_id || undefined,
+        steps: snapshotSteps,
+        artifacts: [],
+        finalAnswer: msg.last_answer || undefined,
+        status: snapshotStatus,
+        statusMessage: '会话已恢复',
+        startedAt: Date.now(),
+        finishedAt: snapshotStatus === 'done' ? Date.now() : undefined,
+      }
+
+      return {
+        turns: [...state.turns, restoredTurn],
+        isStreaming: snapshotStatus === 'awaiting_approval' ? false : state.isStreaming,
+      }
+    }
+
+    case 'settings.updated':
+      return { autoApprove: msg.auto_approve }
 
     default:
       return {}

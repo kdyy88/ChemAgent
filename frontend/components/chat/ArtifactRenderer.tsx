@@ -6,8 +6,10 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { MoleculeCard } from './MoleculeCard'
 import { LipinskiCard } from './LipinskiCard'
+import { BabelResultCard } from './BabelResultCard'
 import type { Artifact } from '@/lib/types'
 import type { LipinskiResult } from '@/lib/chem-api'
+import type { BabelResponse } from './BabelResultCard'
 
 interface ArtifactRendererProps {
   artifact: Artifact
@@ -87,6 +89,14 @@ export function ArtifactRenderer({ artifact }: ArtifactRendererProps) {
     (artifact.data as Record<string, unknown>)?.type === 'lipinski'
   ) {
     return <LipinskiCard data={artifact.data as LipinskiResult} />
+  }
+
+  // Babel tool results: format conversion, 3D conformer, PDBQT prep
+  if (artifact.kind === 'json') {
+    const dataType = (artifact.data as Record<string, unknown>)?.type
+    if (dataType === 'format_conversion' || dataType === 'conformer_3d' || dataType === 'pdbqt_prep') {
+      return <BabelResultCard data={artifact.data as BabelResponse} />
+    }
   }
 
   if (artifact.encoding === 'json' || artifact.mimeType === 'application/json') {

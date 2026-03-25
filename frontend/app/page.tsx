@@ -6,6 +6,7 @@ import { PlusCircle, FlaskConical, LayoutTemplate } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { TeamSettingsPopover } from '@/components/chat/TeamSettingsPopover'
+import { ConnectionStatusBadge } from '@/components/chat/ConnectionStatusBadge'
 import { useChemAgent } from '@/hooks/useChemAgent'
 import {
   ResizableHandle,
@@ -19,7 +20,7 @@ import { CopilotSidebar } from '@/components/chat/CopilotSidebar'
 import GlobalLoading from './loading'
 
 export default function Home() {
-  const { clearTurns } = useChemAgent()
+  const { clearTurns, connectionStatus } = useChemAgent()
   const isDesktop = useMediaQuery('(min-width: 768px)')
   const [isMounted, setIsMounted] = useState(false)
 
@@ -42,6 +43,8 @@ export default function Home() {
             <h1 className="text-sm font-semibold leading-none">ChemAgent</h1>
             <p className="text-xs text-muted-foreground mt-0.5">AI Chemistry Expert</p>
           </div>
+
+          <ConnectionStatusBadge status={connectionStatus} />
 
           <Button
             variant="ghost"

@@ -46,7 +46,7 @@ const AGENTS: { key: keyof AgentModelConfig; icon: string; label: string }[] = [
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export function TeamSettingsPopover() {
-  const { turns, agentModels, setAgentModels, clearTurns } = useChemAgent()
+  const { turns, agentModels, setAgentModels, clearTurns, autoApprove, setAutoApprove } = useChemAgent()
   const isLocked = turns.length > 0
 
   // Pending change waiting for user confirmation (only used when isLocked)
@@ -113,6 +113,24 @@ export function TeamSettingsPopover() {
                 </Select>
               </div>
             ))}
+          </div>
+
+          <Separator />
+
+          {/* HITL auto-approve toggle */}
+          <div className="px-4 py-3 flex items-center justify-between">
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs font-medium">自动批准计划</span>
+              <span className="text-[10px] text-muted-foreground">跳过人工审批，直接执行</span>
+            </div>
+            <Button
+              variant={autoApprove ? 'default' : 'outline'}
+              size="sm"
+              className="h-7 text-xs min-w-[52px]"
+              onClick={() => setAutoApprove(!autoApprove)}
+            >
+              {autoApprove ? '开启' : '关闭'}
+            </Button>
           </div>
 
           <Separator />

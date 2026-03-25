@@ -23,6 +23,7 @@ function makeState(overrides: Partial<ChatStateSlice> = {}): ChatStateSlice {
     isStreaming: false,
     toolCatalog: {},
     agentModels: {},
+    autoApprove: false,
     ...overrides,
   }
 }
@@ -437,6 +438,147 @@ describe('applyServerEvent – turn.status', () => {
     }
     const result = applyServerEvent(state, msg)
     expect(result.turns![0].statusMessage).toBe('正在连接专家…')
+  })
+})
+
+// ── applyServerEvent – plan.proposed ──────────────────────────────────────────
+
+describe('applyServerEvent – plan.proposed', () => {
+  it('appends a plan step to the matching turn', () => {
+    const state = makeState({ turns: [makeTurn({ id: 'turn-1' })] })
+    const msg: ServerEvent = {
+      type: 'plan.proposed',
+      session_id: 'sess',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+      plan: '1. Fetch SMILES\n2. Analyze molecule',
+    }
+    const result = applyServerEvent(state, msg)
+    const step = result.turns![0].steps.at(-1)!
+    expect(step.kind).toBe('plan')
+    if (step.kind === 'plan') {
+      expect(step.plan).toContain('Fetch SMILES')
+    }
+  })
+})
+
+// ── applyServerEvent – plan.status ────────────────────────────────────────────
+
+describe('applyServerEvent – plan.status', () => {
+  it('sets turn status to awaiting_approval', () => {
+    const state = makeState({ turns: [makeTurn({ id: 'turn-1' })] })
+    const msg: ServerEvent = {
+      type: 'plan.status',
+      session_id: 'sess',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+      status: 'awaiting_approval',
+    }
+    const result = applyServerEvent(state, msg)
+    expect(result.turns![0].status).toBe('awaiting_approval')
+  })
+
+  it('sets isStreaming=false on awaiting_approval', () => {
+    const state = makeState({ turns: [makeTurn({ id: 'turn-1' })], isStreaming: true })
+    const msg: ServerEvent = {
+      type: 'plan.status',
+      session_id: 'sess',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+      status: 'awaiting_approval',
+    }
+    const result = applyServerEvent(state, msg)
+    expect(result.isStreaming).toBe(false)
+  })
+
+  it('sets turn to done on rejected', () => {
+    const state = makeState({ turns: [makeTurn({ id: 'turn-1' })] })
+    const msg: ServerEvent = {
+      type: 'plan.status',
+      session_id: 'sess',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+      status: 'rejected',
+    }
+    const result = applyServerEvent(state, msg)
+    expect(result.turns![0].status).toBe('done')
+    expect(result.isStreaming).toBe(false)
+  })
+})
+
+// ── applyServerEvent – todo.progress ──────────────────────────────────────────
+
+describe('applyServerEvent – todo.progress', () => {
+  it('appends a todo step when no previous todo exists', () => {
+    const state = makeState({ turns: [makeTurn({ id: 'turn-1' })] })
+    const msg: ServerEvent = {
+      type: 'todo.progress',
+      session_id: 'sess',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+      todo: '- [x] Step 1\n- [ ] Step 2',
+    }
+    const result = applyServerEvent(state, msg)
+    const step = result.turns![0].steps.at(-1)!
+    expect(step.kind).toBe('todo')
+    if (step.kind === 'todo') {
+      expect(step.todo).toContain('Step 1')
+    }
+  })
+
+  it('replaces the last todo step on subsequent updates', () => {
+    const existingTodo = { kind: 'todo' as const, todo: '- [ ] Step 1\n- [ ] Step 2' }
+    const state = makeState({
+      turns: [makeTurn({ id: 'turn-1', steps: [existingTodo] })],
+    })
+    const msg: ServerEvent = {
+      type: 'todo.progress',
+      session_id: 'sess',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+      todo: '- [x] Step 1\n- [ ] Step 2',
+    }
+    const result = applyServerEvent(state, msg)
+    // Should still have exactly 1 todo step (replaced, not appended)
+    const todoSteps = result.turns![0].steps.filter((s) => s.kind === 'todo')
+    expect(todoSteps).toHaveLength(1)
+    if (todoSteps[0].kind === 'todo') {
+      expect(todoSteps[0].todo).toContain('[x] Step 1')
+    }
+  })
+
+  it('preserves non-todo steps when replacing todo', () => {
+    const toolStep = { kind: 'tool_call' as const, callId: 'c1', tool: 't', args: {}, loadStatus: 'success' as const }
+    const existingTodo = { kind: 'todo' as const, todo: '- [ ] A' }
+    const state = makeState({
+      turns: [makeTurn({ id: 'turn-1', steps: [toolStep, existingTodo] })],
+    })
+    const msg: ServerEvent = {
+      type: 'todo.progress',
+      session_id: 'sess',
+      turn_id: 'turn-1',
+      run_id: 'run-1',
+      todo: '- [x] A',
+    }
+    const result = applyServerEvent(state, msg)
+    expect(result.turns![0].steps).toHaveLength(2)
+    expect(result.turns![0].steps[0].kind).toBe('tool_call')
+    expect(result.turns![0].steps[1].kind).toBe('todo')
+  })
+})
+
+// ── applyServerEvent – settings.updated ───────────────────────────────────────
+
+describe('applyServerEvent – settings.updated', () => {
+  it('updates autoApprove state', () => {
+    const state = makeState({ autoApprove: false })
+    const msg: ServerEvent = {
+      type: 'settings.updated',
+      session_id: 'sess',
+      auto_approve: true,
+    }
+    const result = applyServerEvent(state, msg)
+    expect(result.autoApprove).toBe(true)
   })
 })
 

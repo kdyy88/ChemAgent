@@ -36,6 +36,7 @@ beforeEach(() => {
     reconnectTimer: null,
     reconnectAttempts: 0,
     agentModels: {},
+    autoApprove: false,
   })
 })
 
@@ -159,5 +160,79 @@ describe('chatStore – clearTurns()', () => {
     useChatStore.setState({ wsRef: null })
     expect(() => useChatStore.getState().clearTurns()).not.toThrow()
     expect(mockSend).not.toHaveBeenCalled()
+  })
+})
+
+// ── approvePlan ───────────────────────────────────────────────────────────────
+
+describe('chatStore – approvePlan()', () => {
+  it('sends plan.approve over WebSocket', () => {
+    const mockWs = { readyState: 1, send: vi.fn() }
+    useChatStore.setState({ wsRef: mockWs as unknown as WebSocket })
+
+    useChatStore.getState().approvePlan()
+
+    expect(mockWs.send).toHaveBeenCalledOnce()
+    const msg = JSON.parse(mockWs.send.mock.calls[0][0] as string)
+    expect(msg.type).toBe('plan.approve')
+  })
+
+  it('sets isStreaming to true after approval', () => {
+    const mockWs = { readyState: 1, send: vi.fn() }
+    useChatStore.setState({ wsRef: mockWs as unknown as WebSocket })
+
+    useChatStore.getState().approvePlan()
+    expect(useChatStore.getState().isStreaming).toBe(true)
+  })
+
+  it('passes feedback content when provided', () => {
+    const mockWs = { readyState: 1, send: vi.fn() }
+    useChatStore.setState({ wsRef: mockWs as unknown as WebSocket })
+
+    useChatStore.getState().approvePlan('Skip step 2')
+
+    const msg = JSON.parse(mockWs.send.mock.calls[0][0] as string)
+    expect(msg.content).toBe('Skip step 2')
+  })
+})
+
+// ── rejectPlan ────────────────────────────────────────────────────────────────
+
+describe('chatStore – rejectPlan()', () => {
+  it('sends plan.reject over WebSocket', () => {
+    const mockWs = { readyState: 1, send: vi.fn() }
+    useChatStore.setState({ wsRef: mockWs as unknown as WebSocket })
+
+    useChatStore.getState().rejectPlan()
+
+    expect(mockWs.send).toHaveBeenCalledOnce()
+    const msg = JSON.parse(mockWs.send.mock.calls[0][0] as string)
+    expect(msg.type).toBe('plan.reject')
+  })
+})
+
+// ── setAutoApprove ────────────────────────────────────────────────────────────
+
+describe('chatStore – setAutoApprove()', () => {
+  it('updates autoApprove in the store', () => {
+    useChatStore.getState().setAutoApprove(true)
+    expect(useChatStore.getState().autoApprove).toBe(true)
+  })
+
+  it('sends settings.update over WebSocket', () => {
+    const mockWs = { readyState: 1, send: vi.fn() }
+    useChatStore.setState({ wsRef: mockWs as unknown as WebSocket })
+
+    useChatStore.getState().setAutoApprove(true)
+
+    const msg = JSON.parse(mockWs.send.mock.calls[0][0] as string)
+    expect(msg.type).toBe('settings.update')
+    expect(msg.settings.auto_approve).toBe(true)
+  })
+
+  it('toggles back to false', () => {
+    useChatStore.getState().setAutoApprove(true)
+    useChatStore.getState().setAutoApprove(false)
+    expect(useChatStore.getState().autoApprove).toBe(false)
   })
 })

@@ -7,6 +7,7 @@ import { Loader } from '@/components/ui/loader'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ThinkingLog } from './ThinkingLog'
 import { ArtifactGallery } from './ArtifactGallery'
+import { StreamingText } from './StreamingText'
 import type { Turn } from '@/lib/types'
 
 interface MessageBubbleProps {
@@ -16,7 +17,7 @@ interface MessageBubbleProps {
 export const MessageBubble = memo(function MessageBubble({ turn }: MessageBubbleProps) {
   const displayContent = turn.finalAnswer
 
-  const isThinking = turn.status === 'thinking'
+  const isThinking = turn.status === 'thinking' || turn.status === 'awaiting_approval'
   const showSkeleton = isThinking && !displayContent
 
   return (
@@ -60,10 +61,10 @@ export const MessageBubble = memo(function MessageBubble({ turn }: MessageBubble
             </div>
           ) : displayContent ? (
             isThinking ? (
-              // During streaming: plain text prevents Markdown from
-              // re-parsing the AST on every token (which causes layout jumps).
+              // During streaming: use StreamingText for smooth fade-in of
+              // new chunks. Avoids Markdown re-parsing on every token.
               <div className="rounded-2xl border bg-card px-4 py-3 text-sm leading-relaxed shadow-sm flex items-center gap-2 flex-wrap">
-                <span className="whitespace-pre-wrap">{displayContent}</span>
+                <StreamingText text={displayContent} />
                 <Loader variant="typing" size="sm" className="shrink-0" />
               </div>
             ) : (

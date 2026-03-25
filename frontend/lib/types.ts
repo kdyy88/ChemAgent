@@ -1,4 +1,4 @@
-export type TurnStatus = 'thinking' | 'done'
+export type TurnStatus = 'thinking' | 'awaiting_approval' | 'done'
 
 /** Per-agent model assignments sent from the frontend and echoed back by the backend. */
 export type AgentModelConfig = {
@@ -41,6 +41,9 @@ export type Step =
       artifacts?: Artifact[]
       data?: unknown
     }
+  | { kind: 'plan'; plan: string }
+  | { kind: 'todo'; todo: string }
+  | { kind: 'thinking'; content: string }
   | { kind: 'error'; content: string }
 
 export type Turn = {
@@ -109,6 +112,22 @@ export type ServerEvent =
     }
   | { type: 'run.failed'; session_id?: string; turn_id?: string; run_id?: string; error: string }
   | { type: 'turn.status'; session_id: string; turn_id: string; run_id?: string; phase: string; message: string }
+  // ── HITL state-machine events ──
+  | { type: 'plan.proposed'; session_id: string; turn_id: string; run_id: string; plan: string }
+  | { type: 'plan.status'; session_id: string; turn_id: string; run_id: string; status: 'awaiting_approval' | 'rejected' }
+  | { type: 'todo.progress'; session_id: string; turn_id: string; run_id: string; todo: string }
+  | { type: 'thinking.delta'; session_id: string; turn_id: string; run_id: string; content: string }
+  | {
+      type: 'state.snapshot'
+      session_id: string
+      turn_id: string
+      run_id: string
+      last_plan: string | null
+      last_todo: string | null
+      last_answer: string | null
+      state: 'idle' | 'awaiting_approval' | 'executing'
+    }
+  | { type: 'settings.updated'; session_id: string; auto_approve: boolean }
 
 export type ClientEvent =
   | { type: 'session.start'; agent_models?: AgentModelConfig }
@@ -116,3 +135,7 @@ export type ClientEvent =
   | { type: 'session.clear'; content: ''; agent_models?: AgentModelConfig }
   | { type: 'user.message'; turn_id: string; content: string }
   | { type: 'pong' }
+  // ── HITL client actions ──
+  | { type: 'plan.approve'; content?: string }
+  | { type: 'plan.reject' }
+  | { type: 'settings.update'; settings: { auto_approve: boolean } }

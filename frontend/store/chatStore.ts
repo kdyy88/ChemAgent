@@ -24,15 +24,21 @@ function saveStoredModels(config: AgentModelConfig): void {
   }
 }
 
+export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'reconnecting'
+
 interface ChatStore extends ChatStateSlice {
   wsRef: WebSocket | null
   pendingTurn: PendingTurn | null
   reconnectTimer: number | null
   reconnectAttempts: number
+  connectionStatus: ConnectionStatus
   initialize: () => void
   setAgentModels: (config: AgentModelConfig) => void
   sendMessage: (prompt: string) => void
   clearTurns: () => void
+  approvePlan: (feedback?: string) => void
+  rejectPlan: () => void
+  setAutoApprove: (enabled: boolean) => void
 }
 
 function clearReconnectTimer(timer: number | null): void {
@@ -59,7 +65,7 @@ function scheduleReconnect(
     connectSocket(set, get)
   }, delay)
 
-  set({ reconnectTimer: timer })
+  set({ reconnectTimer: timer, connectionStatus: 'reconnecting' })
 }
 
 const flushPendingTurn = (get: () => ChatStore): boolean => {
@@ -94,7 +100,7 @@ const connectSocket = (
 
       if (msg.type === 'session.started') {
         persistSessionId(msg.session_id)
-        set({ reconnectAttempts: 0 })
+        set({ reconnectAttempts: 0, connectionStatus: 'connected' })
         // If a greeting is about to stream, defer flushing any pending turn
         // until the greeting finishes — otherwise the user's queued message
         // races with the greeting turn and both appear simultaneously.
@@ -123,12 +129,13 @@ const connectSocket = (
       set((state) => ({
         ...applySocketClosed(state.turns),
         wsRef: null,
+        connectionStatus: 'disconnected' as const,
       }))
       scheduleReconnect(set, get)
     },
   })
   clearReconnectTimer(get().reconnectTimer)
-  set({ wsRef: ws, reconnectTimer: null })
+  set({ wsRef: ws, reconnectTimer: null, connectionStatus: 'connecting' })
 }
 
 export const useChatStore = create<ChatStore>((set, get) => ({
@@ -140,7 +147,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   pendingTurn: null,
   reconnectTimer: null,
   reconnectAttempts: 0,
+  connectionStatus: 'disconnected' as ConnectionStatus,
   agentModels: loadStoredModels(),
+  autoApprove: false,
 
   // Connect the WebSocket eagerly (called on page mount) so the greeting
   // pre-warms before the user types anything.
@@ -186,5 +195,37 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     persistSessionId(null)
     set({ turns: [], sessionId: null, pendingTurn: null })
+  },
+
+  approvePlan: (feedback?: string) => {
+    const ws = get().wsRef
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      const message: ClientEvent = {
+        type: 'plan.approve',
+        content: feedback || '',
+      }
+      ws.send(JSON.stringify(message))
+      set({ isStreaming: true })
+    }
+  },
+
+  rejectPlan: () => {
+    const ws = get().wsRef
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      const message: ClientEvent = { type: 'plan.reject' }
+      ws.send(JSON.stringify(message))
+    }
+  },
+
+  setAutoApprove: (enabled: boolean) => {
+    set({ autoApprove: enabled })
+    const ws = get().wsRef
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      const message: ClientEvent = {
+        type: 'settings.update',
+        settings: { auto_approve: enabled },
+      }
+      ws.send(JSON.stringify(message))
+    }
   },
 }))
