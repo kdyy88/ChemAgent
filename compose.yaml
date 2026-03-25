@@ -126,8 +126,10 @@ services:
     depends_on:
       frontend:
         condition: service_healthy
+        restart: true
       backend:
         condition: service_healthy
+        restart: true
     ports:
       - "80:80"
       - "443:443" # 映射 HTTPS 端口
