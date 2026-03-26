@@ -14,11 +14,37 @@ interface MessageBubbleProps {
   turn: Turn
 }
 
-export const MessageBubble = memo(function MessageBubble({ turn }: MessageBubbleProps) {
-  const displayContent = turn.finalAnswer
+/**
+ * Strip structural XML blocks (<plan>, <todo>) from live-streaming tokens.
+ * This ensures raw markup never appears in the answer bubble even while
+ * tokens are still arriving.
+ *
+ * Strategy:
+ * 1. Remove fully-closed blocks (clean case)
+ * 2. Remove from any still-open structural tag to end-of-string
+ *    (handles mid-stream partial blocks where </plan> hasn't arrived yet)
+ */
+function stripLiveStructural(text: string): string {
+  let r = text.replace(/<plan>[\s\S]*?<\/plan>/g, '')
+  r = r.replace(/<todo>[\s\S]*?<\/todo>/g, '')
+  // Remove from unclosed opening tag to end of string
+  r = r.replace(/<(plan|todo)[^>]*>[\s\S]*$/, '')
+  r = r.replace(/\[AWAITING_APPROVAL\]|\[TERMINATE\]/g, '')
+  return r.trimStart()
+}
 
+export const MessageBubble = memo(function MessageBubble({ turn }: MessageBubbleProps) {
   const isThinking = turn.status === 'thinking' || turn.status === 'awaiting_approval'
-  const showSkeleton = isThinking && !displayContent
+
+  // draftAnswer: raw token stream for the CURRENT LLM turn (may contain XML markup)
+  // finalAnswer: clean committed text from completed LLM turns
+  const liveDraft = turn.draftAnswer ? stripLiveStructural(turn.draftAnswer) : undefined
+
+  // Combined live view: committed text + current streaming tokens (filtered)
+  const liveContent = [turn.finalAnswer, liveDraft].filter(Boolean).join('\n\n')
+
+  // Skeleton only when thinking but nothing has arrived yet
+  const showSkeleton = isThinking && !liveContent
 
   return (
     <div className="flex flex-col gap-3">
@@ -59,23 +85,20 @@ export const MessageBubble = memo(function MessageBubble({ turn }: MessageBubble
               <Skeleton className="h-3 w-5/6" />
               <Skeleton className="h-3 w-2/3" />
             </div>
-          ) : displayContent ? (
-            isThinking ? (
-              // During streaming: use StreamingText for smooth fade-in of
-              // new chunks. Avoids Markdown re-parsing on every token.
-              <div className="rounded-2xl border bg-card px-4 py-3 text-sm leading-relaxed shadow-sm flex items-center gap-2 flex-wrap">
-                <StreamingText text={displayContent} />
-                <Loader variant="typing" size="sm" className="shrink-0" />
-              </div>
-            ) : (
-              // Streaming complete: render full Markdown once.
-              <MessageContent
-                markdown
-                className="rounded-2xl border bg-card px-4 py-3 text-sm leading-relaxed shadow-sm prose prose-sm dark:prose-invert max-w-none"
-              >
-                {displayContent}
-              </MessageContent>
-            )
+          ) : liveContent && isThinking ? (
+            // Live streaming view: committed text + current tokens, with loader
+            <div className="rounded-2xl border bg-card px-4 py-3 text-sm leading-relaxed shadow-sm">
+              <StreamingText text={liveContent} />
+              <Loader variant="typing" size="sm" className="mt-2" />
+            </div>
+          ) : turn.finalAnswer ? (
+            // Streaming complete: render full Markdown once.
+            <MessageContent
+              markdown
+              className="rounded-2xl border bg-card px-4 py-3 text-sm leading-relaxed shadow-sm prose prose-sm dark:prose-invert max-w-none"
+            >
+              {turn.finalAnswer}
+            </MessageContent>
           ) : null}
 
           {!isThinking && <ArtifactGallery artifacts={turn.artifacts} />}

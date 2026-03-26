@@ -23,12 +23,17 @@ ServerEventType = Literal[
     "run.failed",
     "turn.status",
     "assistant.message",
+    "assistant.delta",   # streaming token chunk (real-time)
     "tool.call",
     "tool.result",
     # ── HITL state-machine events ──
     "plan.proposed",
     "plan.status",
     "todo.progress",
+    # ── Reasoning / thinking tokens ──
+    "thinking.delta",
+    # ── Reconnect snapshot ──
+    "state.snapshot",
     # ── Settings ──
     "settings.updated",
 ]

@@ -30,6 +30,7 @@ from autogen.events.agent_events import (
     TextEvent,
     ToolCallEvent,
 )
+from autogen.events.client_events import StreamEvent
 
 from app.agents.reasoning_client import ReasoningChunkEvent
 from app.api.protocol import EventEnvelope
@@ -239,6 +240,26 @@ def _event_to_frames(
             )
         )
 
+    # ── StreamEvent (token-by-token content from LLM streaming) ────────────
+    elif isinstance(event, StreamEvent):
+        # payload = event.content (inner StreamEvent), payload.content = token str
+        chunk = str(payload.content or "")
+        if chunk and session.state != "awaiting_approval":
+            # Persist to last_answer accumulator so reconnect snapshot works
+            if session.last_answer is None:
+                session.last_answer = chunk
+            else:
+                session.last_answer += chunk
+            frames.append(
+                _make_frame(
+                    "assistant.delta",
+                    {"sender": "Manager", "content": chunk},
+                    session_id,
+                    turn_id,
+                    run_id,
+                )
+            )
+
     # ── TextEvent (may contain <plan>, <todo>, sentinels) ─────────────────
     elif isinstance(event, TextEvent):
         content = str(payload.content or "")
@@ -297,34 +318,37 @@ def _event_to_frames(
         if "[TERMINATE]" in content:
             session.state = "idle"
 
-        # 4. Emit assistant.message only for genuine user-facing answer text.
+        # 4. Emit assistant.message for canonical clean text.
         #
-        # Suppression rules:
-        # • <plan> content  → always suppress (dedicated plan.proposed frame)
-        # • [AWAITING_APPROVAL] → always suppress (dedicated plan.status frame)
-        # • <todo> during execution phase → suppress; the "正在执行第N步…" narration
-        #   that wraps the todo block is pipeline chatter, not user-facing content.
-        # • <todo> on final answer (state already flipped to "idle" by [TERMINATE])
-        #   → allow through after stripping the <todo> block so the report is visible.
+        # Suppression rules (TextEvent-level):
+        # • <plan> tag  → suppress (dedicated plan.proposed frame carries the data)
+        # • [AWAITING_APPROVAL] → suppress (dedicated plan.status frame)
+        # • Everything else passes through after stripping ALL structural markup.
+        #   This includes execution-phase narration (正在执行第N步…) and the final
+        #   summary — both are useful user-facing content.
+        #
+        # Note: StreamEvent tokens are already streamed token-by-token as
+        # assistant.delta. The TextEvent carries the fully-assembled clean text
+        # for the finalAnswer; the frontend uses this to clear the raw-token
+        # draftAnswer and commit the clean version.
         suppress_message = (
             plan_match is not None
             or "[AWAITING_APPROVAL]" in content
-            or (todo_match is not None and session.state == "executing")
         )
 
         if not suppress_message:
             clean = content
-            clean = clean.replace("[TERMINATE]", "")
-            # Strip any <todo>…</todo> block (may appear in final summary)
+            # Strip ALL structural tags and sentinels from the rendered text
+            clean = _PLAN_RE.sub("", clean)
             clean = _TODO_RE.sub("", clean)
+            clean = clean.replace("[TERMINATE]", "")
+            clean = clean.replace("[AWAITING_APPROVAL]", "")
             clean = _sanitize(clean).strip()
 
             if clean:
-                # Persist last answer fragment for session snapshot on reconnect
-                if session.last_answer is None:
-                    session.last_answer = clean
-                else:
-                    session.last_answer += clean
+                # Overwrite the last_answer snapshot with the clean version
+                # (supersedes the raw-token accumulation done by StreamEvent).
+                session.last_answer = (session.last_answer or "").split(clean)[0] + clean
                 frames.append(
                     _make_frame(
                         "assistant.message",

@@ -55,6 +55,9 @@ export type Turn = {
   // Manager's final synthesised answer — rendered as Markdown in the main bubble.
   // Kept separate from steps so the ThinkingLog shows Specialist work only.
   finalAnswer?: string
+  // Live raw streaming tokens accumulated before each LLM turn completes.
+  // Cleared and replaced by finalAnswer when the clean TextEvent arrives.
+  draftAnswer?: string
   status: TurnStatus
   // Live status label sent by the backend (e.g. "正在分析请求…", "正在连接专家…")
   statusMessage?: string
@@ -117,6 +120,7 @@ export type ServerEvent =
   | { type: 'plan.status'; session_id: string; turn_id: string; run_id: string; status: 'awaiting_approval' | 'rejected' }
   | { type: 'todo.progress'; session_id: string; turn_id: string; run_id: string; todo: string }
   | { type: 'thinking.delta'; session_id: string; turn_id: string; run_id: string; content: string }
+  | { type: 'assistant.delta'; session_id: string; turn_id: string; run_id: string; sender?: string; content: string }
   | {
       type: 'state.snapshot'
       session_id: string

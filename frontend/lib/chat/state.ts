@@ -93,16 +93,29 @@ export function applyServerEvent(state: ChatStateSlice, msg: ServerEvent): Parti
       }
     }
 
+    case 'assistant.delta':
+      // Token-by-token streaming chunk — goes into draftAnswer (shown live).
+      // When the LLM turn finishes, assistant.message will set finalAnswer
+      // and clear draftAnswer (replaced by the clean canonical version).
+      if (msg.sender === 'Manager') {
+        return {
+          turns: updateTurn(state.turns, msg.turn_id, (turn) => ({
+            ...turn,
+            draftAnswer: (turn.draftAnswer ?? '') + msg.content,
+          })),
+        }
+      }
+      return {}
+
     case 'assistant.message':
-      // Manager synthesis → finalAnswer (rendered as Markdown in main bubble).
-      // Streaming: each TextEvent is a chunk — append to build the full answer.
-      // Specialist internal reports are suppressed — they are agent-to-agent
-      // communication whose substance is re-stated by the Manager summary.
+      // Clean complete text for one LLM turn — appends to finalAnswer and
+      // clears draftAnswer (the raw streaming buffer that may contain XML tags).
       if (msg.sender === 'Manager') {
         return {
           turns: updateTurn(state.turns, msg.turn_id, (turn) => ({
             ...turn,
             finalAnswer: (turn.finalAnswer ?? '') + msg.message,
+            draftAnswer: undefined,  // clear raw streaming buffer
           })),
         }
       }

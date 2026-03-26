@@ -148,11 +148,12 @@ class TestTextEventFrames:
         )
         assert frames == []
 
-    def test_todo_during_execution_suppresses_message(self):
+    def test_todo_during_execution_shows_narration(self):
         """
         Execution-step announcements contain <todo> and narration like
-        "正在执行第1步…".  The assistant.message must be suppressed because
-        the todo block already has a dedicated todo.progress frame.
+        "正在执行第2步…".  The <todo> block gets a dedicated todo.progress frame,
+        and the narration text (stripped of <todo> tags) also appears in
+        assistant.message so the user sees live progress in the answer bubble.
         """
         content = "<todo>\n- [x] Step 1 ✓\n- [ ] Step 2\n</todo>\n\n正在执行第2步…"
         event = self._make_text_event(content)
@@ -166,11 +167,15 @@ class TestTextEventFrames:
             session=session,
             phase_state={},
         )
-        text_frames = [f for f in frames if f["type"] == "assistant.message"]
-        assert len(text_frames) == 0
-        # But todo.progress should still be emitted
+        # todo.progress frame must be emitted
         todo_frames = [f for f in frames if f["type"] == "todo.progress"]
         assert len(todo_frames) == 1
+
+        # assistant.message is also emitted with <todo> stripped, showing narration
+        text_frames = [f for f in frames if f["type"] == "assistant.message"]
+        assert len(text_frames) == 1
+        assert "<todo>" not in text_frames[0]["message"]
+        assert "正在执行第2步" in text_frames[0]["message"]
 
     def test_todo_in_final_answer_passes_through(self):
         """
