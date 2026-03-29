@@ -1,16 +1,18 @@
 """
-Open Babel agent tools — Phase 2 (pending).
+Open Babel LangGraph tool wrappers.
 
-The computation kernels (convert_format, build_3d_conformer, prepare_pdbqt)
-are stable and tested in ``app.chem.babel_ops``.  The Phase 1 REST API is
-live at POST /api/babel/*.
-
-Agent tool wrappers will be added here in Phase 2 once the API endpoints
-have been exercised in production and edge-cases are understood.
-
-Planned tools
--------------
-convert_molecule_format     Universal format converter (SMILES ↔ SDF ↔ MOL2 ↔ PDB …)
-generate_3d_conformer       3D conformer builder (SMILES → optimised SDF)
-prepare_docking_pdbqt       Docking prep: SMILES → pH-corrected PDBQT for Smina/GNINA
+All tools are implemented in ``app/tools/babel/prep.py`` and re-exported here
+for ergonomic imports from ``app.tools.babel``.
 """
+
+from app.tools.babel.prep import (  # noqa: F401
+    ALL_BABEL_TOOLS,
+    BABEL_ANALYSIS_TOOLS,
+    PREP_TOOLS,
+    tool_build_3d_conformer,
+    tool_compute_mol_properties,
+    tool_compute_partial_charges,
+    tool_convert_format,
+    tool_list_formats,
+    tool_prepare_pdbqt,
+)

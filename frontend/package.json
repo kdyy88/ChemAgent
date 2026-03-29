@@ -12,6 +12,7 @@
     "test:ui": "vitest --ui"
   },
   "dependencies": {
+    "@microsoft/fetch-event-source": "^2.0.1",
     "@tailwindcss/typography": "^0.5.19",
     "@tanstack/react-query": "^5.94.5",
     "@tsparticles/react": "^3.0.0",

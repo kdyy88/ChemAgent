@@ -11,7 +11,6 @@ from functools import wraps
 from typing import Any, Callable, Literal
 from uuid import uuid4
 
-from autogen.tools import Tool
 from pydantic import BaseModel, Field
 
 
@@ -129,13 +128,6 @@ class ToolSpec:
         wrapper.__name__ = self.name
         return wrapper
 
-    def to_autogen_tool(self) -> Tool:
-        return Tool(
-            name=self.name,
-            description=self.description,
-            func_or_tool=self.build_execution_callable(),
-        )
-
     def to_public_metadata(self) -> dict[str, Any]:
         return {
             "name": self.name,
@@ -144,7 +136,6 @@ class ToolSpec:
             "category": self.category,
             "outputKinds": list(self.output_kinds),
             "tags": list(self.tags),
-            "tool_schema": self.to_autogen_tool().tool_schema,
         }
 
 

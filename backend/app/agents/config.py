@@ -26,8 +26,17 @@ def _load_environment() -> None:
     if _ENV_LOADED:
         return
 
-    env_file = Path(__file__).resolve().parents[2] / ".env"
-    load_dotenv(dotenv_path=env_file, override=False)
+    # Search order: backend/.env → project-root/.env → CWD/.env
+    # Supports both "run from backend/" and Docker / monorepo layouts.
+    candidates = [
+        Path(__file__).resolve().parents[2] / ".env",          # backend/.env
+        Path(__file__).resolve().parents[3] / ".env",          # project-root/.env
+        Path.cwd() / ".env",
+    ]
+    for env_file in candidates:
+        if env_file.exists():
+            load_dotenv(dotenv_path=env_file, override=False)
+            logger.debug("Loaded env from %s", env_file)
     _ENV_LOADED = True
 
 
