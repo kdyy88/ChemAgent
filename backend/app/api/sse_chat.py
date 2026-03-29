@@ -162,29 +162,75 @@ async def _event_generator(req: StreamChatRequest):
             # ── 1. Text token streaming ────────────────────────────────────────
             if event_name == "on_chat_model_stream" and node_name in _STREAMING_NODES:
                 chunk = event["data"].get("chunk")
-                token: str = ""
                 if chunk is not None:
                     raw = getattr(chunk, "content", "") or ""
-                    # Responses API yields content as a list of content blocks:
-                    # [{'type': 'output_text', 'text': '...', 'annotations': [...]}]
-                    # Chat Completions API yields a plain string.
-                    if isinstance(raw, list):
-                        token = "".join(
-                            block.get("text", "") if isinstance(block, dict) else str(block)
-                            for block in raw
+                    token = ""
+                    thinking_token = ""
+
+                    # 兼容普通字符串输出
+                    if isinstance(raw, str):
+                        token = raw
+
+                    # 核心修复：兼容 GPT-5 复杂嵌套列表 (Responses API) 及 Claude Blocks
+                    elif isinstance(raw, list):
+                        for block in raw:
+                            if isinstance(block, dict):
+                                block_type = block.get("type")
+
+                                # 适配 GPT-5 的推理块 (reasoning -> summary)
+                                if block_type == "reasoning":
+                                    summary = block.get("summary", [])
+                                    if isinstance(summary, list):
+                                        for s in summary:
+                                            thinking_token += s.get("text", "")
+                                    elif isinstance(summary, str):
+                                        thinking_token += summary
+
+                                # 适配 GPT-5 的正文块 (message -> content)
+                                elif block_type == "message":
+                                    msg_content = block.get("content", [])
+                                    if isinstance(msg_content, list):
+                                        for c in msg_content:
+                                            token += c.get("text", "")
+                                    elif isinstance(msg_content, str):
+                                        token += msg_content
+
+                                # 适配 Anthropic 标准块
+                                elif block_type == "text":
+                                    token += block.get("text", "")
+                                elif block_type == "thinking":
+                                    thinking_token += block.get("thinking", "")
+                            else:
+                                token += str(block)
+
+                    # 兼容 DeepSeek 的 additional_kwargs
+                    additional_kwargs = getattr(chunk, "additional_kwargs", {})
+                    if "reasoning_content" in additional_kwargs:
+                        thinking_token += additional_kwargs.get("reasoning_content", "")
+
+                    # 独立推流：思考过程
+                    if thinking_token:
+                        yield _sse(
+                            {
+                                "type": "thinking",
+                                "text": thinking_token,
+                                "iteration": initial_state.get("iteration_count", 0),
+                                "session_id": session_id,
+                                "turn_id": turn_id,
+                            }
                         )
-                    else:
-                        token = str(raw) if raw else ""
-                if token:
-                    yield _sse(
-                        {
-                            "type": "token",
-                            "node": node_name,
-                            "session_id": session_id,
-                            "turn_id": turn_id,
-                            "content": token,
-                        }
-                    )
+
+                    # 独立推流：最终回答
+                    if token:
+                        yield _sse(
+                            {
+                                "type": "token",
+                                "node": node_name,
+                                "session_id": session_id,
+                                "turn_id": turn_id,
+                                "content": token,
+                            }
+                        )
 
             # ── 2. Node lifecycle events ───────────────────────────────────────
             elif event_name == "on_chain_start" and node_name in _LIFECYCLE_NODES:

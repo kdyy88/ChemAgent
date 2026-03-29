@@ -191,12 +191,15 @@ export const useSseStore = create<SseState>((set, get) => {
         const thinkingEv = ev as SSEThinking
         updateLastTurn((t) => {
           const steps = [...t.thinkingSteps]
-          // If the last step has the same iteration, update it in-place (streaming overwrite)
-          // so the thinking panel shows text growing character-by-character.
+          // 修复：使用字符串追加拼接流式 Chunk，禁止直接对象覆盖
           if (steps.length > 0 && steps[steps.length - 1].iteration === thinkingEv.iteration) {
-            steps[steps.length - 1] = thinkingEv
+            steps[steps.length - 1] = {
+              ...steps[steps.length - 1],
+              text: steps[steps.length - 1].text + thinkingEv.text,
+              done: thinkingEv.done ?? steps[steps.length - 1].done,
+            }
           } else {
-            steps.push(thinkingEv)
+            steps.push({ ...thinkingEv })
           }
           return { thinkingSteps: steps }
         })

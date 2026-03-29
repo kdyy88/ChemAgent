@@ -4,7 +4,6 @@ import { memo, useState, useEffect } from 'react'
 import { FlaskConical, Download, AlertTriangle, ExternalLink, Copy, Check, ChevronDown } from 'lucide-react'
 import { Message, MessageContent } from '@/components/ui/message'
 import { Loader } from '@/components/ui/loader'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible'
 import { Reasoning, ReasoningTrigger, ReasoningContent } from '@/components/ui/reasoning'
@@ -12,6 +11,8 @@ import { Source, SourceTrigger, SourceContent } from '@/components/ui/source'
 import { MoleculeCard } from './MoleculeCard'
 import { LipinskiCard } from './LipinskiCard'
 import { ClarificationCard } from './ClarificationCard'
+import { ThinkingLog } from './ThinkingLog'
+import type { Step } from '@/lib/types'
 import type {
   SSETurn,
   SSEArtifactEvent,
@@ -66,22 +67,20 @@ function descriptorsToLipinski(d: DescriptorsArtifact['data']): LipinskiResult {
   }
 }
 
-// ── Tool badge color ──────────────────────────────────────────────────────────
+// ── Adapter: SSETurn toolCalls → ThinkingLog Step[] ─────────────────────────
 
-function toolBadgeClass(toolName: string): string {
-  if (toolName.startsWith('tool_pubchem') || toolName.startsWith('tool_web_search')) {
-    return 'border-blue-300 text-blue-700 dark:border-blue-700 dark:text-blue-300'
-  }
-  if (toolName.startsWith('tool_render') || toolName.startsWith('tool_validate')) {
-    return 'border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-300'
-  }
-  if (toolName.startsWith('tool_compute') || toolName.startsWith('tool_murcko') || toolName.startsWith('tool_substructure')) {
-    return 'border-orange-300 text-orange-700 dark:border-orange-700 dark:text-orange-300'
-  }
-  if (toolName.startsWith('tool_convert') || toolName.startsWith('tool_build') || toolName.startsWith('tool_prepare') || toolName.startsWith('tool_strip')) {
-    return 'border-purple-300 text-purple-700 dark:border-purple-700 dark:text-purple-300'
-  }
-  return ''
+function toolCallsToSteps(toolCalls: SSETurn['toolCalls']): Step[] {
+  return toolCalls.map((tc) => ({
+    kind: 'tool_call' as const,
+    callId: `${tc.tool}-${Math.random()}`,
+    tool: tc.tool.replace(/^tool_/, ''),
+    args: tc.input ?? {},
+    loadStatus: tc.done ? 'success' : 'pending',
+    summary: tc.output
+      ? JSON.stringify(tc.output).slice(0, 120)
+      : undefined,
+    data: tc.output,
+  }))
 }
 
 // ── Researcher thinking panel (Claude-style) ─────────────────────────────────
@@ -89,22 +88,19 @@ function toolBadgeClass(toolName: string): string {
 function ResearchThinking({ steps, isStreaming }: { steps: SSEThinking[]; isStreaming: boolean }) {
   const [open, setOpen] = useState(true)
 
-  // Re-open whenever streaming restarts (e.g. new turn)
+  // 只要有正在 streaming 的步骤就保持展开
   useEffect(() => {
     if (isStreaming) setOpen(true)
   }, [isStreaming])
 
   if (steps.length === 0) return null
-  const latest = steps[steps.length - 1]
-  // A step is still being streamed if: the turn is streaming AND the step has done=false (or done is absent for the last step during active streaming)
-  const stepStreaming = isStreaming && latest.done !== true
 
   return (
     <Reasoning open={open} onOpenChange={setOpen} isStreaming={isStreaming}>
       <ReasoningTrigger className="text-xs text-muted-foreground hover:text-foreground font-medium transition-colors">
         {isStreaming ? (
           <span className="flex items-center gap-1">
-            思考中
+            深度思考中
             <span className="inline-flex gap-0.5">
               <span className="animate-bounce [animation-delay:0ms]">.</span>
               <span className="animate-bounce [animation-delay:150ms]">.</span>
@@ -112,17 +108,25 @@ function ResearchThinking({ steps, isStreaming }: { steps: SSEThinking[]; isStre
             </span>
           </span>
         ) : (
-          `已完成 ${steps.length} 步推理`
+          `已完成 ${steps.length} 步深度推理`
         )}
       </ReasoningTrigger>
       <ReasoningContent
-        className="mt-2 pl-3 border-l border-border"
+        className="mt-2 pl-3 border-l border-border flex flex-col gap-3"
         contentClassName="text-xs leading-relaxed whitespace-pre-wrap font-mono opacity-75"
       >
-        {latest.text}
-        {stepStreaming && (
-          <span className="inline-block w-[2px] h-[1em] ml-0.5 bg-current align-middle animate-pulse" />
-        )}
+        {/* 修复：遍历渲染每一次 iteration 的思考内容 */}
+        {steps.map((step, idx) => {
+          const stepStreaming = isStreaming && step.done !== true && idx === steps.length - 1
+          return (
+            <div key={idx} className="relative">
+              {step.text}
+              {stepStreaming && (
+                <span className="inline-block w-[2px] h-[1em] ml-0.5 bg-current align-middle animate-pulse" />
+              )}
+            </div>
+          )
+        })}
       </ReasoningContent>
     </Reasoning>
   )
@@ -402,25 +406,14 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
             <ResearchThinking steps={turn.thinkingSteps} isStreaming={isStreaming} />
           )}
 
-          {/* Tool call badges */}
+          {/* Tool execution log — replaces raw Badge loop */}
           {turn.toolCalls.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {turn.toolCalls.map((tc, i) => (
-                <Badge
-                  key={i}
-                  variant={tc.done ? 'secondary' : 'outline'}
-                  className={cn(
-                    'text-xs font-mono gap-1 transition-colors',
-                    !tc.done && toolBadgeClass(tc.tool),
-                  )}
-                >
-                  {tc.done
-                    ? <span className="text-emerald-500">✓</span>
-                    : <Loader variant="typing" size="sm" />}
-                  {tc.tool.replace(/^tool_/, '')}
-                </Badge>
-              ))}
-            </div>
+            <ThinkingLog
+              steps={toolCallsToSteps(turn.toolCalls)}
+              status={isStreaming ? 'thinking' : 'done'}
+              startedAt={0}
+              statusMessage={turn.statusLabel || undefined}
+            />
           )}
 
           {/* Tool output cards — PubChem & web search */}
