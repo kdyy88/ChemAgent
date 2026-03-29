@@ -5,7 +5,7 @@ import { Download, FileJson, FileText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { MoleculeCard } from './MoleculeCard'
-import { LipinskiCard } from './LipinskiCard'
+import { LipinskiRadarCard } from './LipinskiRadarCard'
 import { BabelResultCard } from './BabelResultCard'
 import type { Artifact } from '@/lib/types'
 import type { LipinskiResult } from '@/lib/chem-api'
@@ -88,7 +88,7 @@ export function ArtifactRenderer({ artifact }: ArtifactRendererProps) {
     artifact.kind === 'json' &&
     (artifact.data as Record<string, unknown>)?.type === 'lipinski'
   ) {
-    return <LipinskiCard data={artifact.data as LipinskiResult} />
+    return <LipinskiRadarCard data={artifact.data as LipinskiResult} />
   }
 
   // Babel tool results: format conversion, 3D conformer, PDBQT prep

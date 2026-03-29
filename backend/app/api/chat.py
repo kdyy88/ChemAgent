@@ -27,7 +27,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
-from app.api.events import stream_execution, stream_greeting, stream_planning
+from app.api.events import stream_execution, stream_planning
 from app.api.protocol import EventEnvelope, SessionControlMessage, UserMessage
 from app.api.sessions import ChatSession, session_manager
 from app.core.network import is_origin_allowed
@@ -183,34 +183,51 @@ async def _run_approval(
         )
 
 
-async def _run_greeting(
+_STATIC_GREETING = (
+    "你好！我是 ChemAgent，专业化学分析助手 🧪\n"
+    "我能帮你查询化合物 SMILES 结构、分析 Lipinski 五规则、提取 Murcko 骨架、"
+    "绘制分子结构图、计算相似度、搜索最新文献等。\n"
+    "请告诉我你想研究哪个化合物或化学问题？"
+)
+
+
+async def _send_static_greeting(
     websocket: WebSocket,
     send_lock: asyncio.Lock,
     session: ChatSession,
 ) -> None:
-    """Stream a ChemBrain greeting for new sessions."""
+    """Send a pre-defined static greeting — zero LLM calls."""
     turn_id = f"greeting_{uuid4().hex}"
     run_id = f"run_{uuid4().hex}"
+    send_fn = partial(_send_json, websocket, send_lock)
 
-    async with session.lock:
-        send_fn = partial(_send_json, websocket, send_lock)
-
-        await send_fn(
-            EventEnvelope(
-                type="run.started",
-                session_id=session.session_id,
-                turn_id=turn_id,
-                run_id=run_id,
-                payload={"prompt": "", "is_greeting": True},
-            ).to_wire()
-        )
-
-        await stream_greeting(
-            session=session,
+    await send_fn(
+        EventEnvelope(
+            type="run.started",
+            session_id=session.session_id,
             turn_id=turn_id,
             run_id=run_id,
-            send_fn=send_fn,
-        )
+            payload={"prompt": "", "is_greeting": True},
+        ).to_wire()
+    )
+    await send_fn(
+        EventEnvelope(
+            type="assistant.message",
+            session_id=session.session_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            payload={"sender": "planner", "message": _STATIC_GREETING},
+        ).to_wire()
+    )
+    await send_fn(
+        EventEnvelope(
+            type="run.finished",
+            session_id=session.session_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            payload={"summary": "", "last_speaker": "planner"},
+        ).to_wire()
+    )
 
 
 # ── Session initialisation ───────────────────────────────────────────────────
@@ -293,7 +310,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
         heartbeat_task = asyncio.create_task(_heartbeat(websocket, send_lock))
 
         if created:
-            await _run_greeting(websocket, send_lock, session)
+            await _send_static_greeting(websocket, send_lock, session)
 
         while True:
             raw_message = await websocket.receive_json()
@@ -373,7 +390,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
                         },
                     ).to_wire(),
                 )
-                await _run_greeting(websocket, send_lock, session)
+                await _send_static_greeting(websocket, send_lock, session)
                 continue
 
             if incoming.type != "user.message":

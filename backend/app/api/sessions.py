@@ -1,17 +1,25 @@
 """
-Session management — ChemBrain + Executor pair per conversation.
+Session management — DefaultPattern multi-agent team per conversation.
 
-Each ``ChatSession`` holds a single (brain, executor) agent pair created via
-``create_agent_pair()``.
+Each ``ChatSession`` holds the team created by ``create_chem_team()``:
+  • ``user_proxy``   — outer-chat initiator (no LLM, not in DefaultPattern group)
+  • ``pattern``      — DefaultPattern (holds agents + context_variables)
+  • ``ctx``          — shared ContextVariables (routing state, plan text)
+  • ``prior_messages`` — full message history saved between phases
 
-Async-first architecture: all run methods use AG2's ``a_run()`` which returns
-``AsyncRunResponseProtocol`` with non-blocking ``async for`` event iteration
-on the same event loop.  No threading primitives — uses ``asyncio.Lock``.
+HITL phases (unchanged external contract)
+──────────────────────────────────────────
+  ``run_planning(prompt)``   → Phase 1: planner proposes plan and calls
+                               ``submit_plan_for_approval(plan_details)``
+                               which fires ``TerminateTarget()`` to stop the group.
+  ``run_execution(approval)``→ Phase 2: planner dispatches specialists via
+                               ``set_routing_target(target)`` tools; ends with
+                               ``finish_workflow(final_summary)`` → ``TerminateTarget()``.
+  ``generate_greeting()``    → One-shot welcome (fresh history, 5 rounds).
 
-HITL phases:
-- ``run_planning(prompt)``     → Phase 1: brain outputs ``<plan>`` + ``[AWAITING_APPROVAL]``
-- ``run_execution(approval)``  → Phase 2: brain executes ``<todo>`` with tool calls
-- ``generate_greeting()``      → One-shot welcome message
+Both phases use ``a_run_group_chat(pattern, messages, max_rounds)``.
+Prior messages from one phase are saved and prepended to the next so the
+group sees full context across phases.
 """
 
 from __future__ import annotations
@@ -23,8 +31,11 @@ from datetime import date
 from uuid import uuid4
 
 from autogen import ConversableAgent
+from autogen.agentchat import a_run_group_chat
+from autogen.agentchat.group import ContextVariables
+from autogen.agentchat.group.patterns import DefaultPattern
 
-from app.agents import create_agent_pair
+from app.agents import create_chem_team
 from app.agents.config import build_llm_config, get_fast_llm_config, get_resolved_model_name
 
 
@@ -36,8 +47,14 @@ SESSION_TTL_SECONDS = 60 * 15
 @dataclass
 class ChatSession:
     session_id: str
-    brain: ConversableAgent
-    executor: ConversableAgent
+    user_proxy: ConversableAgent
+    pattern: DefaultPattern
+
+    # Shared ContextVariables — state + routing target live here
+    ctx: ContextVariables = field(default_factory=ContextVariables)
+
+    # Full message history — saved after each phase, prepended to next phase
+    prior_messages: list = field(default_factory=list)
 
     # HITL state: "idle" | "awaiting_approval" | "executing"
     state: str = "idle"
@@ -45,10 +62,10 @@ class ChatSession:
     # When True, skip the approval gate — go straight to execution after planning
     auto_approve: bool = False
 
-    # Tracks how many planning turns have occurred (for context-window safety)
+    # Tracks how many planning turns have occurred
     turn_count: int = 0
 
-    # Model name actually bound to the brain (sent to frontend in session.started)
+    # Model names bound to each agent (sent to frontend in session.started)
     agent_models: dict[str, str] = field(default_factory=dict)
 
     # ── Snapshot fields for reconnect state replay ────────────────────────
@@ -67,99 +84,65 @@ class ChatSession:
     # ── Phase 1: Planning ─────────────────────────────────────────────────
 
     async def run_planning(self, prompt: str):
-        """Brain analyses prompt → outputs ``<plan>`` + ``[AWAITING_APPROVAL]``.
+        """Planner analyses the prompt and calls ``submit_plan_for_approval``.
 
-        Uses ``clear_history=False`` so the brain retains conversation context
-        across turns (enabling continuous dialogue).  The greeting's own
-        ``clear_history=True`` ensures the very first exchange starts clean.
+        ``submit_plan_for_approval`` returns ``ReplyResult(target=TerminateTarget())``
+        which stops the DefaultPattern GroupChat cleanly.  ``ctx["state"]`` is
+        set to ``"awaiting_approval"`` by the tool.
 
-        After ``turn_count > 2`` the summary method switches from
-        ``"last_msg"`` to ``"reflection_with_llm"`` to compress context and
-        prevent token-window explosion on long sessions.
+        Message history from previous turns (``self.prior_messages``) is
+        prepended so the group has full context across multi-turn sessions.
 
-        Returns an ``AsyncRunResponseProtocol`` whose ``.events`` is an
-        ``AsyncIterable[BaseEvent]`` — iterate with ``async for``.
+        Returns an ``AsyncRunResponseProtocol`` whose ``.events`` yields all
+        events from all agents in the group.
         """
         self.touch()
-        self.state = "awaiting_approval"
         self.turn_count += 1
-
-        # Reset per-turn snapshot accumulators
         self.last_answer = None
 
         today = date.today().isoformat()
-        full_prompt = f"今日日期：{today}\n\n{prompt}"
+        new_msg = {"role": "user", "content": f"今日日期：{today}\n\n{prompt}"}
 
-        # Use reflection_with_llm after turn 2 to summarize growing context
-        if self.turn_count > 2:
-            summary_method = "reflection_with_llm"
-            summary_args = {
-                "summary_prompt": (
-                    "Summarize the conversation so far concisely, focusing on "
-                    "the user's chemical research goals and key results. "
-                    "Keep under 200 words."
-                ),
-                "llm_config": get_fast_llm_config(),
-            }
+        if self.prior_messages:
+            messages = list(self.prior_messages) + [new_msg]
         else:
-            summary_method = "last_msg"
-            summary_args = {}
+            messages = new_msg["content"]
 
-        return await self.executor.a_run(
-            recipient=self.brain,
-            message=full_prompt,
-            max_turns=4,
-            summary_method=summary_method,
-            summary_args=summary_args,
-            clear_history=False,
-        )
+        return await a_run_group_chat(self.pattern, messages, max_rounds=60)
 
     # ── Phase 2: Execution ────────────────────────────────────────────────
 
     async def run_execution(self, user_input: str):
-        """Resume after approval — brain generates ``<todo>`` and calls tools.
+        """Resume after approval — planner dispatches specialists via tool calls.
 
-        Injects a ``[SYSTEM]`` override to ensure the brain immediately starts
-        executing rather than wasting a turn on pleasantries.
+        The approval message includes a ``[SYSTEM]`` directive so the planner
+        immediately generates the ``<todo>`` checklist and calls
+        ``set_routing_target`` to dispatch the first step.
 
-        Uses ``clear_history=False`` so the brain can see its own ``<plan>``.
+        ``prior_messages`` (populated from Phase 1 drain) gives the group full
+        context of the planning phase.  Execution ends when the planner calls
+        ``finish_workflow(final_summary)`` → ``TerminateTarget()``.
         """
         self.state = "executing"
+        # Clear last_plan so the RunCompletionEvent fallback in events.py
+        # does not re-emit plan.status:awaiting_approval after finish_workflow
+        # sets state back to "idle" with last_plan still populated.
+        self.last_plan = None
 
         approval_msg = (
             f"{user_input}\n\n"
-            "[SYSTEM]: The plan has been approved. "
-            "Generate the <todo> checklist now and execute the FIRST tool call immediately."
+            "[SYSTEM]: 计划已获批准。请 **立刻** 生成 <todo> 检查清单，"
+            "然后调用 set_routing_target 工具派发第一步。"
         )
 
-        return await self.executor.a_run(
-            recipient=self.brain,
-            message=approval_msg,
-            clear_history=False,
-            max_turns=30,
-            summary_method="last_msg",
-        )
+        messages = list(self.prior_messages) + [
+            {"role": "user", "content": approval_msg}
+        ]
 
-    # ── Greeting ──────────────────────────────────────────────────────────
+        return await a_run_group_chat(self.pattern, messages, max_rounds=60)
 
-    async def generate_greeting(self):
-        """One-shot greeting from ChemBrain for new sessions.
-
-        Also serves as connection pre-warming (first LLM TCP handshake).
-        """
-        return await self.executor.a_run(
-            recipient=self.brain,
-            message=(
-                "请用中文简短友好地问候用户，介绍你是专业化学助手 ChemAgent，"
-                "简述你能帮助用户做什么（如查询化合物信息、绘制分子结构图、"
-                "分析分子性质、搜索文献等），并邀请用户提问。"
-                "语气自然亲切，不超过3句话。纯文本，不要使用 Markdown。"
-                "回复末尾输出 [TERMINATE]"
-            ),
-            max_turns=1,
-            clear_history=True,
-            summary_method="last_msg",
-        )
+    # generate_greeting() removed — static greeting is now sent directly
+    # from chat.py/_send_static_greeting() without any LLM calls.
 
 
 # ── Session manager ───────────────────────────────────────────────────────────
@@ -185,18 +168,18 @@ class SessionManager:
             self._prune()
             session_id = f"sess_{uuid4().hex}"
             models = agent_models or {}
-            model_name = models.get("manager") or models.get("chem_brain")
+            model_name = models.get("manager") or models.get("chem_brain") or models.get("planner")
 
             llm_config = build_llm_config(model_name)
-            brain, executor = create_agent_pair(llm_config=llm_config)
-
-            resolved = get_resolved_model_name(model_name)
-            resolved_models = {"chem_brain": resolved}
+            user_proxy, pattern, ctx, resolved_models = create_chem_team(
+                llm_config=llm_config
+            )
 
             session = ChatSession(
                 session_id=session_id,
-                brain=brain,
-                executor=executor,
+                user_proxy=user_proxy,
+                pattern=pattern,
+                ctx=ctx,
                 agent_models=resolved_models,
             )
             self._sessions[session_id] = session

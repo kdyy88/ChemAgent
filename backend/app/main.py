@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -6,6 +8,14 @@ from app.api.chat import router as chat_router
 from app.api.rdkit_api import router as rdkit_router
 from app.api.babel_api import router as babel_router
 from app.core.network import get_allowed_origins
+
+# ── Suppress AG2 INFO noise ───────────────────────────────────────────────────
+# "Detected custom model client in config: ReasoningAwareClient, model client
+#  can not be used until register_model_client is called."
+# This fires for every agent during create_chem_team() because OpenAIWrapper
+# sees model_client_cls in the config before register_model_client() is called.
+# It is harmless; we raise the threshold to WARNING to keep logs clean.
+logging.getLogger("autogen.oai.client").setLevel(logging.WARNING)
 
 app = FastAPI(title="ChemAgent API")
 

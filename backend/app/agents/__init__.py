@@ -1,62 +1,41 @@
 """
-ChemAgent agent factory.
+ChemAgent agent package.
 
-Provides ``create_agent_pair()`` — the single entry-point for constructing
-the ChemBrain (caller) + Executor dual-agent system with all chemistry
-tools properly bound via ``register_function``.
+Primary entrypoint: ``create_chem_team(llm_config)``
+
+Returns ``(user_proxy, pattern, ctx, agent_models)`` — a 4-agent DefaultPattern team:
+
+  user_proxy (outside group)
+      ↓ a_run_group_chat()
+  DefaultPattern
+      ├── planner              (coordinator — submit_plan_for_approval / finish_workflow)
+      ├── data_specialist      (PubChem + web search, self-executes tools)
+      ├── computation_specialist (all RDKit tools, self-executes tools)
+      └── reviewer             (quality control, no tools)
+
+Backwards compatibility
+───────────────────────
+``create_agent_pair`` is kept as a shim; it returns ``(user_proxy, pattern)``
+so legacy code that only unpacks two values still works.
 """
 
 from __future__ import annotations
 
-from autogen import ConversableAgent, LLMConfig
-from autogen.agentchat import register_function
+from app.agents.manager import create_chem_team
 
-from app.agents.brain import create_chem_brain
-from app.agents.config import build_llm_config, get_resolved_model_name
-from app.agents.executor import create_executor
-from app.agents.reasoning_client import ReasoningAwareClient
-from app.tools import ALL_TOOLS
+__all__ = ["create_chem_team", "create_agent_pair"]
 
 
 def create_agent_pair(
     *,
     model: str | None = None,
-    llm_config: LLMConfig | None = None,
-) -> tuple[ConversableAgent, ConversableAgent]:
-    """Create a bound (brain, executor) pair with all tools registered.
+    llm_config=None,
+) -> tuple:
+    """Backwards-compat shim — returns (user_proxy, pattern).
 
-    Parameters
-    ----------
-    model : optional model name override (e.g. ``"gpt-4o"``).
-    llm_config : optional pre-built ``LLMConfig``; if given, *model* is
-        ignored.
-
-    Returns
-    -------
-    (brain, executor) — ready for ``executor.run(recipient=brain, ...)``.
+    New code should use ``create_chem_team`` and unpack all four values.
     """
-    if llm_config is None:
-        llm_config = build_llm_config(model)
-
-    brain = create_chem_brain(llm_config)
-    executor = create_executor()
-
-    # Dual-bind every tool: brain=caller (decides), executor=executor (runs)
-    # NOTE: register_function MUST happen before register_model_client because
-    # AG2 re-creates the brain's OpenAIWrapper internally during tool
-    # registration, which resets any previously-registered custom clients.
-    for tool_fn in ALL_TOOLS:
-        register_function(
-            tool_fn,
-            caller=brain,
-            executor=executor,
-            name=tool_fn.__name__,
-            description=tool_fn.__doc__ or "",
-        )
-
-    # Register our reasoning-aware OpenAI client so the brain captures
-    # reasoning_content from streaming deltas (o1/o3/o4-mini/deepseek-r1).
-    # This MUST be the last step after all register_function calls.
-    brain.register_model_client(model_client_cls=ReasoningAwareClient)
-
-    return brain, executor
+    user_proxy, pattern, _ctx, _agent_models = create_chem_team(
+        llm_config=llm_config, model=model
+    )
+    return user_proxy, pattern

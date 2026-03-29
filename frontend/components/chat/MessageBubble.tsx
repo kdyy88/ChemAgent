@@ -3,11 +3,10 @@
 import { memo } from 'react'
 import { FlaskConical } from 'lucide-react'
 import { Message, MessageContent } from '@/components/ui/message'
-import { Loader } from '@/components/ui/loader'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Markdown } from '@/components/ui/markdown'
 import { ThinkingLog } from './ThinkingLog'
 import { ArtifactGallery } from './ArtifactGallery'
-import { StreamingText } from './StreamingText'
 import type { Turn } from '@/lib/types'
 
 interface MessageBubbleProps {
@@ -18,11 +17,6 @@ interface MessageBubbleProps {
  * Strip structural XML blocks (<plan>, <todo>) from live-streaming tokens.
  * This ensures raw markup never appears in the answer bubble even while
  * tokens are still arriving.
- *
- * Strategy:
- * 1. Remove fully-closed blocks (clean case)
- * 2. Remove from any still-open structural tag to end-of-string
- *    (handles mid-stream partial blocks where </plan> hasn't arrived yet)
  */
 function stripLiveStructural(text: string): string {
   let r = text.replace(/<plan>[\s\S]*?<\/plan>/g, '')
@@ -36,8 +30,6 @@ function stripLiveStructural(text: string): string {
 export const MessageBubble = memo(function MessageBubble({ turn }: MessageBubbleProps) {
   const isThinking = turn.status === 'thinking' || turn.status === 'awaiting_approval'
 
-  // draftAnswer: raw token stream for the CURRENT LLM turn (may contain XML markup)
-  // finalAnswer: clean committed text from completed LLM turns
   const liveDraft = turn.draftAnswer ? stripLiveStructural(turn.draftAnswer) : undefined
 
   // Combined live view: committed text + current streaming tokens (filtered)
@@ -45,6 +37,11 @@ export const MessageBubble = memo(function MessageBubble({ turn }: MessageBubble
 
   // Skeleton only when thinking but nothing has arrived yet
   const showSkeleton = isThinking && !liveContent
+
+  // Append blinking cursor character to streaming content
+  const streamingDisplay = isThinking && liveContent
+    ? liveContent + '<span class="animate-blink inline-block w-[0.5ch] h-[1em] bg-current ml-[1px] align-middle opacity-70">▍</span>'
+    : null
 
   return (
     <div className="flex flex-col gap-3">
@@ -85,11 +82,18 @@ export const MessageBubble = memo(function MessageBubble({ turn }: MessageBubble
               <Skeleton className="h-3 w-5/6" />
               <Skeleton className="h-3 w-2/3" />
             </div>
-          ) : liveContent && isThinking ? (
-            // Live streaming view: committed text + current tokens, with loader
-            <div className="rounded-2xl border bg-card px-4 py-3 text-sm leading-relaxed shadow-sm">
-              <StreamingText text={liveContent} />
-              <Loader variant="typing" size="sm" className="mt-2" />
+          ) : streamingDisplay ? (
+            // Live streaming view: Markdown with blinking cursor injected
+            <div className="rounded-2xl border bg-card px-4 py-3 text-sm leading-relaxed shadow-sm prose prose-sm dark:prose-invert max-w-none">
+              <Markdown id={`${turn.id}-draft`}>
+                {liveContent}
+              </Markdown>
+              <span
+                dangerouslySetInnerHTML={{ __html: '' }}
+                aria-hidden
+                className="animate-blink inline-block w-[0.4ch] bg-current align-middle ml-[1px] opacity-70"
+                style={{ height: '1em' }}
+              />
             </div>
           ) : turn.finalAnswer ? (
             // Streaming complete: render full Markdown once.

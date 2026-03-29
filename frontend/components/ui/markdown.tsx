@@ -5,6 +5,7 @@ import ReactMarkdown, { Components } from "react-markdown"
 import remarkBreaks from "remark-breaks"
 import remarkGfm from "remark-gfm"
 import { CodeBlock, CodeBlockCode } from "./code-block"
+import { SmilesPopover } from "@/components/chat/SmilesPopover"
 
 export type MarkdownProps = {
   children: string
@@ -15,6 +16,23 @@ export type MarkdownProps = {
 
 import { Button } from "@/components/ui/button"
 import { useWorkspaceStore } from "@/store/workspaceStore"
+
+/**
+ * Heuristic SMILES detector: 6+ chars using only the SMILES alphabet.
+ * Must contain at least one letter (not just numbers/punctuation).
+ * Avoids matching plain words that lack brackets/bonds.
+ */
+const SMILES_RE = /^[CNOPSFIBrclon\[\]()=#@+\-\/\\%0-9H.]{6,}$/
+const SMILES_MUST_HAVE = /[CNOFPSBrclon]/
+
+function isSmilesLike(str: string): boolean {
+  // Skip short or purely numeric strings
+  if (!str || str.length < 6) return false
+  // Must pass regex and contain at least one atom letter
+  return SMILES_RE.test(str) && SMILES_MUST_HAVE.test(str) &&
+    // Exclude strings that are likely just hex codes, normal words, or paths
+    !/^[0-9a-f]{6,}$/i.test(str) && !str.includes(' ')
+}
 
 function parseMarkdownIntoBlocks(markdown: string): string[] {
   const tokens = marked.lexer(markdown)
@@ -34,6 +52,11 @@ const INITIAL_COMPONENTS: Partial<Components> = {
       props.node?.position?.start.line === props.node?.position?.end.line
 
     if (isInline) {
+      const text = typeof children === 'string' ? children : String(children ?? '')
+      // SMILES hover popup — wrap recognised SMILES inline-code in a popover
+      if (isSmilesLike(text)) {
+        return <SmilesPopover smiles={text}>{text}</SmilesPopover>
+      }
       return (
         <span
           className={cn(

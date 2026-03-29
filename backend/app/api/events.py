@@ -6,13 +6,16 @@ Async-first: uses ``async for event in response.events`` (non-blocking)
 and calls ``await send_fn(frame)`` directly — no intermediate Queue,
 no daemon threads, no ``run_in_executor``.
 
-HITL integration
-----------------
-- ``TextEvent`` content is scanned for ``<plan>``, ``<todo>`` XML tags and
-  sentinel keywords (``[AWAITING_APPROVAL]``, ``[TERMINATE]``).
-- Parsed plan / todo data is emitted as dedicated event types
-  (``plan.proposed``, ``todo.progress``, ``plan.status``) alongside the
-  backward-compatible ``assistant.message``.
+HITL integration (tool-driven, no sentinel strings)
+----------------------------------------------------
+- ``ExecutedFunctionEvent`` is scanned for control tool names:
+  - ``submit_plan_for_approval`` → session.state="awaiting_approval",
+    emits ``plan.status`` frame.
+  - ``finish_workflow``           → session.state="idle".
+- ``TextEvent`` content is scanned for ``<plan>`` and ``<todo>`` XML tags
+  and parsed into dedicated event types (``plan.proposed``, ``todo.progress``).
+- No sentinel keyword scanning (``[AWAITING_APPROVAL]``, ``[TERMINATE]``,
+  ``[ROUTE: xxx]``) — these have been replaced by tool calls.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from autogen.events.agent_events import (
     ErrorEvent,
     ExecuteFunctionEvent,
     ExecutedFunctionEvent,
+    GroupChatRunChatEvent,
     RunCompletionEvent,
     TextEvent,
     ToolCallEvent,
@@ -106,6 +110,7 @@ def _event_to_frames(
 
     # ── ToolCallEvent ─────────────────────────────────────────────────────
     if isinstance(event, ToolCallEvent):
+        tool_sender = str(getattr(payload, "sender", "agent"))
         for tool_call in payload.tool_calls:
             call_id = tool_call.id or f"call_{uuid4().hex}"
             arguments = _json_loads(tool_call.function.arguments)
@@ -115,7 +120,7 @@ def _event_to_frames(
                 _make_frame(
                     "tool.call",
                     {
-                        "sender": "chem_brain",
+                        "sender": tool_sender,
                         "tool_call_id": call_id,
                         "tool": {"name": tool_name},
                         "arguments": arguments,
@@ -145,6 +150,29 @@ def _event_to_frames(
         # the LLM context window.  parse_tool_payload may fail on this format
         # because it uses "success" (bool) not "status" (str).  So we also
         # attempt a direct store lookup via result_id.
+        # ── Control tool side effects ─────────────────────────────────────
+        # submit_plan_for_approval → awaiting_approval state + plan.status frame
+        # finish_workflow          → reset to idle
+        if tool_name == "submit_plan_for_approval":
+            session.state = "awaiting_approval"
+            frames.append(
+                _make_frame(
+                    "plan.status",
+                    {"status": "awaiting_approval"},
+                    session_id,
+                    turn_id,
+                    run_id,
+                )
+            )
+        elif tool_name == "finish_workflow":
+            session.state = "idle"
+            session.last_plan = None
+            # Raise a sentinel so the TextEvent planner handler and the
+            # RunCompletionEvent fallback both know the workflow is done and
+            # must not re-emit plan.status:awaiting_approval even if the
+            # planner generates a last narration message with <plan> tags.
+            phase_state["workflow_finished"] = True
+
         result = parse_tool_payload(str(payload.content))
         if result is not None:
             result = tool_result_store.get(result.result_id) or result
@@ -228,6 +256,15 @@ def _event_to_frames(
                 )
             )
 
+    # ── GroupChatRunChatEvent (speaker selection announcement) ─────────────
+    # Fired by GroupChatManager just before the next agent speaks.
+    # We use it to track the current speaker so StreamEvent tokens can be
+    # attributed to the right agent and filtered accordingly.
+    elif isinstance(event, GroupChatRunChatEvent):
+        speaker_name = str(getattr(event.content, "speaker", ""))
+        phase_state["current_speaker"] = speaker_name
+        # No WebSocket frame emitted — internal routing signal only.
+
     # ── ReasoningChunkEvent (custom — reasoning_content from streaming) ────
     elif isinstance(event, ReasoningChunkEvent):
         frames.append(
@@ -244,7 +281,16 @@ def _event_to_frames(
     elif isinstance(event, StreamEvent):
         # payload = event.content (inner StreamEvent), payload.content = token str
         chunk = str(payload.content or "")
-        if chunk and session.state != "awaiting_approval":
+        # Stream tokens from specialists always, and from planner only during
+        # Phase 2 (execution) when it is writing the final synthesis reply.
+        # During Phase 1 the planner output is shown via plan.proposed /
+        # assistant.message structured frames instead.
+        current_speaker = phase_state.get("current_speaker", "")
+        visible = (
+            current_speaker in {"data_specialist", "computation_specialist"}
+            or (current_speaker == "planner" and session.state == "executing")
+        )
+        if chunk and session.state != "awaiting_approval" and visible:
             # Persist to last_answer accumulator so reconnect snapshot works
             if session.last_answer is None:
                 session.last_answer = chunk
@@ -253,7 +299,7 @@ def _event_to_frames(
             frames.append(
                 _make_frame(
                     "assistant.delta",
-                    {"sender": "Manager", "content": chunk},
+                    {"sender": current_speaker or "agent", "content": chunk},
                     session_id,
                     turn_id,
                     run_id,
@@ -263,107 +309,151 @@ def _event_to_frames(
     # ── TextEvent (may contain <plan>, <todo>, sentinels) ─────────────────
     elif isinstance(event, TextEvent):
         content = str(payload.content or "")
-        sender = str(getattr(payload, "sender", "chem_brain"))
+        sender = str(getattr(payload, "sender", ""))
 
-        if not content or sender != "chem_brain":
+        if not content:
             return frames
 
-        # 1. Detect <plan> tags → emit plan.proposed
-        plan_match = _PLAN_RE.search(content)
-        if plan_match:
-            plan_text = plan_match.group(1).strip()
-            session.last_plan = plan_text
-            frames.append(
-                _make_frame(
-                    "plan.proposed",
-                    {"plan": plan_text},
-                    session_id,
-                    turn_id,
-                    run_id,
-                )
-            )
-
-        # 2. Detect <todo> tags → emit todo.progress
-        todo_match = _TODO_RE.search(content)
-        if todo_match:
-            todo_text = todo_match.group(1).strip()
-            # Store parsed lines so ExecutedFunctionEvent can auto-tick
-            phase_state["todo_lines"] = [
-                l for l in todo_text.split("\n") if l.strip()
-            ]
-            session.last_todo = todo_text
-            frames.append(
-                _make_frame(
-                    "todo.progress",
-                    {"todo": todo_text},
-                    session_id,
-                    turn_id,
-                    run_id,
-                )
-            )
-
-        # 3. Detect sentinels
-        if "[AWAITING_APPROVAL]" in content:
-            session.state = "awaiting_approval"
-            frames.append(
-                _make_frame(
-                    "plan.status",
-                    {"status": "awaiting_approval"},
-                    session_id,
-                    turn_id,
-                    run_id,
-                )
-            )
-
-        if "[TERMINATE]" in content:
-            session.state = "idle"
-
-        # 4. Emit assistant.message for canonical clean text.
-        #
-        # Suppression rules (TextEvent-level):
-        # • <plan> tag  → suppress (dedicated plan.proposed frame carries the data)
-        # • [AWAITING_APPROVAL] → suppress (dedicated plan.status frame)
-        # • Everything else passes through after stripping ALL structural markup.
-        #   This includes execution-phase narration (正在执行第N步…) and the final
-        #   summary — both are useful user-facing content.
-        #
-        # Note: StreamEvent tokens are already streamed token-by-token as
-        # assistant.delta. The TextEvent carries the fully-assembled clean text
-        # for the finalAnswer; the frontend uses this to clear the raw-token
-        # draftAnswer and commit the clean version.
-        suppress_message = (
-            plan_match is not None
-            or "[AWAITING_APPROVAL]" in content
-        )
-
-        if not suppress_message:
-            clean = content
-            # Strip ALL structural tags and sentinels from the rendered text
-            clean = _PLAN_RE.sub("", clean)
-            clean = _TODO_RE.sub("", clean)
-            clean = clean.replace("[TERMINATE]", "")
-            clean = clean.replace("[AWAITING_APPROVAL]", "")
-            clean = _sanitize(clean).strip()
-
-            if clean:
-                # Overwrite the last_answer snapshot with the clean version
-                # (supersedes the raw-token accumulation done by StreamEvent).
-                session.last_answer = (session.last_answer or "").split(clean)[0] + clean
+        # ── Planner messages ─────────────────────────────────────────────
+        # Planner is the coordinator: emits plans, todo lists, routing
+        # decisions, and the final synthesised answer.
+        if sender == "planner":
+            # 1. Detect <plan> tags → emit plan.proposed
+            plan_match = _PLAN_RE.search(content)
+            # Only capture last_plan while the workflow is still in its
+            # planning phase.  After finish_workflow fires we must not
+            # re-populate last_plan from any planner narration that happens
+            # to contain <plan> tags, because RunCompletionEvent would then
+            # mis-trigger the HITL fallback.
+            if plan_match and not phase_state.get("workflow_finished"):
+                plan_text = plan_match.group(1).strip()
+                session.last_plan = plan_text
                 frames.append(
                     _make_frame(
-                        "assistant.message",
-                        {"sender": "Manager", "message": clean},
+                        "plan.proposed",
+                        {"plan": plan_text},
+                        session_id,
+                        turn_id,
+                        run_id,
+                    )
+                )
+            elif plan_match:
+                # Workflow finished — suppress plan.proposed but still let
+                # the todo / assistant.message extraction run below.
+                pass
+
+            # 2. Detect <todo> tags → emit todo.progress
+            todo_match = _TODO_RE.search(content)
+            if todo_match:
+                todo_text = todo_match.group(1).strip()
+                phase_state["todo_lines"] = [
+                    l for l in todo_text.split("\n") if l.strip()
+                ]
+                session.last_todo = todo_text
+                frames.append(
+                    _make_frame(
+                        "todo.progress",
+                        {"todo": todo_text},
                         session_id,
                         turn_id,
                         run_id,
                     )
                 )
 
+            # 3. Emit assistant.message for clean synthesised content.
+            #    Suppress plan messages since they have dedicated frames.
+            #    Control tool calls (submit_plan_for_approval, finish_workflow,
+            #    set_routing_target) are detected via ExecutedFunctionEvent —
+            #    no sentinel-string scanning needed here.
+            suppress_message = plan_match is not None
+            if not suppress_message:
+                clean = content
+                clean = _PLAN_RE.sub("", clean)
+                clean = _TODO_RE.sub("", clean)
+                clean = _sanitize(clean).strip()
+
+                if clean:
+                    session.last_answer = (
+                        (session.last_answer or "").split(clean)[0] + clean
+                    )
+                    frames.append(
+                        _make_frame(
+                            "assistant.message",
+                            {"sender": "planner", "message": clean},
+                            session_id,
+                            turn_id,
+                            run_id,
+                        )
+                    )
+
+        # ── Specialist messages (data / computation) ─────────────────────
+        # Specialists emit a brief narration + [DONE] after each tool call.
+        # Strip the [DONE] signal and pass the narration text to the user.
+        elif sender in ("data_specialist", "computation_specialist"):
+            clean = content.replace("[DONE]", "").strip()
+            clean = _sanitize(clean).strip()
+            if clean:
+                frames.append(
+                    _make_frame(
+                        "assistant.message",
+                        {"sender": sender, "message": clean},
+                        session_id,
+                        turn_id,
+                        run_id,
+                    )
+                )
+
+        # ── Reviewer messages ────────────────────────────────────────────
+        # Reviewer emits [OK] or [RETRY: agent] routing verdicts.
+        # These are translated into review.status events; they are never
+        # shown verbatim as assistant.message (no user-facing narrative here).
+        elif sender == "reviewer":
+            if "[OK]" in content:
+                frames.append(
+                    _make_frame(
+                        "review.status",
+                        {"status": "ok", "sender": "reviewer"},
+                        session_id,
+                        turn_id,
+                        run_id,
+                    )
+                )
+            elif "[RETRY:" in content:
+                frames.append(
+                    _make_frame(
+                        "review.status",
+                        {"status": "retry", "sender": "reviewer", "message": content.strip()},
+                        session_id,
+                        turn_id,
+                        run_id,
+                    )
+                )
+            # All other reviewer text → suppressed (routing noise)
+
+        # tool_executor, user_proxy, chem_manager → suppress
+
     # ── RunCompletionEvent ────────────────────────────────────────────────
     elif isinstance(event, RunCompletionEvent):
         # Persist turn/run IDs for state snapshot on reconnect
         session.last_turn_id = turn_id
         session.last_run_id = run_id
+
+        # Fallback: planner generated a <plan> block but did NOT call
+        # submit_plan_for_approval (e.g., LLM dropped the tool call).
+        # Auto-transition so the HITL gate and plan.status frame still fire.
+        # Guard: skip if finish_workflow already completed this run —
+        # the planner state is "idle" again but we must not re-open HITL.
+        if session.state == "idle" and session.last_plan and not phase_state.get("workflow_finished"):
+            session.state = "awaiting_approval"
+            frames.append(
+                _make_frame(
+                    "plan.status",
+                    {"status": "awaiting_approval", "plan": session.last_plan},
+                    session_id,
+                    turn_id,
+                    run_id,
+                )
+            )
 
         # Suppress run.finished during Phase 1 (planning) when the brain
         # has proposed a plan and is waiting for user approval.  Emitting
@@ -387,10 +477,19 @@ def _event_to_frames(
 
     # ── ErrorEvent ────────────────────────────────────────────────────────
     elif isinstance(event, ErrorEvent):
+        err_msg = str(payload.error)
+        # Filter AG2-internal routing noise.  GroupChatManager's internal
+        # speaker name is "chat_manager"; AG2 emits an ErrorEvent with
+        # "Invalid group agent name in last message: chat_manager" whenever
+        # the manager appears as the last message sender in a round.  This
+        # is expected AG2 behaviour and should never surface to the UI.
+        _AG2_NOISE = ("Invalid group agent name", "chat_manager")
+        if any(token in err_msg for token in _AG2_NOISE):
+            return frames  # suppress silently
         frames.append(
             _make_frame(
                 "run.failed",
-                {"error": str(payload.error)},
+                {"error": err_msg},
                 session_id,
                 turn_id,
                 run_id,
@@ -421,10 +520,47 @@ async def drain_response(
     Must be called while holding ``session.lock`` (asyncio.Lock).
     """
     pending_calls: dict[str, dict] = {}
-    phase_state: dict[str, object] = {"generated_image": False}
+    phase_state: dict[str, object] = {
+        "generated_image": False,
+        # Tracks the agent currently speaking (updated by GroupChatRunChatEvent)
+        # so StreamEvent tokens can be attributed and filtered by agent role.
+        "current_speaker": "",
+    }
+
+    # ── Console streaming helpers ──────────────────────────────────────────
+    # Print tokens to stdout in real-time so the server terminal shows a
+    # typewriter effect.  Uses ANSI colours: white for content, grey for
+    # reasoning tokens.  A trailing newline is printed when a non-chunk
+    # event arrives so log lines stay clean.
+    _console_open = False   # True while we are mid-stream (no trailing \n yet)
+
+    def _console_chunk(text: str, grey: bool = False) -> None:
+        nonlocal _console_open
+        if not text:
+            return
+        if grey:
+            import sys
+            print(f"\033[90m{text}\033[0m", end="", flush=True, file=sys.stderr)
+        else:
+            print(text, end="", flush=True)
+        _console_open = True
+
+    def _console_newline() -> None:
+        nonlocal _console_open
+        if _console_open:
+            print(flush=True)
+            _console_open = False
 
     try:
         async for event in response.events:  # type: ignore[attr-defined]
+            # ── Real-time console typewriter output ────────────────────────
+            if isinstance(event, ReasoningChunkEvent):
+                _console_chunk(event.content, grey=True)
+            elif isinstance(event, StreamEvent):
+                _console_chunk(str(getattr(event.content, "content", "") or ""))
+            else:
+                _console_newline()   # close any open streaming line cleanly
+
             for frame in _event_to_frames(
                 event=event,
                 session_id=session_id,
@@ -436,15 +572,19 @@ async def drain_response(
             ):
                 await send_fn(frame)
     except Exception as exc:
-        await send_fn(
-            _make_frame(
-                "run.failed",
-                {"error": f"[EventBridge] {exc}"},
-                session_id,
-                turn_id,
-                run_id,
+        err_msg = str(exc)
+        # Suppress AG2-internal routing noise — same guard as in _event_to_frames.
+        _AG2_NOISE = ("Invalid group agent name", "chat_manager")
+        if not any(token in err_msg for token in _AG2_NOISE):
+            await send_fn(
+                _make_frame(
+                    "run.failed",
+                    {"error": f"[EventBridge] {exc}"},
+                    session_id,
+                    turn_id,
+                    run_id,
+                )
             )
-        )
 
 
 async def stream_planning(
@@ -458,9 +598,11 @@ async def stream_planning(
     """Run Phase 1 (planning) and stream event frames to the client.
 
     After all events are consumed the session is in either
-    ``awaiting_approval`` (plan generated) or ``idle`` (direct answer with
-    ``[TERMINATE]``).  The caller inspects ``session.state`` to decide
-    whether to wait for ``plan.approve`` or finish the turn.
+    ``awaiting_approval`` (submit_plan_for_approval tool fired) or ``idle``
+    (finish_workflow called for a direct answer).  The caller inspects
+    ``session.state`` to decide whether to wait for ``plan.approve`` or
+    finish the turn.  Phase 1 messages are saved into ``session.prior_messages``
+    so Phase 2 has full planning context.
     """
     session_id = session.session_id
 
@@ -474,6 +616,8 @@ async def stream_planning(
             run_id=run_id,
             send_fn=send_fn,
         )
+        # Save full message history so Phase 2 has planning context
+        session.prior_messages = list(await plan_response.messages)
     except Exception as exc:
         await send_fn(
             _make_frame(
@@ -511,6 +655,8 @@ async def stream_execution(
             run_id=run_id,
             send_fn=send_fn,
         )
+        # Save combined history for any subsequent planning turns
+        session.prior_messages = list(await exec_response.messages)
     except Exception as exc:
         await send_fn(
             _make_frame(
@@ -523,35 +669,3 @@ async def stream_execution(
         )
     finally:
         session.state = "idle"
-
-
-async def stream_greeting(
-    *,
-    session: ChatSession,
-    turn_id: str,
-    run_id: str,
-    send_fn: SendFn,
-) -> None:
-    """Generate a ChemBrain greeting and stream it to the client."""
-    session_id = session.session_id
-
-    try:
-        response = await session.generate_greeting()
-        await drain_response(
-            response=response,
-            session=session,
-            session_id=session_id,
-            turn_id=turn_id,
-            run_id=run_id,
-            send_fn=send_fn,
-        )
-    except Exception as exc:
-        await send_fn(
-            _make_frame(
-                "run.failed",
-                {"error": str(exc)},
-                session_id,
-                turn_id,
-                run_id,
-            )
-        )

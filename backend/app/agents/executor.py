@@ -1,13 +1,15 @@
 """
-Executor — the tool-running sentinel in ChemAgent's Caller/Executor architecture.
+Executor agents for the ChemAgent multi-agent team.
 
-The executor has **no LLM** (``llm_config=False``).  Its only jobs are:
-1. Execute tool functions when ChemBrain issues a tool call.
-2. Detect termination sentinels (``[AWAITING_APPROVAL]`` or ``[TERMINATE]``)
-   in ChemBrain's output and halt the conversation accordingly.
+``create_user_proxy()``
+    No-LLM agent that initiates ``a_run_group_chat`` via
+    ``DefaultPattern.user_agent``.  Not part of the DefaultPattern's
+    internal GroupChat — it drives the chat from outside via
+    ``a_initiate_chat(manager, message)``.
 
-The caller/executor separation ensures that reasoning (LLM) and execution
-(deterministic Python) stay cleanly isolated.
+    Termination is handled by ``TerminateTarget`` (returned from the
+    ``submit_plan_for_approval`` / ``finish_workflow`` control tools)
+    rather than by sentinel-text inspection on this agent.
 """
 
 from __future__ import annotations
@@ -15,25 +17,42 @@ from __future__ import annotations
 from autogen import ConversableAgent
 
 
-_SENTINELS = ("[AWAITING_APPROVAL]", "[TERMINATE]")
+def create_user_proxy() -> ConversableAgent:
+    """Create the user-proxy agent that initiates group-chat conversations.
+
+    Sits *outside* the DefaultPattern's internal GroupChat (not in
+    ``pattern.agents``).  It starts each phase via ``a_initiate_chat``
+    or ``a_resume``, then receives the manager's final reply when
+    DefaultPattern's ``TerminateTarget`` fires.
+
+    ``max_consecutive_auto_reply=0`` prevents it from automatically sending
+    a second message — each phase is exactly one outer exchange.
+    """
+    return ConversableAgent(
+        name="user_proxy",
+        llm_config=False,
+        human_input_mode="NEVER",
+        max_consecutive_auto_reply=0,
+        description="User proxy — drives the DefaultPattern chat from outside the group.",
+    )
 
 
-def _is_termination_msg(msg: dict) -> bool:
-    """Return True if the message contains any sentinel keyword."""
-    content = msg.get("content") or ""
-    return any(sentinel in content for sentinel in _SENTINELS)
+# ── Backwards-compatibility shims ─────────────────────────────────────────────
+
+def create_tool_executor() -> ConversableAgent:
+    """Deprecated: DefaultPattern provides its own GroupToolExecutor.
+
+    Kept as a no-op shim so imports in older test files don't break.
+    Returns a minimal no-LLM agent that is never added to the group.
+    """
+    return ConversableAgent(
+        name="tool_executor_compat",
+        llm_config=False,
+        human_input_mode="NEVER",
+        description="Deprecated compat shim — not used in DefaultPattern architecture.",
+    )
 
 
 def create_executor() -> ConversableAgent:
-    """Create the executor agent (no LLM, executes tools, detects sentinels)."""
-    return ConversableAgent(
-        name="executor",
-        llm_config=False,
-        human_input_mode="NEVER",
-        is_termination_msg=_is_termination_msg,
-        max_consecutive_auto_reply=30,
-        description=(
-            "Silent executor that runs tool functions and detects "
-            "termination sentinels — no LLM reasoning."
-        ),
-    )
+    """Deprecated: use create_user_proxy() instead."""
+    return create_user_proxy()

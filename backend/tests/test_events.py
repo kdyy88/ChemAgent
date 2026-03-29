@@ -28,7 +28,7 @@ class TestMakeFrame:
 
 
 class TestTextEventFrames:
-    def _make_text_event(self, content: str, sender: str = "chem_brain"):
+    def _make_text_event(self, content: str, sender: str = "planner"):
         event = MagicMock()
         event.__class__.__name__ = "TextEvent"
         # Patch isinstance checks
@@ -40,9 +40,30 @@ class TestTextEventFrames:
         event.content.sender = sender
         return event
 
+    def _make_executed_function_event(
+        self,
+        func_name: str,
+        call_id: str = "call-001",
+        content: str = "{}",
+        is_exec_success: bool = True,
+    ):
+        """Build a mock ExecutedFunctionEvent for control tool tests."""
+        from autogen.events.agent_events import ExecutedFunctionEvent
+
+        event = MagicMock()
+        event.__class__ = ExecutedFunctionEvent
+        event.content = MagicMock()
+        event.content.func_name = func_name
+        event.content.call_id = call_id
+        event.content.content = content
+        event.content.is_exec_success = is_exec_success
+        event.content.arguments = {}
+        return event
+
     def _make_session(self, state: str = "idle"):
         session = MagicMock()
         session.state = state
+        session.last_todo = None
         return session
 
     def test_plan_proposed_emitted(self):
@@ -61,15 +82,17 @@ class TestTextEventFrames:
         assert len(plan_frames) == 1
         assert "Step 1" in plan_frames[0]["plan"]
 
-    def test_awaiting_approval_sentinel(self):
-        event = self._make_text_event("Here is the plan [AWAITING_APPROVAL]")
+    def test_submit_plan_for_approval_tool_emits_plan_status(self):
+        """ExecutedFunctionEvent for submit_plan_for_approval → plan.status frame
+        and session.state = 'awaiting_approval'."""
+        event = self._make_executed_function_event("submit_plan_for_approval")
         session = self._make_session()
         frames = _event_to_frames(
             event=event,
             session_id="s",
             turn_id="t",
             run_id="r",
-            pending_calls={},
+            pending_calls={"call-001": {"tool": "submit_plan_for_approval", "arguments": {}}},
             session=session,
             phase_state={},
         )
@@ -78,47 +101,24 @@ class TestTextEventFrames:
         assert status_frames[0]["status"] == "awaiting_approval"
         assert session.state == "awaiting_approval"
 
-    def test_terminate_resets_state(self):
-        event = self._make_text_event("Done [TERMINATE]")
+    def test_finish_workflow_tool_resets_state(self):
+        """ExecutedFunctionEvent for finish_workflow → session.state = 'idle'."""
+        event = self._make_executed_function_event("finish_workflow")
         session = self._make_session(state="executing")
         _event_to_frames(
             event=event,
             session_id="s",
             turn_id="t",
             run_id="r",
-            pending_calls={},
+            pending_calls={"call-001": {"tool": "finish_workflow", "arguments": {}}},
             session=session,
             phase_state={},
         )
         assert session.state == "idle"
 
-    def test_awaiting_approval_suppresses_message(self):
-        """
-        Messages that contain [AWAITING_APPROVAL] are pipeline narration
-        (e.g. "以上是我为您制定的计划 [AWAITING_APPROVAL]").  They should
-        NOT emit an assistant.message frame — the plan.status frame already
-        carries the structured information.
-        """
-        event = self._make_text_event("Hello [AWAITING_APPROVAL] world [TERMINATE]")
-        session = self._make_session()
-        frames = _event_to_frames(
-            event=event,
-            session_id="s",
-            turn_id="t",
-            run_id="r",
-            pending_calls={},
-            session=session,
-            phase_state={},
-        )
-        text_frames = [f for f in frames if f["type"] == "assistant.message"]
-        assert len(text_frames) == 0
-
-    def test_terminate_sentinel_stripped_from_final_answer(self):
-        """
-        A plain final-answer message (no plan/todo/AWAITING_APPROVAL markers)
-        should still emit assistant.message with [TERMINATE] stripped out.
-        """
-        event = self._make_text_event("Final answer here. [TERMINATE]")
+    def test_planner_text_without_plan_emits_assistant_message(self):
+        """Plain planner narration (no <plan>, no sentinels) emits assistant.message."""
+        event = self._make_text_event("I will now dispatch the data specialist.")
         session = self._make_session()
         frames = _event_to_frames(
             event=event,
@@ -131,11 +131,31 @@ class TestTextEventFrames:
         )
         text_frames = [f for f in frames if f["type"] == "assistant.message"]
         assert len(text_frames) == 1
-        assert "[TERMINATE]" not in text_frames[0]["message"]
+        assert "dispatch the data specialist" in text_frames[0]["message"]
+
+    def test_planner_final_answer_emits_assistant_message(self):
+        """
+        A plain final-answer message (no plan/todo markers)
+        should emit assistant.message cleanly.
+        """
+        event = self._make_text_event("Final answer here.")
+        session = self._make_session()
+        frames = _event_to_frames(
+            event=event,
+            session_id="s",
+            turn_id="t",
+            run_id="r",
+            pending_calls={},
+            session=session,
+            phase_state={},
+        )
+        text_frames = [f for f in frames if f["type"] == "assistant.message"]
+        assert len(text_frames) == 1
         assert "Final answer here." in text_frames[0]["message"]
 
-    def test_non_brain_sender_ignored(self):
-        event = self._make_text_event("Some text", sender="executor")
+    def test_non_agent_sender_ignored(self):
+        """Messages from non-specialist senders (tool_executor, user_proxy, etc.) are suppressed."""
+        event = self._make_text_event("Some text", sender="tool_executor")
         session = self._make_session()
         frames = _event_to_frames(
             event=event,
@@ -180,11 +200,11 @@ class TestTextEventFrames:
     def test_todo_in_final_answer_passes_through(self):
         """
         The final answer TextEvent may contain a <todo> block (all items
-        checked) followed by the actual report text and [TERMINATE].
+        checked) followed by the actual report text.
         assistant.message should be emitted with the <todo> block stripped
         but the report text preserved.
         """
-        content = "<todo>\n- [x] Step 1 ✓\n- [x] Step 2 ✓\n</todo>\n\n分析完成，报告如下：azithromycin… [TERMINATE]"
+        content = "<todo>\n- [x] Step 1 ✓\n- [x] Step 2 ✓\n</todo>\n\n分析完成，报告如下：azithromycin…"
         event = self._make_text_event(content)
         session = self._make_session(state="executing")
         frames = _event_to_frames(
@@ -196,10 +216,8 @@ class TestTextEventFrames:
             session=session,
             phase_state={},
         )
-        # After processing [TERMINATE], session.state → "idle", so message passes
         text_frames = [f for f in frames if f["type"] == "assistant.message"]
         assert len(text_frames) == 1
         msg = text_frames[0]["message"]
         assert "分析完成" in msg
         assert "<todo>" not in msg
-        assert "[TERMINATE]" not in msg

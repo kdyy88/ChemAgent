@@ -208,3 +208,6 @@
 .animate-todo-enter {
   animation: todo-row-enter 0.2s ease-out forwards;
 }
+.animate-blink {
+  animation: blink 1s step-end infinite;
+}

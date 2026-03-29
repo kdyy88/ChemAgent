@@ -1,7 +1,7 @@
 """
 Shared test fixtures for ChemAgent backend tests.
 
-Provides mock LLM config, agent pairs, and session fixtures so that
+Provides mock LLM config, agent team, and session fixtures so that
 unit tests never hit a real OpenAI endpoint.
 """
 
@@ -24,32 +24,42 @@ def mock_llm_config():
     return {"config_list": [{"model": "test-model", "api_key": "fake"}]}
 
 
-# ── Mock agent pair ───────────────────────────────────────────────────────────
+# ── Mock agent team ───────────────────────────────────────────────────────────
 
 
 @pytest.fixture
 def mock_agents():
-    """Return a (brain, executor) pair with mocked a_run().
+    """Return (user_proxy, pattern) mocks.
 
-    Each a_run() call returns an AsyncRunResponseProtocol-like object
-    whose .events is an empty async iterable.
+    ``a_run_group_chat`` is patched at module level so calls in ChatSession
+    methods return an empty async response without hitting the real framework.
     """
-    brain = MagicMock()
-    brain.name = "chem_brain"
+    user_proxy = MagicMock()
+    user_proxy.name = "user_proxy"
 
-    executor = MagicMock()
-    executor.name = "executor"
+    pattern = MagicMock()
+    pattern.name = "mock_pattern"
+
+    return user_proxy, pattern
+
+
+# ── Mock response factory ─────────────────────────────────────────────────────
+
+def _make_mock_response():
+    """Return an AsyncRunResponse-like mock with empty events and messages."""
 
     async def _empty_events():
         return
-        yield  # make it an async generator  # noqa: E501
+        yield  # make it an async generator
+
+    async def _empty_messages():
+        return []
 
     mock_response = MagicMock()
     mock_response.events = _empty_events()
-
-    executor.a_run = AsyncMock(return_value=mock_response)
-
-    return brain, executor
+    # .messages is an async property — AsyncMock returns a coroutine
+    mock_response.messages = AsyncMock(return_value=[])()
+    return mock_response
 
 
 # ── Mock ChatSession ─────────────────────────────────────────────────────────
@@ -57,14 +67,18 @@ def mock_agents():
 
 @pytest.fixture
 def mock_session(mock_agents):
-    """Pre-built ChatSession with mocked agents."""
-    brain, executor = mock_agents
-    return ChatSession(
+    """Pre-built ChatSession with mocked agents and patched a_run_group_chat."""
+    user_proxy, pattern = mock_agents
+    ctx = MagicMock()
+
+    session = ChatSession(
         session_id="test-session-001",
-        brain=brain,
-        executor=executor,
-        agent_models={"chem_brain": "test-model"},
+        user_proxy=user_proxy,
+        pattern=pattern,
+        ctx=ctx,
+        agent_models={"planner": "test-model"},
     )
+    return session
 
 
 # ── Mock SessionManager ──────────────────────────────────────────────────────

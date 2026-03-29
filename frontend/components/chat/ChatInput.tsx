@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Send, CheckCircle2, XCircle } from 'lucide-react'
+import { Send, CheckCircle2, Pencil, FlaskConical } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import {
@@ -12,41 +12,43 @@ import {
 } from '@/components/ui/prompt-input'
 import { useChemAgent } from '@/hooks/useChemAgent'
 import { useWorkspaceStore } from '@/store/workspaceStore'
-import { CompactTodoStep } from './ThinkingLog'
+import { cn } from '@/lib/utils'
 
 export function ChatInput() {
   const [value, setValue] = useState('')
   // Local flag to hide buttons immediately on click (before WS state arrives)
   const [hitlDismissed, setHitlDismissed] = useState(false)
+  // When user clicks "我要修改", reactivate textarea for refinement input
+  const [editMode, setEditMode] = useState(false)
   const { turns, isStreaming, sendMessage, approvePlan, rejectPlan } = useChemAgent()
   const { currentSmiles, activeFunctionId } = useWorkspaceStore()
 
-  // Find the currently active turn for HITL state and todo rendering
+  // Find the currently active turn for HITL state
   const activeTurn = [...turns].reverse().find(
     (t) => t.status === 'thinking' || t.status === 'awaiting_approval',
   )
   const isAwaitingApproval = activeTurn?.status === 'awaiting_approval'
 
-  // Reset the dismissed flag whenever a new awaiting_approval state appears
+  // Reset dismissed/edit flags whenever a new awaiting_approval state appears
   useEffect(() => {
-    if (isAwaitingApproval) setHitlDismissed(false)
+    if (isAwaitingApproval) {
+      setHitlDismissed(false)
+      setEditMode(false)
+      setValue('')
+    }
   }, [isAwaitingApproval])
 
-  // Show HITL buttons only when server says awaiting AND user hasn't clicked yet
+  // Show HITL overlay only when server says awaiting AND user hasn't clicked yet
   const showHitl = isAwaitingApproval && !hitlDismissed
-
-  // Last todo step from the active turn (for progress display above input)
-  const todoSteps = activeTurn?.steps.filter((s) => s.kind === 'todo') ?? []
-  const lastTodo = todoSteps.length > 0 ? todoSteps[todoSteps.length - 1] : null
-  const todoText = lastTodo?.kind === 'todo' ? lastTodo.todo : null
 
   const handleApprove = () => {
     setHitlDismissed(true)
+    setEditMode(false)
     approvePlan()
   }
 
-  const handleReject = () => {
-    setHitlDismissed(true)
+  const handleEdit = () => {
+    setEditMode(true)
     rejectPlan()
   }
 
@@ -61,51 +63,61 @@ export function ChatInput() {
 
     sendMessage(trimmed + payloadContext)
     setValue('')
+    setEditMode(false)
+    setHitlDismissed(true)
   }
 
+  // Whether the textarea should be locked (locked while HITL is showing and NOT in edit mode)
+  const inputLocked = showHitl && !editMode
+
   return (
-    <div className="flex flex-col gap-1.5">
-      {/* Todo progress — above input box (Claude/Cursor style) */}
-      {todoText && (
-        <div className="rounded-xl border bg-card/60 px-3 py-2 shadow-sm">
-          <CompactTodoStep todo={todoText} />
+    <div className="flex flex-col gap-2">
+
+      {/* ── HITL Interruptive Input Area ─────────────────────────────────── */}
+      {showHitl && !editMode && (
+        <div className="rounded-2xl border-2 border-primary/30 bg-primary/5 p-3 flex flex-col gap-2 shadow-sm">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-primary">
+            <FlaskConical className="h-3.5 w-3.5 shrink-0" />
+            <span>ChemAgent 已制定执行计划，等待您的确认</span>
+          </div>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              className="flex-1 h-9 text-sm font-semibold shadow-sm"
+              onClick={handleApprove}
+            >
+              <CheckCircle2 className="h-4 w-4 mr-1.5" />
+              批准计划，开始执行
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-9 text-sm px-3"
+              onClick={handleEdit}
+            >
+              <Pencil className="h-3.5 w-3.5 mr-1" />
+              我要修改
+            </Button>
+          </div>
         </div>
       )}
 
-      {/* HITL approve / reject — above the input, disappears immediately on click */}
-      {showHitl && (
-        <div className="flex items-center justify-end gap-2 px-1">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-7 px-2.5 text-xs text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
-            onClick={handleReject}
-          >
-            <XCircle className="h-3.5 w-3.5 mr-1" />
-            拒绝
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            className="h-7 px-3 text-xs"
-            onClick={handleApprove}
-          >
-            <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
-            立即执行
-          </Button>
-        </div>
-      )}
-
+      {/* ── Main prompt input ─────────────────────────────────────────────── */}
       <PromptInput
         value={value}
         onValueChange={setValue}
         isLoading={isStreaming}
         onSubmit={handleSubmit}
-        disabled={isStreaming}
-        className="w-full"
+        disabled={isStreaming || inputLocked}
+        className={cn('w-full transition-opacity', inputLocked && 'opacity-40 pointer-events-none')}
       >
-        <PromptInputTextarea placeholder="Ask about any chemical compound…" />
+        <PromptInputTextarea
+          placeholder={
+            editMode
+              ? '请告诉 ChemAgent 您想补充或修改什么，例如：请额外补充毒性预测...'
+              : 'Ask about any chemical compound…'
+          }
+        />
         <PromptInputActions className="justify-end">
           {isStreaming ? (
             <div className="flex items-center gap-1.5 px-3 text-sm text-muted-foreground">
@@ -113,7 +125,7 @@ export function ChatInput() {
               <span>Analyzing…</span>
             </div>
           ) : (
-            <PromptInputAction tooltip="Send message">
+            <PromptInputAction tooltip={editMode ? '发送修改意见' : 'Send message'}>
               <Button
                 type="button"
                 size="default"
@@ -121,7 +133,7 @@ export function ChatInput() {
                 onClick={handleSubmit}
               >
                 <Send className="h-4 w-4" />
-                Send
+                {editMode ? '发送' : 'Send'}
               </Button>
             </PromptInputAction>
           )}

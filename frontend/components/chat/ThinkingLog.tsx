@@ -196,11 +196,15 @@ function ToolStep({ step }: { step: Extract<Step, { kind: 'tool_call' }> }) {
     <CheckCircle2 className="h-3.5 w-3.5 text-stone-400" />
   )
 
+  const elapsedLabel = step.elapsedMs != null
+    ? ` (${(step.elapsedMs / 1000).toFixed(1)}s)`
+    : ''
+
   const label = isPending
     ? semanticAction(step.tool, step.args)
     : isError
     ? `失败：${semanticAction(step.tool, step.args)}`
-    : semanticDone(step.tool, step.summary ?? '')
+    : semanticDone(step.tool, step.summary ?? '') + elapsedLabel
 
   const hasContent = !isPending
 
@@ -234,6 +238,128 @@ function ToolStep({ step }: { step: Extract<Step, { kind: 'tool_call' }> }) {
       )}
     </ChainOfThoughtStep>
   )
+}
+
+// ── Concurrent group ──────────────────────────────────────────────────────────
+/**
+ * Renders a group of tool_call steps that fired concurrently from the same
+ * sender. Shows a group header with the max elapsed time and individual
+ * rows below it with live status icons.
+ */
+function ConcurrentCallGroup({ steps }: { steps: Extract<Step, { kind: 'tool_call' }>[] }) {
+  const allDone   = steps.every((s) => s.loadStatus !== 'pending')
+  const anyError  = steps.some((s) => s.loadStatus === 'error')
+  const maxElapsed = steps.reduce((m, s) => Math.max(m, s.elapsedMs ?? 0), 0)
+  const sender = steps[0].sender ?? 'Agent'
+
+  const groupIcon = allDone
+    ? anyError
+      ? <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
+      : <CheckCircle2 className="h-3.5 w-3.5 text-stone-400" />
+    : <Loader2 className="h-3.5 w-3.5 text-stone-400 animate-spin" />
+
+  const elapsedLabel = allDone && maxElapsed > 0 ? ` (${(maxElapsed / 1000).toFixed(1)}s)` : ''
+
+  return (
+    <ChainOfThoughtStep>
+      <ChainOfThoughtTrigger
+        leftIcon={groupIcon}
+        swapIconOnHover={allDone}
+        className="text-xs"
+      >
+        <span className="flex items-center gap-1.5 flex-wrap min-w-0">
+          <SenderBadge sender={sender} />
+          <span className="text-stone-500">并行检索 {steps.length} 项{elapsedLabel}</span>
+        </span>
+      </ChainOfThoughtTrigger>
+      <ChainOfThoughtContent>
+        <ChainOfThoughtItem>
+          <div className="flex flex-col gap-0.5">
+            {steps.map((step) => {
+              const isPending = step.loadStatus === 'pending'
+              const isError   = step.loadStatus === 'error'
+              return (
+                <div key={step.callId} className="flex items-start gap-1.5 text-[11px]">
+                  <div className="mt-0.5 shrink-0">
+                    {isPending ? (
+                      <Loader2 className="h-3 w-3 text-stone-400 animate-spin" />
+                    ) : isError ? (
+                      <XCircle className="h-3 w-3 text-red-400" />
+                    ) : (
+                      <CheckCircle2 className="h-3 w-3 text-green-400" />
+                    )}
+                  </div>
+                  <span className={cn(
+                    'leading-normal',
+                    isPending ? 'text-stone-500' : isError ? 'text-red-600' : 'text-muted-foreground',
+                  )}>
+                    <span className="font-mono">{step.tool}</span>
+                    {step.args && Object.values(step.args)[0] != null && (
+                      <span className="opacity-60 ml-1">
+                        ({String(Object.values(step.args)[0]).slice(0, 30)})
+                      </span>
+                    )}
+                    {isError && step.summary && (
+                      <span className="block text-red-500/80 font-normal mt-0.5">
+                        {step.summary.slice(0, 80)}
+                      </span>
+                    )}
+                    {step.elapsedMs != null && !isPending && (
+                      <span className="opacity-40 ml-1">
+                        {(step.elapsedMs / 1000).toFixed(1)}s
+                      </span>
+                    )}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </ChainOfThoughtItem>
+      </ChainOfThoughtContent>
+    </ChainOfThoughtStep>
+  )
+}
+
+/**
+ * Groups consecutive tool_call steps by sender into concurrent batches.
+ * A "concurrent batch" = consecutive steps with the same sender where
+ * there are 2+ calls before any of them has a result (indicating parallel dispatch).
+ * Single steps are rendered individually.
+ */
+function groupStepsIntoBatches(
+  steps: Step[],
+): ({ kind: 'concurrent'; items: Extract<Step, { kind: 'tool_call' }>[] } | { kind: 'single'; step: Step })[] {
+  const result: ({ kind: 'concurrent'; items: Extract<Step, { kind: 'tool_call' }>[] } | { kind: 'single'; step: Step })[] = []
+  let i = 0
+  while (i < steps.length) {
+    const step = steps[i]
+    if (step.kind !== 'tool_call') {
+      result.push({ kind: 'single', step })
+      i++
+      continue
+    }
+
+    // Look ahead: collect consecutive tool_call steps with the same sender
+    const sender = step.sender
+    const batch: Extract<Step, { kind: 'tool_call' }>[] = [step]
+    let j = i + 1
+    while (
+      j < steps.length &&
+      steps[j].kind === 'tool_call' &&
+      (steps[j] as Extract<Step, { kind: 'tool_call' }>).sender === sender
+    ) {
+      batch.push(steps[j] as Extract<Step, { kind: 'tool_call' }>)
+      j++
+    }
+
+    if (batch.length >= 2) {
+      result.push({ kind: 'concurrent', items: batch })
+    } else {
+      result.push({ kind: 'single', step })
+    }
+    i = j
+  }
+  return result
 }
 
 // ── Error step ────────────────────────────────────────────────────────────────
@@ -361,9 +487,13 @@ export const ThinkingLog = memo(function ThinkingLog({
           </StepsTrigger>
           <StepsContent>
             <ChainOfThought className="max-h-80 overflow-y-auto pr-0.5">
-              {steps.map((step, i) => (
-                <StepRow key={i} step={step} />
-              ))}
+              {groupStepsIntoBatches(steps).map((group, i) =>
+                group.kind === 'concurrent' ? (
+                  <ConcurrentCallGroup key={i} steps={group.items} />
+                ) : (
+                  <StepRow key={i} step={group.step} />
+                ),
+              )}
             </ChainOfThought>
           </StepsContent>
         </Steps>

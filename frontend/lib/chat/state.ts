@@ -130,6 +130,7 @@ export function applyServerEvent(state: ChatStateSlice, msg: ServerEvent): Parti
         args: msg.arguments,
         sender: msg.sender,
         loadStatus: 'pending',
+        startedAt: Date.now(),
       }
       return {
         turns: updateTurn(state.turns, msg.turn_id, (turn) => ({
@@ -141,6 +142,7 @@ export function applyServerEvent(state: ChatStateSlice, msg: ServerEvent): Parti
 
     case 'tool.result': {
       const artifacts = msg.artifacts.map(normalizeArtifact)
+      const resultTime = Date.now()
       // Merge result into the matching tool_call step (Action Grouping)
       return {
         turns: updateTurn(state.turns, msg.turn_id, (turn) => ({
@@ -154,6 +156,7 @@ export function applyServerEvent(state: ChatStateSlice, msg: ServerEvent): Parti
                   retryHint: msg.retry_hint,
                   artifacts,
                   data: msg.data,
+                  elapsedMs: s.startedAt != null ? resultTime - s.startedAt : undefined,
                 }
               : s,
           ),

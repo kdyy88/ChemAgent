@@ -32,6 +32,8 @@ ServerEventType = Literal[
     "todo.progress",
     # ── Reasoning / thinking tokens ──
     "thinking.delta",
+    # ── Multi-agent quality-control ──
+    "review.status",
     # ── Reconnect snapshot ──
     "state.snapshot",
     # ── Settings ──

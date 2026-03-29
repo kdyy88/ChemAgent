@@ -40,6 +40,9 @@ export type Step =
       retryHint?: string
       artifacts?: Artifact[]
       data?: unknown
+      // Timing — set on tool.call, updated on tool.result
+      startedAt?: number
+      elapsedMs?: number
     }
   | { kind: 'plan'; plan: string }
   | { kind: 'todo'; todo: string }

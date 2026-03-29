@@ -27,7 +27,7 @@ def _load_environment() -> None:
     if _ENV_LOADED:
         return
 
-    env_file = Path(__file__).resolve().parents[2] / ".env"
+    env_file = Path(__file__).resolve().parents[3] / ".env"
     load_dotenv(dotenv_path=env_file, override=False)
     _ENV_LOADED = True
 
@@ -49,6 +49,7 @@ def build_llm_config(model: str | None = None) -> LLMConfig:
         "api_type": "openai",
         "model": resolved_model,
         "api_key": api_key,
+        "stream": True,          # ReasoningAwareClient always streams; explicit here
         "model_client_cls": "ReasoningAwareClient",
     }
 
