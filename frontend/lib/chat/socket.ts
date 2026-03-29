@@ -12,7 +12,7 @@ function resolveWebSocketUrl(): string {
     return `${protocol}//${window.location.host}/api/chat/ws`
   }
 
-  return 'ws://127.0.0.1:3030/api/chat/ws'
+  return 'ws://127.0.0.1:8000/api/chat/ws'
 }
 
 type SocketCallbacks = {

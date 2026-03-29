@@ -10,7 +10,8 @@ from arq.connections import ArqRedis, RedisSettings
 from dotenv import load_dotenv
 from redis.asyncio import Redis
 
-_DEFAULT_REDIS_URL = "redis://redis:6379/0"
+# Use localhost for local dev. Docker Compose sets REDIS_URL=redis://redis:6379/0 via env.
+_DEFAULT_REDIS_URL = "redis://localhost:6379/0"
 _TASK_RESULT_PREFIX = "chemagent:task-result:"
 _ARTIFACT_DATA_PREFIX = "chemagent:artifact:data:"
 _ARTIFACT_META_PREFIX = "chemagent:artifact:meta:"
@@ -48,7 +49,12 @@ def get_poll_interval_seconds() -> float:
 
 
 def build_redis_settings() -> RedisSettings:
-    return RedisSettings.from_dsn(get_redis_url())
+    settings = RedisSettings.from_dsn(get_redis_url())
+    # Fail fast so the direct-execution fallback in task_bridge kicks in
+    # within ~100 ms instead of waiting 5+ seconds for retries.
+    settings.conn_retries = 1
+    settings.conn_retry_delay = 0.05
+    return settings
 
 
 async def get_arq_pool() -> ArqRedis:

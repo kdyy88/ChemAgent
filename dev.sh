@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # dev.sh — ChemAgent one-shot local dev launcher
-# Usage: ./dev.sh [--no-redis]  (--no-redis if Redis is already running externally)
+#
+# Usage:
+#   ./dev.sh                    # Docker Redis + backend + ARQ worker + frontend
+#   ./dev.sh --no-worker        # Docker Redis + backend + frontend (tasks run in-process via fallback)
+#   ./dev.sh --native-redis     # Start Redis via redis-server instead of Docker
+#   ./dev.sh --no-redis         # Redis already running externally; skip Redis startup
+#
+# Environment: variables are loaded from .env in the project root.
+# REDIS_URL defaults to redis://localhost:6379/0.
 set -euo pipefail
 
 # ── colours ──────────────────────────────────────────────────────────────────
@@ -58,9 +66,16 @@ wait_tcp() {                         # wait_tcp <host> <port> <label> [max_secon
 }
 
 # ── parse flags ───────────────────────────────────────────────────────────────
-START_REDIS=true
+START_REDIS="docker"   # docker | native | false
+START_WORKER=true
+
 for arg in "$@"; do
-  [[ "$arg" == "--no-redis" ]] && START_REDIS=false
+  case "$arg" in
+    --no-redis)     START_REDIS=false ;;
+    --native-redis) START_REDIS=native ;;
+    --docker-redis) START_REDIS=docker ;;
+    --no-worker)    START_WORKER=false ;;
+  esac
 done
 
 # ── load unified .env ────────────────────────────────────────────────────────
@@ -80,12 +95,18 @@ check_cmd uv
 check_cmd pnpm
 check_cmd nc
 
-if [[ "$START_REDIS" == true ]]; then
+if [[ "$START_REDIS" == native ]]; then
   check_cmd redis-server
+elif [[ "$START_REDIS" == docker ]]; then
+  check_cmd docker
 fi
 
 # ── 0. Redis ──────────────────────────────────────────────────────────────────
-if [[ "$START_REDIS" == true ]]; then
+if [[ "$START_REDIS" == docker ]]; then
+  echo -e "\n${MGT}${BLD}[Redis]${RST} Starting Redis via Docker Compose…"
+  docker compose up redis -d 2>&1 | stream "redis   " "$MGT" "$LOG_DIR/redis.log" || true
+  wait_tcp 127.0.0.1 6379 "Redis (Docker)"
+elif [[ "$START_REDIS" == native ]]; then
   echo -e "\n${MGT}${BLD}[Redis]${RST} Starting redis-server on port 6379…"
   redis-server \
       --port 6379 \
@@ -104,26 +125,30 @@ else
 fi
 
 # ── 1. Backend (FastAPI / uvicorn) ────────────────────────────────────────────
-echo -e "\n${BLU}${BLD}[Backend]${RST} Starting uvicorn on port 3030…"
+echo -e "\n${BLU}${BLD}[Backend]${RST} Starting uvicorn on port 8000…"
 (
   cd "$ROOT/backend"
   exec uv run uvicorn app.main:app \
       --reload \
-      --host 127.0.0.1 \
-      --port 3030 \
+      --host 0.0.0.0 \
+      --port 8000 \
       --log-level info
 ) > >(stream "backend " "$BLU" "$LOG_DIR/backend.log") 2>&1 &
 PIDS+=($!)
-wait_tcp 127.0.0.1 3030 "Backend (FastAPI)"
+wait_tcp 127.0.0.1 8000 "Backend (FastAPI)"
 
 # ── 2. ARQ Worker ─────────────────────────────────────────────────────────────
-echo -e "\n${GRN}${BLD}[Worker]${RST} Starting ARQ worker…"
-(
-  cd "$ROOT/backend"
-  exec uv run arq app.worker.WorkerSettings
-) > >(stream "worker  " "$GRN" "$LOG_DIR/worker.log") 2>&1 &
-PIDS+=($!)
-echo -e "${GRN}[Worker]${RST} launched (PID ${PIDS[-1]})"
+if [[ "$START_WORKER" == true ]]; then
+  echo -e "\n${GRN}${BLD}[Worker]${RST} Starting ARQ worker…"
+  (
+    cd "$ROOT/backend"
+    exec uv run arq app.worker.WorkerSettings
+  ) > >(stream "worker  " "$GRN" "$LOG_DIR/worker.log") 2>&1 &
+  PIDS+=($!)
+  echo -e "${GRN}[Worker]${RST} launched (PID ${PIDS[-1]})"
+else
+  echo -e "${YLW}⚡  Skipping ARQ worker (--no-worker). RDKit tasks will run in-process via fallback.${RST}"
+fi
 
 # ── 3. Frontend (Next.js) ─────────────────────────────────────────────────────
 echo -e "\n${YLW}${BLD}[Frontend]${RST} Starting Next.js dev server…"
@@ -137,7 +162,13 @@ wait_tcp 127.0.0.1 3000 "Frontend (Next.js)" 60
 # ── Ready ─────────────────────────────────────────────────────────────────────
 echo -e "\n${GRN}${BLD}━━━  All services ready  ━━━${RST}"
 echo -e "  ${BLD}App:${RST}     ${CYN}http://localhost:3000${RST}"
-echo -e "  ${BLD}API:${RST}     ${CYN}http://localhost:3030/docs${RST}"
+echo -e "  ${BLD}API:${RST}     ${CYN}http://localhost:8000/docs${RST}"
+echo -e "  ${BLD}Redis:${RST}   ${CYN}localhost:6379${RST}"
+if [[ "$START_WORKER" == true ]]; then
+  echo -e "  ${BLD}Worker:${RST}  ${GRN}running${RST}"
+else
+  echo -e "  ${BLD}Worker:${RST}  ${YLW}off (tasks run in-process)${RST}"
+fi
 echo -e "  ${BLD}Logs:${RST}    ${LOG_DIR}/"
 echo -e "\n${YLW}Press Ctrl+C to stop everything.${RST}\n"
 

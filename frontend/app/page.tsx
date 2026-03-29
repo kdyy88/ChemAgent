@@ -6,7 +6,7 @@ import { PlusCircle, FlaskConical, LayoutTemplate } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { TeamSettingsPopover } from '@/components/chat/TeamSettingsPopover'
-import { useChemAgent } from '@/hooks/useChemAgent'
+import { useSseStore } from '@/store/sseStore'
 import {
   ResizableHandle,
   ResizablePanel,
@@ -19,7 +19,7 @@ import { CopilotSidebar } from '@/components/chat/CopilotSidebar'
 import GlobalLoading from './loading'
 
 export default function Home() {
-  const { clearTurns } = useChemAgent()
+  const clearTurns = useSseStore((s) => s.clearTurns)
   const isDesktop = useMediaQuery('(min-width: 768px)')
   const [isMounted, setIsMounted] = useState(false)
 

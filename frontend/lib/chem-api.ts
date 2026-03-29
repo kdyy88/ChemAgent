@@ -15,7 +15,7 @@ function resolveApiBaseUrl(): string {
     return window.location.origin
   }
 
-  return 'http://127.0.0.1:3030'
+  return 'http://127.0.0.1:8000'
 }
 
 const BASE_URL = resolveApiBaseUrl()

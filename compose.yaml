@@ -9,6 +9,8 @@ services:
       --maxmemory-policy allkeys-lru
       --save ""
       --appendonly no
+    ports:
+      - "127.0.0.1:6379:6379"
     deploy:
       resources:
         limits:

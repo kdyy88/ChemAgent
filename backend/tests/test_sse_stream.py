@@ -147,6 +147,14 @@ def handle_event(ev: dict) -> None:
         else:
             print(colour(f"  [ARTIFACT] {kind}  title='{title}'", MAGENTA))
 
+    elif t == "thinking":
+        _flush_tokens()
+        iteration = ev.get("iteration", 0)
+        text = ev.get("text", "")
+        # Truncate very long thinking text for readability
+        preview = text if len(text) <= 300 else text[:300] + "…"
+        print(colour(f"  [THINKING #{iteration}] {preview}", MAGENTA))
+
     elif t == "shadow_error":
         _flush_tokens()
         print(colour(

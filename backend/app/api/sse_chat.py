@@ -47,7 +47,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from app.agents.graph import ChemMVPState, compiled_graph
@@ -58,6 +58,11 @@ router = APIRouter()
 # ── Request schema ─────────────────────────────────────────────────────────────
 
 
+class HistoryMessage(BaseModel):
+    role: str   # "human" or "assistant"
+    content: str
+
+
 class StreamChatRequest(BaseModel):
     message: str = Field(..., description="用户输入的化学问题或指令")
     session_id: str = Field(default_factory=lambda: uuid4().hex)
@@ -65,6 +70,14 @@ class StreamChatRequest(BaseModel):
     active_smiles: str | None = Field(
         default=None,
         description="当前画布上已激活的 SMILES（可选；来自前端状态）",
+    )
+    interrupt_context: dict | None = Field(
+        default=None,
+        description="HITL 续研上下文：含 question、called_tools、known_smiles 等",
+    )
+    history: list[HistoryMessage] = Field(
+        default_factory=list,
+        description="前序对话轮次消息，按时间正序排列（human/assistant 交替）",
     )
 
 
@@ -77,10 +90,14 @@ def _sse(payload: dict) -> str:
 
 # ── Nodes whose LLM tokens we want to stream to the client ────────────────────
 
-_STREAMING_NODES = {"supervisor", "visualizer", "analyst", "prep"}
+# Nodes whose LLM tokens we stream to the client.
+# NOTE: `supervisor` is intentionally excluded — it uses with_structured_output
+# which streams routing JSON, not user-facing text.  The `responder` node
+# handles direct replies when no tools are needed.
+_STREAMING_NODES = {"responder", "researcher", "visualizer", "analyst", "prep"}
 
 # LangGraph node names we surface as lifecycle events to the frontend
-_LIFECYCLE_NODES = {"supervisor", "visualizer", "analyst", "prep", "shadow_lab"}
+_LIFECYCLE_NODES = {"supervisor", "responder", "researcher", "visualizer", "analyst", "prep", "shadow_lab"}
 
 
 # ── Core generator ─────────────────────────────────────────────────────────────
@@ -92,14 +109,36 @@ async def _event_generator(req: StreamChatRequest):
     turn_id = req.turn_id
 
     # ── Build initial graph state ─────────────────────────────────────────────
+    # Reconstruct prior conversation turns so the graph has full context.
+    history_messages = []
+    for h in req.history:
+        if h.role == "human":
+            history_messages.append(HumanMessage(content=h.content))
+        elif h.role == "assistant" and h.content.strip():
+            history_messages.append(AIMessage(content=h.content))
+
     initial_state: ChemMVPState = {
-        "messages": [HumanMessage(content=req.message)],
+        "messages": [*history_messages, HumanMessage(content=req.message)],
         "active_smiles": req.active_smiles,
         "validation_errors": [],
         "artifacts": [],
         "next_node": None,
         "iteration_count": 0,
+        "pending_clarification": None,
+        "interrupt_options": [],
     }
+
+    # HITL resume: inject the interrupt context so researcher can continue
+    if req.interrupt_context:
+        ctx = req.interrupt_context
+        ctx_lines = [
+            f"[HITL 续研] 研究暂停原因：{ctx.get('question', '')}",
+            f"已调用工具：{', '.join(ctx.get('called_tools', []))}",
+        ]
+        if ctx.get("known_smiles"):
+            ctx_lines.append(f"已知 SMILES：{ctx['known_smiles']}")
+            initial_state["active_smiles"] = ctx["known_smiles"]
+        initial_state["pending_clarification"] = ctx.get("question")
 
     # ── Emit run.started ──────────────────────────────────────────────────────
     yield _sse(
@@ -216,6 +255,17 @@ async def _event_generator(req: StreamChatRequest):
                         }
                     )
 
+                elif custom_name == "thinking":
+                    yield _sse(
+                        {
+                            "type": "thinking",
+                            "text": custom_data.get("text", ""),
+                            "iteration": custom_data.get("iteration", 0),
+                            "session_id": session_id,
+                            "turn_id": turn_id,
+                        }
+                    )
+
                 elif custom_name == "shadow_lab_error":
                     yield _sse(
                         {
@@ -224,6 +274,19 @@ async def _event_generator(req: StreamChatRequest):
                             "turn_id": turn_id,
                             "smiles": custom_data.get("smiles"),
                             "error": custom_data.get("error"),
+                        }
+                    )
+
+                elif custom_name == "clarification_request":
+                    yield _sse(
+                        {
+                            "type": "interrupt",
+                            "question": custom_data.get("question", ""),
+                            "options": custom_data.get("options", []),
+                            "called_tools": custom_data.get("called_tools", []),
+                            "interrupt_id": uuid4().hex,
+                            "session_id": session_id,
+                            "turn_id": turn_id,
                         }
                     )
 

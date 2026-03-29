@@ -3,27 +3,8 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from typing import Any, Callable
+from typing import Any
 
-from app.chem.babel_ops import (
-    build_3d_conformer,
-    compute_mol_properties,
-    compute_partial_charges,
-    convert_format,
-    list_supported_formats,
-    prepare_pdbqt,
-    sdf_merge,
-    sdf_split,
-)
-from app.chem.rdkit_ops import (
-    compute_descriptors,
-    compute_lipinski,
-    compute_similarity,
-    murcko_scaffold,
-    strip_salts_and_neutralize,
-    substructure_match,
-    validate_smiles,
-)
 from app.core.task_queue import (
     build_redis_settings,
     get_default_artifact_ttl_seconds,
@@ -34,25 +15,9 @@ from app.core.task_queue import (
     store_task_result,
 )
 
-TaskFn = Callable[..., dict[str, Any]]
+from app.core.task_registry import TASK_DISPATCH, TaskFn
 
-_TASK_DISPATCH: dict[str, TaskFn] = {
-    "rdkit.compute_lipinski": compute_lipinski,
-    "rdkit.validate_smiles": validate_smiles,
-    "rdkit.strip_salts_and_neutralize": strip_salts_and_neutralize,
-    "rdkit.compute_descriptors": compute_descriptors,
-    "rdkit.compute_similarity": compute_similarity,
-    "rdkit.substructure_match": substructure_match,
-    "rdkit.murcko_scaffold": murcko_scaffold,
-    "babel.convert_format": convert_format,
-    "babel.build_3d_conformer": build_3d_conformer,
-    "babel.prepare_pdbqt": prepare_pdbqt,
-    "babel.compute_mol_properties": compute_mol_properties,
-    "babel.compute_partial_charges": compute_partial_charges,
-    "babel.list_supported_formats": list_supported_formats,
-    "babel.sdf_split": sdf_split,
-    "babel.sdf_merge": sdf_merge,
-}
+_TASK_DISPATCH = TASK_DISPATCH  # keep the local alias so rest of file is unchanged
 
 
 def _sanitize_stem(name: str | None, fallback: str) -> str:

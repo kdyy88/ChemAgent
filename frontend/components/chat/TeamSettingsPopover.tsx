@@ -20,7 +20,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
-import { useChemAgent } from '@/hooks/useChemAgent'
+import { useSseStore } from '@/store/sseStore'
+import { useSettingsStore } from '@/store/settingsStore'
 import type { AgentModelConfig } from '@/lib/types'
 
 // ── Model catalogue ───────────────────────────────────────────────────────────
@@ -46,7 +47,9 @@ const AGENTS: { key: keyof AgentModelConfig; icon: string; label: string }[] = [
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export function TeamSettingsPopover() {
-  const { turns, agentModels, setAgentModels, clearTurns } = useChemAgent()
+  const turns = useSseStore((s) => s.turns)
+  const clearTurns = useSseStore((s) => s.clearTurns)
+  const { agentModels, setAgentModels } = useSettingsStore()
   const isLocked = turns.length > 0
 
   // Pending change waiting for user confirmation (only used when isLocked)

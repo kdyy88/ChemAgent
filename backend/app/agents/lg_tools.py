@@ -1,10 +1,10 @@
 """
 LangGraph-compatible @tool wrappers over the deterministic rdkit_ops.py layer.
 
-These tools are used by Worker nodes (Visualizer / Analyst) inside the
-LangGraph StateGraph.  Each wrapper adds a concise docstring (used by the LLM
-as a tool description) and maps the dict-based return value to a Python object
-that plays well with LangChain's tool protocol.
+These tools are used by Worker nodes (Visualizer / Analyst / Researcher) inside
+the LangGraph StateGraph.  Each wrapper adds a concise docstring (used by the
+LLM as a tool description) and maps the dict-based return value to a Python
+object that plays well with LangChain's tool protocol.
 
 Shadow-Lab integration note
 ----------------------------
@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 from typing import Annotated
 
+import requests
 from langchain_core.tools import tool
 
 from app.chem.rdkit_ops import (
@@ -139,6 +141,141 @@ def tool_render_smiles(
 
 # ── Exported catalog for graph.py ─────────────────────────────────────────────
 
+# ── Rx. PubChem compound lookup ───────────────────────────────────────────────
+
+_PUBCHEM_BASE = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
+
+
+@tool
+def tool_pubchem_lookup(
+    name: Annotated[str, "Drug or compound name (e.g. 'azithromycin', 'aspirin')"],
+) -> str:
+    """Look up a compound by name in PubChem.  Returns canonical SMILES,
+    molecular formula, molecular weight, IUPAC name, and CID.
+    Use this first when the user provides only a compound name and no SMILES."""
+    try:
+        # Step 1: resolve name → CID
+        cid_url = f"{_PUBCHEM_BASE}/compound/name/{requests.utils.quote(name)}/cids/JSON"
+        r = requests.get(cid_url, timeout=10)
+        r.raise_for_status()
+        cid = r.json()["IdentifierList"]["CID"][0]
+
+        # Step 2: fetch properties for the CID
+        # PubChem returns IsomericSMILES as "SMILES" and CanonicalSMILES as
+        # "ConnectivitySMILES" for many compounds — request both name variants.
+        props = "IsomericSMILES,CanonicalSMILES,SMILES,MolecularFormula,MolecularWeight,IUPACName"
+        prop_url = f"{_PUBCHEM_BASE}/compound/cid/{cid}/property/{props}/JSON"
+        p = requests.get(prop_url, timeout=10)
+        p.raise_for_status()
+        prop = p.json()["PropertyTable"]["Properties"][0]
+
+        # Field names differ by compound type; fall back gracefully
+        isomeric = (
+            prop.get("IsomericSMILES")
+            or prop.get("SMILES")          # PubChem sometimes uses bare "SMILES"
+            or prop.get("CanonicalSMILES")
+            or prop.get("ConnectivitySMILES")
+            or ""
+        )
+        canonical = (
+            prop.get("CanonicalSMILES")
+            or prop.get("ConnectivitySMILES")  # connectivity = canonical topology
+            or prop.get("SMILES")
+            or isomeric
+            or ""
+        )
+
+        return json.dumps({
+            "found": True,
+            "name": name,
+            "cid": cid,
+            "canonical_smiles": canonical,
+            "isomeric_smiles": isomeric,
+            "formula": prop.get("MolecularFormula", ""),
+            "molecular_weight": prop.get("MolecularWeight", ""),
+            "iupac_name": prop.get("IUPACName", ""),
+            "pubchem_url": f"https://pubchem.ncbi.nlm.nih.gov/compound/{cid}",
+        }, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({"found": False, "name": name, "error": str(exc)})
+
+
+# ── Rx. Web / literature search ───────────────────────────────────────────────
+
+_SERPER_URL = "https://google.serper.dev/search"
+
+
+@tool
+def tool_web_search(
+    query: Annotated[str, "Search query (e.g. 'azithromycin clinical trials 2024')"],
+) -> str:
+    """Search the web and medical literature for recent drug approvals, clinical
+    trial results, mechanism of action, safety data, and pharmacology news.
+    Returns a list of results with titles, URLs, and snippets.
+    Use this to find up-to-date information that may not be in training data."""
+    api_key = os.environ.get("SERPER_API_KEY", "").strip()
+    if not api_key:
+        return json.dumps({
+            "status": "error",
+            "error": "SERPER_API_KEY not set — web search unavailable.",
+        })
+    try:
+        r = requests.post(
+            _SERPER_URL,
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            json={"q": query, "num": 8},
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": str(exc), "query": query})
+
+    results = []
+    if ab := data.get("answerBox"):
+        text = ab.get("answer") or ab.get("snippet") or ""
+        if text:
+            results.append({"title": ab.get("title", "Direct Answer"), "url": ab.get("link", ""), "snippet": text})
+    for item in data.get("organic", []):
+        results.append({"title": item.get("title", ""), "url": item.get("link", ""), "snippet": item.get("snippet", "")})
+
+    return json.dumps({"status": "success", "query": query, "results": results}, ensure_ascii=False)
+
+
+# ── Human-in-the-loop pause tool ─────────────────────────────────────────────
+
+
+@tool
+def tool_ask_human(
+    question: Annotated[str, "The clarifying question to ask the user, in Chinese"],
+    options: Annotated[
+        list[str],
+        "2-4 quick-reply options for the user to choose from (optional, Chinese)",
+    ] = [],
+) -> str:
+    """Pause research and ask the user a clarifying question when you are uncertain.
+
+    WHEN TO USE — call this tool (and stop further tool calls in this turn) when:
+    1. tool_pubchem_lookup returns found=false for the compound name, AND a backup
+       English name also fails — ask the user for the correct name or a SMILES.
+    2. The user's message is ambiguous (e.g. "帮我调研那个药" with no compound name).
+    3. Multiple compounds share the same name and you cannot determine which one
+       the user intends (e.g. "taxol" could refer to paclitaxel or docetaxel class).
+    4. After two consecutive web searches return empty results — ask the user to
+       confirm the compound spelling or provide an alternative name.
+
+    DO NOT use this tool when you have sufficient information to proceed.
+    After calling this tool, do NOT call any other tools — stop immediately."""
+    return json.dumps(
+        {
+            "type": "clarification_requested",
+            "question": question,
+            "options": options,
+        },
+        ensure_ascii=False,
+    )
+
+
 ALL_TOOLS = [
     tool_validate_smiles,
     tool_compute_descriptors,
@@ -147,6 +284,9 @@ ALL_TOOLS = [
     tool_murcko_scaffold,
     tool_strip_salts,
     tool_render_smiles,
+    tool_pubchem_lookup,
+    tool_web_search,
+    tool_ask_human,
 ]
 
 ANALYST_TOOLS = [
@@ -161,4 +301,16 @@ ANALYST_TOOLS = [
 VISUALIZER_TOOLS = [
     tool_render_smiles,
     tool_validate_smiles,
+]
+
+RESEARCHER_TOOLS = [
+    tool_pubchem_lookup,
+    tool_web_search,
+    tool_ask_human,
+    tool_validate_smiles,
+    tool_compute_descriptors,
+    tool_substructure_match,
+    tool_murcko_scaffold,
+    tool_render_smiles,
+    tool_strip_salts,
 ]
