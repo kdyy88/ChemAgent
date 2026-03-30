@@ -98,6 +98,12 @@ function groupThinkingSteps(steps: SSEThinking[]): ThinkingGroup[] {
     })
   }
 
+  // Any group that is not the last is definitively done —
+  // a newer group having started proves the previous finished.
+  for (let i = 0; i < timeline.length - 1; i++) {
+    timeline[i].isStreaming = false
+  }
+
   return timeline
 }
 
