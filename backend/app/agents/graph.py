@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import operator
-from typing import Annotated, Any
+from typing import Annotated, Any, Awaitable, Callable
 
 from langchain_core.messages import (
     BaseMessage,
@@ -34,6 +34,13 @@ _STRIP_LLM_FIELDS = frozenset({
     "image", "structure_image", "highlighted_image",
     "sdf_content", "pdbqt_content", "zip_bytes", "atoms",
 })
+
+_ACTIVE_SMILES_UPDATES: dict[str, tuple[str, str]] = {
+    "tool_strip_salts": ("is_valid", "cleaned_smiles"),
+    "tool_pubchem_lookup": ("found", "canonical_smiles"),
+    "tool_validate_smiles": ("is_valid", "canonical_smiles"),
+    "tool_murcko_scaffold": ("is_valid", "scaffold_smiles"),
+}
 
 
 CHEM_SYSTEM_PROMPT = """你是顶级化学智能体 ChemAgent。你可以同时调用 RDKit 与 Open Babel 工具。
@@ -67,6 +74,10 @@ class ChemState(TypedDict):
     artifacts: Annotated[list[dict], operator.add]
 
 
+ToolResult = dict[str, Any]
+ToolPostprocessor = Callable[[ToolResult, dict[str, Any], list[dict], RunnableConfig], Awaitable[ToolResult]]
+
+
 # ── Utility Functions ─────────────────────────────────────────────────────────
 
 def _strip_binary_fields(data: dict) -> dict:
@@ -97,8 +108,247 @@ def _current_smiles_text(active_smiles: str | None) -> str:
     return active_smiles or "（无）"
 
 
-def _build_tool_lookup() -> dict[str, Any]:
-    return {tool.name: tool for tool in ALL_CHEM_TOOLS}
+def _refresh_result(
+    parsed: ToolResult,
+    *,
+    required_key: str,
+    loader: Callable[[], ToolResult],
+) -> ToolResult:
+    return parsed if parsed.get(required_key) else loader()
+
+
+def _apply_active_smiles_update(
+    tool_name: str,
+    parsed: ToolResult,
+    current_smiles: str | None,
+) -> str | None:
+    update_rule = _ACTIVE_SMILES_UPDATES.get(tool_name)
+    if update_rule is None:
+        return current_smiles
+
+    status_key, smiles_key = update_rule
+    return parsed.get(smiles_key) or current_smiles if parsed.get(status_key) else current_smiles
+
+
+async def _dispatch_artifact(artifacts: list[dict], artifact: dict, config: RunnableConfig) -> None:
+    artifacts.append(artifact)
+    await adispatch_custom_event("artifact", artifact, config=config)
+
+
+async def _postprocess_render_smiles(
+    parsed: ToolResult,
+    _args: dict[str, Any],
+    artifacts: list[dict],
+    config: RunnableConfig,
+) -> ToolResult:
+    if parsed.get("is_valid") and parsed.get("image"):
+        await _dispatch_artifact(
+            artifacts,
+            {
+                "kind": "molecule_image",
+                "title": "2D 分子结构图",
+                "smiles": parsed.get("smiles"),
+                "image": parsed.get("image"),
+                "highlight_atoms": parsed.get("highlight_atoms", []),
+            },
+            config,
+        )
+        return {
+            "status": "success",
+            "message": "2D结构图已发送给用户",
+            "smiles": parsed.get("smiles"),
+            "highlight_atoms": parsed.get("highlight_atoms", []),
+        }
+    return parsed
+
+
+async def _postprocess_descriptors(
+    parsed: ToolResult,
+    args: dict[str, Any],
+    artifacts: list[dict],
+    config: RunnableConfig,
+) -> ToolResult:
+    detailed = _refresh_result(
+        parsed,
+        required_key="structure_image",
+        loader=lambda: compute_descriptors(args.get("smiles", ""), args.get("name", "")),
+    )
+    if detailed.get("structure_image"):
+        await _dispatch_artifact(
+            artifacts,
+            {
+                "kind": "descriptor_structure_image",
+                "title": detailed.get("name") or "分子结构图",
+                "smiles": detailed.get("smiles"),
+                "image": detailed.get("structure_image"),
+            },
+            config,
+        )
+        summary = _strip_binary_fields(detailed)
+        summary["message"] = "描述符结果已生成，结构图已发送给用户"
+        return summary
+    return detailed
+
+
+async def _postprocess_substructure_match(
+    parsed: ToolResult,
+    args: dict[str, Any],
+    artifacts: list[dict],
+    config: RunnableConfig,
+) -> ToolResult:
+    detailed = _refresh_result(
+        parsed,
+        required_key="highlighted_image",
+        loader=lambda: substructure_match(args.get("smiles", ""), args.get("smarts_pattern", "")),
+    )
+    if detailed.get("highlighted_image"):
+        await _dispatch_artifact(
+            artifacts,
+            {
+                "kind": "highlighted_substructure",
+                "title": "子结构高亮图",
+                "smiles": detailed.get("smiles"),
+                "image": detailed.get("highlighted_image"),
+                "match_atoms": detailed.get("match_atoms", []),
+            },
+            config,
+        )
+        summary = _strip_binary_fields(detailed)
+        summary["message"] = "子结构匹配完成，高亮图已发送给用户"
+        return summary
+    return detailed
+
+
+async def _postprocess_build_3d_conformer(
+    parsed: ToolResult,
+    args: dict[str, Any],
+    artifacts: list[dict],
+    config: RunnableConfig,
+) -> ToolResult:
+    detailed = _refresh_result(
+        parsed,
+        required_key="sdf_content",
+        loader=lambda: build_3d_conformer(
+            args.get("smiles", ""),
+            name=args.get("name", ""),
+            forcefield=args.get("forcefield", "mmff94"),
+            steps=args.get("steps", 500),
+        ),
+    )
+    if detailed.get("sdf_content"):
+        await _dispatch_artifact(
+            artifacts,
+            {
+                "kind": "conformer_sdf",
+                "title": detailed.get("name") or "3D 构象 SDF",
+                "smiles": detailed.get("smiles"),
+                "sdf_content": detailed.get("sdf_content"),
+                "energy": detailed.get("energy_kcal_mol"),
+            },
+            config,
+        )
+        summary = _strip_binary_fields(detailed)
+        summary["message"] = "3D构象已生成，SDF 文件已发送给用户"
+        return summary
+    return detailed
+
+
+async def _postprocess_prepare_pdbqt(
+    parsed: ToolResult,
+    args: dict[str, Any],
+    artifacts: list[dict],
+    config: RunnableConfig,
+) -> ToolResult:
+    detailed = _refresh_result(
+        parsed,
+        required_key="pdbqt_content",
+        loader=lambda: prepare_pdbqt(
+            args.get("smiles", ""),
+            name=args.get("name", ""),
+            ph=args.get("ph", 7.4),
+        ),
+    )
+    if detailed.get("pdbqt_content"):
+        await _dispatch_artifact(
+            artifacts,
+            {
+                "kind": "pdbqt_file",
+                "title": detailed.get("name") or "PDBQT 配体文件",
+                "smiles": detailed.get("smiles"),
+                "pdbqt_content": detailed.get("pdbqt_content"),
+                "rotatable_bonds": detailed.get("rotatable_bonds"),
+            },
+            config,
+        )
+        summary = _strip_binary_fields(detailed)
+        summary["message"] = "PDBQT 文件已生成并发送给用户"
+        return summary
+    return detailed
+
+
+async def _postprocess_convert_format(
+    parsed: ToolResult,
+    args: dict[str, Any],
+    artifacts: list[dict],
+    config: RunnableConfig,
+) -> ToolResult:
+    detailed = parsed
+    if len(str(detailed.get("output", ""))) >= 500:
+        detailed = convert_format(
+            args.get("molecule_str", ""),
+            args.get("input_fmt", ""),
+            args.get("output_fmt", ""),
+        )
+
+    full_output = str(detailed.get("output", ""))
+    if full_output and len(full_output) >= 500:
+        await _dispatch_artifact(
+            artifacts,
+            {
+                "kind": "format_conversion",
+                "title": f"格式转换 → {detailed.get('output_format', '').upper()}",
+                "input_format": detailed.get("input_format"),
+                "output_format": detailed.get("output_format"),
+                "output": full_output,
+            },
+            config,
+        )
+        summary = dict(detailed)
+        summary["output"] = f"已生成 {detailed.get('output_format', '').upper()} 内容，完整结果已发送给用户"
+        return summary
+    return detailed
+
+
+async def _postprocess_ask_human(
+    parsed: ToolResult,
+    _args: dict[str, Any],
+    _artifacts: list[dict],
+    config: RunnableConfig,
+) -> ToolResult:
+    if parsed.get("type") == "clarification_requested":
+        await adispatch_custom_event(
+            "clarification_request",
+            {
+                "question": parsed.get("question", ""),
+                "options": parsed.get("options", []),
+                "called_tools": ["tool_ask_human"],
+            },
+            config=config,
+        )
+    return parsed
+
+
+_TOOL_POSTPROCESSORS: dict[str, ToolPostprocessor] = {
+    "tool_render_smiles": _postprocess_render_smiles,
+    "tool_compute_descriptors": _postprocess_descriptors,
+    "tool_substructure_match": _postprocess_substructure_match,
+    "tool_build_3d_conformer": _postprocess_build_3d_conformer,
+    "tool_prepare_pdbqt": _postprocess_prepare_pdbqt,
+    "tool_convert_format": _postprocess_convert_format,
+    "tool_ask_human": _postprocess_ask_human,
+}
+
+_TOOL_LOOKUP = {tool.name: tool for tool in ALL_CHEM_TOOLS}
 
 
 # ── LLM Factory ───────────────────────────────────────────────────────────────
@@ -131,7 +381,6 @@ async def chem_agent_node(state: ChemState) -> dict:
 async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
     """Execute tool calls, dispatch artifacts, and update explicit state."""
     last_message = state["messages"][-1]
-    tool_lookup = _build_tool_lookup()
     new_active_smiles = state.get("active_smiles")
     artifacts: list[dict] = []
     tool_messages: list[ToolMessage] = []
@@ -140,7 +389,7 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
         tool_name = tool_call["name"]
         tool_call_id = tool_call.get("id", "")
         args = tool_call.get("args", {})
-        tool = tool_lookup.get(tool_name)
+        tool = _TOOL_LOOKUP.get(tool_name)
 
         if tool is None:
             tool_messages.append(ToolMessage(
@@ -155,152 +404,10 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
             parsed = _parse_tool_output(raw_output)
 
             if parsed is not None:
-                if tool_name == "tool_strip_salts" and parsed.get("is_valid"):
-                    new_active_smiles = parsed.get("cleaned_smiles") or new_active_smiles
-
-                elif tool_name == "tool_pubchem_lookup" and parsed.get("found"):
-                    new_active_smiles = parsed.get("canonical_smiles") or new_active_smiles
-
-                elif tool_name == "tool_validate_smiles" and parsed.get("is_valid"):
-                    new_active_smiles = parsed.get("canonical_smiles") or new_active_smiles
-
-                elif tool_name == "tool_murcko_scaffold" and parsed.get("is_valid"):
-                    new_active_smiles = parsed.get("scaffold_smiles") or new_active_smiles
-
-                if tool_name == "tool_render_smiles" and parsed.get("is_valid") and parsed.get("image"):
-                    artifact = {
-                        "kind": "molecule_image",
-                        "title": "2D 分子结构图",
-                        "smiles": parsed.get("smiles"),
-                        "image": parsed.get("image"),
-                        "highlight_atoms": parsed.get("highlight_atoms", []),
-                    }
-                    artifacts.append(artifact)
-                    await adispatch_custom_event("artifact", artifact, config=config)
-                    parsed = {
-                        "status": "success",
-                        "message": "2D结构图已发送给用户",
-                        "smiles": parsed.get("smiles"),
-                        "highlight_atoms": parsed.get("highlight_atoms", []),
-                    }
-
-                elif tool_name == "tool_compute_descriptors":
-                    detailed = parsed
-                    if not detailed.get("structure_image"):
-                        detailed = compute_descriptors(
-                            args.get("smiles", ""),
-                            args.get("name", ""),
-                        )
-
-                    if detailed.get("structure_image"):
-                        artifact = {
-                            "kind": "descriptor_structure_image",
-                            "title": detailed.get("name") or "分子结构图",
-                            "smiles": detailed.get("smiles"),
-                            "image": detailed.get("structure_image"),
-                        }
-                        artifacts.append(artifact)
-                        await adispatch_custom_event("artifact", artifact, config=config)
-                        parsed = _strip_binary_fields(detailed)
-                        parsed["message"] = "描述符结果已生成，结构图已发送给用户"
-
-                elif tool_name == "tool_substructure_match":
-                    detailed = parsed
-                    if not detailed.get("highlighted_image"):
-                        detailed = substructure_match(
-                            args.get("smiles", ""),
-                            args.get("smarts_pattern", ""),
-                        )
-
-                    if detailed.get("highlighted_image"):
-                        artifact = {
-                            "kind": "highlighted_substructure",
-                            "title": "子结构高亮图",
-                            "smiles": detailed.get("smiles"),
-                            "image": detailed.get("highlighted_image"),
-                            "match_atoms": detailed.get("match_atoms", []),
-                        }
-                        artifacts.append(artifact)
-                        await adispatch_custom_event("artifact", artifact, config=config)
-                        parsed = _strip_binary_fields(detailed)
-                        parsed["message"] = "子结构匹配完成，高亮图已发送给用户"
-
-                elif tool_name == "tool_build_3d_conformer":
-                    detailed = parsed
-                    if not detailed.get("sdf_content"):
-                        detailed = build_3d_conformer(
-                            args.get("smiles", ""),
-                            name=args.get("name", ""),
-                            forcefield=args.get("forcefield", "mmff94"),
-                            steps=args.get("steps", 500),
-                        )
-
-                    if detailed.get("sdf_content"):
-                        artifact = {
-                            "kind": "conformer_sdf",
-                            "title": detailed.get("name") or "3D 构象 SDF",
-                            "smiles": detailed.get("smiles"),
-                            "sdf_content": detailed.get("sdf_content"),
-                            "energy": detailed.get("energy_kcal_mol"),
-                        }
-                        artifacts.append(artifact)
-                        await adispatch_custom_event("artifact", artifact, config=config)
-                        parsed = _strip_binary_fields(detailed)
-                        parsed["message"] = "3D构象已生成，SDF 文件已发送给用户"
-
-                elif tool_name == "tool_prepare_pdbqt":
-                    detailed = parsed
-                    if not detailed.get("pdbqt_content"):
-                        detailed = prepare_pdbqt(
-                            args.get("smiles", ""),
-                            name=args.get("name", ""),
-                            ph=args.get("ph", 7.4),
-                        )
-
-                    if detailed.get("pdbqt_content"):
-                        artifact = {
-                            "kind": "pdbqt_file",
-                            "title": detailed.get("name") or "PDBQT 配体文件",
-                            "smiles": detailed.get("smiles"),
-                            "pdbqt_content": detailed.get("pdbqt_content"),
-                            "rotatable_bonds": detailed.get("rotatable_bonds"),
-                        }
-                        artifacts.append(artifact)
-                        await adispatch_custom_event("artifact", artifact, config=config)
-                        parsed = _strip_binary_fields(detailed)
-                        parsed["message"] = "PDBQT 文件已生成并发送给用户"
-
-                elif tool_name == "tool_convert_format":
-                    detailed = parsed
-                    output_preview = str(detailed.get("output", ""))
-                    if len(output_preview) >= 500:
-                        detailed = convert_format(
-                            args.get("molecule_str", ""),
-                            args.get("input_fmt", ""),
-                            args.get("output_fmt", ""),
-                        )
-
-                    full_output = str(detailed.get("output", ""))
-                    if full_output and len(full_output) >= 500:
-                        artifact = {
-                            "kind": "format_conversion",
-                            "title": f"格式转换 → {detailed.get('output_format', '').upper()}",
-                            "input_format": detailed.get("input_format"),
-                            "output_format": detailed.get("output_format"),
-                            "output": full_output,
-                        }
-                        artifacts.append(artifact)
-                        await adispatch_custom_event("artifact", artifact, config=config)
-                        parsed = dict(detailed)
-                        parsed["output"] = f"已生成 {detailed.get('output_format', '').upper()} 内容，完整结果已发送给用户"
-
-                elif tool_name == "tool_ask_human" and parsed.get("type") == "clarification_requested":
-                    payload = {
-                        "question": parsed.get("question", ""),
-                        "options": parsed.get("options", []),
-                        "called_tools": [tool_name],
-                    }
-                    await adispatch_custom_event("clarification_request", payload, config=config)
+                new_active_smiles = _apply_active_smiles_update(tool_name, parsed, new_active_smiles)
+                postprocessor = _TOOL_POSTPROCESSORS.get(tool_name)
+                if postprocessor is not None:
+                    parsed = await postprocessor(parsed, args, artifacts, config)
 
             content = _tool_result_to_text(parsed) if parsed is not None else str(raw_output)
             tool_messages.append(ToolMessage(

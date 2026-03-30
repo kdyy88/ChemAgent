@@ -46,6 +46,7 @@ import logging
 import os
 import traceback
 from pathlib import Path
+from typing import Any, Callable
 from uuid import uuid4
 
 from fastapi import APIRouter
@@ -58,6 +59,37 @@ from app.agents.graph import ChemState, compiled_graph
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+_BULKY_TOOL_OUTPUT_KEYS = frozenset({
+    "image",
+    "structure_image",
+    "highlighted_image",
+    "sdf_content",
+    "pdbqt_content",
+})
+
+_NODE_REASONING_MESSAGES: dict[tuple[str, str], str] = {
+    ("chem_agent", "on_chain_start"): "进入智能体大脑，正在评估当前信息并规划下一步行动...",
+    ("chem_agent", "on_chain_end"): "智能体本轮思考完毕。",
+    ("tools_executor", "on_chain_start"): "准备转入工具执行流水线...",
+    ("tools_executor", "on_chain_end"): "工具调用链执行完毕，正在将实验数据交回给智能体大脑。",
+}
+
+_TOOL_LABELS: dict[str, str] = {
+    "validate_smiles": "校验 SMILES",
+    "strip_salts": "去除盐和溶剂",
+    "pubchem_lookup": "PubChem 检索",
+    "compute_descriptors": "计算分子描述符",
+    "compute_mol_properties": "计算分子性质",
+    "substructure_match": "子结构匹配",
+    "murcko_scaffold": "提取 Murcko Scaffold",
+    "render_smiles": "渲染二维结构图",
+    "build_3d_conformer": "生成三维构象",
+    "prepare_pdbqt": "准备 PDBQT 文件",
+    "convert_format": "格式转换",
+    "ask_human": "请求用户澄清",
+    "web_search": "联网搜索",
+}
 
 
 def _load_debug_env_once() -> None:
@@ -160,14 +192,7 @@ def _sanitize_tool_output_for_sse(tool_name: str, output: dict | str) -> dict | 
         return output
 
     sanitized = dict(output)
-    bulky_keys = {
-        "image",
-        "structure_image",
-        "highlighted_image",
-        "sdf_content",
-        "pdbqt_content",
-    }
-    removed = [key for key in bulky_keys if key in sanitized]
+    removed = [key for key in _BULKY_TOOL_OUTPUT_KEYS if key in sanitized]
     for key in removed:
         sanitized.pop(key, None)
 
@@ -205,36 +230,26 @@ def _thinking_event(
     )
 
 
+def _event_payload(event_type: str, session_id: str, turn_id: str, **data: Any) -> dict[str, Any]:
+    return {
+        "type": event_type,
+        "session_id": session_id,
+        "turn_id": turn_id,
+        **data,
+    }
+
+
+def _event_sse(event_type: str, session_id: str, turn_id: str, **data: Any) -> str:
+    return _sse(_event_payload(event_type, session_id, turn_id, **data))
+
+
 def _node_reasoning_text(node_name: str, event_name: str) -> str | None:
-    if node_name == "chem_agent" and event_name == "on_chain_start":
-        return "进入智能体大脑，正在评估当前信息并规划下一步行动..."
-    if node_name == "chem_agent" and event_name == "on_chain_end":
-        return "智能体本轮思考完毕。"
-    if node_name == "tools_executor" and event_name == "on_chain_start":
-        return "准备转入工具执行流水线..."
-    if node_name == "tools_executor" and event_name == "on_chain_end":
-        return "工具调用链执行完毕，正在将实验数据交回给智能体大脑。"
-    return None
+    return _NODE_REASONING_MESSAGES.get((node_name, event_name))
 
 
 def _tool_reasoning_text(tool_name: str, stage: str, payload: dict | str | None = None) -> str:
     pretty_name = tool_name.replace("tool_", "")
-    label_map = {
-        "validate_smiles": "校验 SMILES",
-        "strip_salts": "去除盐和溶剂",
-        "pubchem_lookup": "PubChem 检索",
-        "compute_descriptors": "计算分子描述符",
-        "compute_mol_properties": "计算分子性质",
-        "substructure_match": "子结构匹配",
-        "murcko_scaffold": "提取 Murcko Scaffold",
-        "render_smiles": "渲染二维结构图",
-        "build_3d_conformer": "生成三维构象",
-        "prepare_pdbqt": "准备 PDBQT 文件",
-        "convert_format": "格式转换",
-        "ask_human": "请求用户澄清",
-        "web_search": "联网搜索",
-    }
-    label = label_map.get(pretty_name, pretty_name)
+    label = _TOOL_LABELS.get(pretty_name, pretty_name)
 
     if stage == "start":
         params_str = ""
@@ -280,6 +295,49 @@ _STREAMING_NODES = {"chem_agent"}
 
 # LangGraph node names we surface as lifecycle events to the frontend
 _LIFECYCLE_NODES = {"chem_agent", "tools_executor"}
+
+
+def _parse_tool_output(tool_output: Any) -> dict | str:
+    if isinstance(tool_output, str):
+        try:
+            return json.loads(tool_output)
+        except Exception:
+            return tool_output
+    return tool_output
+
+
+def _build_custom_event_handlers(
+    *,
+    session_id: str,
+    turn_id: str,
+) -> dict[str, Callable[[dict[str, Any]], str]]:
+    return {
+        "artifact": lambda data: _event_sse("artifact", session_id, turn_id, **data),
+        "thinking": lambda data: _thinking_event(
+            text=data.get("text", ""),
+            iteration=data.get("iteration", 0),
+            session_id=session_id,
+            turn_id=turn_id,
+            source=data.get("source", "chem_agent"),
+            done=data.get("done", True),
+        ),
+        "shadow_lab_error": lambda data: _event_sse(
+            "shadow_error",
+            session_id,
+            turn_id,
+            smiles=data.get("smiles"),
+            error=data.get("error"),
+        ),
+        "clarification_request": lambda data: _event_sse(
+            "interrupt",
+            session_id,
+            turn_id,
+            question=data.get("question", ""),
+            options=data.get("options", []),
+            called_tools=data.get("called_tools", []),
+            interrupt_id=uuid4().hex,
+        ),
+    }
 
 
 def _extract_stream_text(raw: object, chunk: object) -> tuple[str, str]:
@@ -381,6 +439,7 @@ async def _event_generator(req: StreamChatRequest):
     session_id = req.session_id
     turn_id = req.turn_id
     llm_reasoning_emitted = False
+    custom_event_handlers = _build_custom_event_handlers(session_id=session_id, turn_id=turn_id)
 
     # ── Build initial graph state ─────────────────────────────────────────────
     # Reconstruct prior conversation turns so the graph has full context.
@@ -411,12 +470,7 @@ async def _event_generator(req: StreamChatRequest):
 
     # ── Emit run.started ──────────────────────────────────────────────────────
     yield _sse(
-        {
-            "type": "run_started",
-            "session_id": session_id,
-            "turn_id": turn_id,
-            "message": req.message,
-        }
+        _event_payload("run_started", session_id, turn_id, message=req.message)
     )
 
     try:
@@ -450,15 +504,7 @@ async def _event_generator(req: StreamChatRequest):
 
                     # 独立推流：最终回答
                     if token:
-                        yield _sse(
-                            {
-                                "type": "token",
-                                "node": node_name,
-                                "session_id": session_id,
-                                "turn_id": turn_id,
-                                "content": token,
-                            }
-                        )
+                        yield _event_sse("token", session_id, turn_id, node=node_name, content=token)
 
             elif event_name == "on_chat_model_end" and node_name in _STREAMING_NODES:
                 output_msg = event.get("data", {}).get("output")
@@ -482,14 +528,7 @@ async def _event_generator(req: StreamChatRequest):
 
             # ── 2. Node lifecycle events ───────────────────────────────────────
             elif event_name == "on_chain_start" and node_name in _LIFECYCLE_NODES:
-                yield _sse(
-                    {
-                        "type": "node_start",
-                        "node": node_name,
-                        "session_id": session_id,
-                        "turn_id": turn_id,
-                    }
-                )
+                yield _event_sse("node_start", session_id, turn_id, node=node_name)
                 thinking_text = _node_reasoning_text(node_name, event_name)
                 if thinking_text:
                     yield _thinking_event(
@@ -500,14 +539,7 @@ async def _event_generator(req: StreamChatRequest):
                     )
 
             elif event_name == "on_chain_end" and node_name in _LIFECYCLE_NODES:
-                yield _sse(
-                    {
-                        "type": "node_end",
-                        "node": node_name,
-                        "session_id": session_id,
-                        "turn_id": turn_id,
-                    }
-                )
+                yield _event_sse("node_end", session_id, turn_id, node=node_name)
                 thinking_text = _node_reasoning_text(node_name, event_name)
                 if thinking_text:
                     yield _thinking_event(
@@ -520,15 +552,7 @@ async def _event_generator(req: StreamChatRequest):
             # ── 3. @tool lifecycle events ──────────────────────────────────────
             elif event_name == "on_tool_start":
                 tool_input = event["data"].get("input", {})
-                yield _sse(
-                    {
-                        "type": "tool_start",
-                        "tool": event["name"],
-                        "input": tool_input,
-                        "session_id": session_id,
-                        "turn_id": turn_id,
-                    }
-                )
+                yield _event_sse("tool_start", session_id, turn_id, tool=event["name"], input=tool_input)
                 yield _thinking_event(
                     text=_tool_reasoning_text(event["name"], "start", tool_input),
                     session_id=session_id,
@@ -538,24 +562,17 @@ async def _event_generator(req: StreamChatRequest):
 
             elif event_name == "on_tool_end":
                 tool_output = event["data"].get("output")
-                # Try to parse tool output as JSON for richer client rendering
-                parsed_output: dict | str = tool_output
-                if isinstance(tool_output, str):
-                    try:
-                        parsed_output = json.loads(tool_output)
-                    except Exception:
-                        pass
+                parsed_output = _sanitize_tool_output_for_sse(
+                    event["name"],
+                    _parse_tool_output(tool_output),
+                )
 
-                parsed_output = _sanitize_tool_output_for_sse(event["name"], parsed_output)
-
-                yield _sse(
-                    {
-                        "type": "tool_end",
-                        "tool": event["name"],
-                        "output": parsed_output,
-                        "session_id": session_id,
-                        "turn_id": turn_id,
-                    }
+                yield _event_sse(
+                    "tool_end",
+                    session_id,
+                    turn_id,
+                    tool=event["name"],
+                    output=parsed_output,
                 )
                 yield _thinking_event(
                     text=_tool_reasoning_text(event["name"], "end", parsed_output),
@@ -568,50 +585,9 @@ async def _event_generator(req: StreamChatRequest):
             elif event_name == "on_custom_event":
                 custom_name: str = event.get("name", "")
                 custom_data: dict = event.get("data", {})
-
-                if custom_name == "artifact":
-                    yield _sse(
-                        {
-                            "type": "artifact",
-                            "session_id": session_id,
-                            "turn_id": turn_id,
-                            **custom_data,
-                        }
-                    )
-
-                elif custom_name == "thinking":
-                    yield _thinking_event(
-                        text=custom_data.get("text", ""),
-                        iteration=custom_data.get("iteration", 0),
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        source=custom_data.get("source", "chem_agent"),
-                        done=custom_data.get("done", True),
-                    )
-
-                elif custom_name == "shadow_lab_error":
-                    yield _sse(
-                        {
-                            "type": "shadow_error",
-                            "session_id": session_id,
-                            "turn_id": turn_id,
-                            "smiles": custom_data.get("smiles"),
-                            "error": custom_data.get("error"),
-                        }
-                    )
-
-                elif custom_name == "clarification_request":
-                    yield _sse(
-                        {
-                            "type": "interrupt",
-                            "question": custom_data.get("question", ""),
-                            "options": custom_data.get("options", []),
-                            "called_tools": custom_data.get("called_tools", []),
-                            "interrupt_id": uuid4().hex,
-                            "session_id": session_id,
-                            "turn_id": turn_id,
-                        }
-                    )
+                handler = custom_event_handlers.get(custom_name)
+                if handler is not None:
+                    yield handler(custom_data)
 
         # ── Emit run.done ─────────────────────────────────────────────────────
         if not llm_reasoning_emitted:
@@ -627,25 +603,11 @@ async def _event_generator(req: StreamChatRequest):
                 done=True,
             )
 
-        yield _sse(
-            {
-                "type": "done",
-                "session_id": session_id,
-                "turn_id": turn_id,
-            }
-        )
+        yield _event_sse("done", session_id, turn_id)
 
     except Exception as exc:
         tb = traceback.format_exc()
-        yield _sse(
-            {
-                "type": "error",
-                "session_id": session_id,
-                "turn_id": turn_id,
-                "error": str(exc),
-                "traceback": tb,
-            }
-        )
+        yield _event_sse("error", session_id, turn_id, error=str(exc), traceback=tb)
 
 
 # ── FastAPI route ──────────────────────────────────────────────────────────────

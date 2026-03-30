@@ -30,10 +30,24 @@ const API_BASE =
 
 const STREAM_URL = `${API_BASE}/api/chat/stream`
 
+const WORKSPACE_SMILES_KEYS = [
+  'cleaned_smiles',
+  'canonical_smiles',
+  'scaffold_smiles',
+  'smiles',
+] as const
+
+const NODE_LABELS: Record<string, string> = {
+  chem_agent: '🧠 智能体推理中…',
+  tools_executor: '🛠️ 工具执行中…',
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function generateId(): string {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36)
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2) + Date.now().toString(36)
 }
 
 function normalizeThinkingText(text: string): string {
@@ -46,16 +60,13 @@ function normalizeThinkingText(text: string): string {
 }
 
 function updateWorkspaceFromPayload(payload: Record<string, unknown>) {
-  const nextSmiles =
-    typeof payload.cleaned_smiles === 'string' ? payload.cleaned_smiles
-    : typeof payload.canonical_smiles === 'string' ? payload.canonical_smiles
-    : typeof payload.scaffold_smiles === 'string' ? payload.scaffold_smiles
-    : typeof payload.smiles === 'string' ? payload.smiles
-    : undefined
+  const nextSmiles = WORKSPACE_SMILES_KEYS.find(
+    (key) => typeof payload[key] === 'string',
+  )
 
   const nextName = typeof payload.name === 'string' ? payload.name : undefined
   const workspace = useWorkspaceStore.getState()
-  if (nextSmiles) workspace.setSmiles(nextSmiles)
+  if (nextSmiles) workspace.setSmiles(payload[nextSmiles] as string)
   if (nextName) workspace.setName(nextName)
 }
 
@@ -126,11 +137,7 @@ export interface SseState {
 
 /** Exported so components can reuse the same mapping. */
 export function nodeLabel(node: string): string {
-  const labels: Record<string, string> = {
-    chem_agent: '🧠 智能体推理中…',
-    tools_executor: '🛠️ 工具执行中…',
-  }
-  return labels[node] ?? `${node} 执行中…`
+  return NODE_LABELS[node] ?? `${node} 执行中…`
 }
 
 // ── Store ─────────────────────────────────────────────────────────────────────
@@ -146,6 +153,43 @@ let _sessionId: string | null = null
  * outermost end event arrives (depth reaches 0).
  */
 let _nodeDepth: Record<string, number> = {}
+let _unfinishedToolCallIndexes: Record<string, Record<string, number[]>> = {}
+let _latestToolOutputs: Record<string, Record<string, Record<string, unknown>>> = {}
+
+function resetStreamCaches() {
+  _nodeDepth = {}
+  _unfinishedToolCallIndexes = {}
+  _latestToolOutputs = {}
+}
+
+function abortActiveStream() {
+  _abortCtrl?.abort()
+  _abortCtrl = null
+}
+
+function pushUnfinishedToolCallIndex(turnId: string, tool: string, index: number) {
+  const turnIndexes = (_unfinishedToolCallIndexes[turnId] ??= {})
+  const toolIndexes = (turnIndexes[tool] ??= [])
+  toolIndexes.push(index)
+}
+
+function popUnfinishedToolCallIndex(turnId: string, tool: string): number | undefined {
+  const toolIndexes = _unfinishedToolCallIndexes[turnId]?.[tool]
+  const index = toolIndexes?.pop()
+  if (toolIndexes?.length === 0 && _unfinishedToolCallIndexes[turnId]) {
+    delete _unfinishedToolCallIndexes[turnId][tool]
+  }
+  return index
+}
+
+function rememberLatestToolOutput(turnId: string, tool: string, output: Record<string, unknown>) {
+  const turnOutputs = (_latestToolOutputs[turnId] ??= {})
+  turnOutputs[tool] = output
+}
+
+function readLatestToolOutput(turnId: string, tool: string): Record<string, unknown> | undefined {
+  return _latestToolOutputs[turnId]?.[tool]
+}
 
 export const useSseStore = create<SseState>((set, get) => {
   // ── Private helpers ──────────────────────────────────────────────────────
@@ -157,6 +201,31 @@ export const useSseStore = create<SseState>((set, get) => {
       const last = all[all.length - 1]
       return { turns: [...all.slice(0, -1), { ...last, ...updater(last) }] }
     })
+  }
+
+  function finishStream() {
+    set({ isStreaming: false })
+    abortActiveStream()
+    resetStreamCaches()
+  }
+
+  function stopStreamWithMessage(message: string) {
+    updateLastTurn((t) => ({
+      isStreaming: false,
+      activeNode: null,
+      statusLabel: '',
+      assistantText: message ? `${t.assistantText}${message}` : t.assistantText,
+    }))
+    finishStream()
+  }
+
+  function stopStreamStatus(statusLabel: string) {
+    updateLastTurn(() => ({
+      isStreaming: false,
+      activeNode: null,
+      statusLabel,
+    }))
+    finishStream()
   }
 
   function handleEvent(ev: SSEEvent) {
@@ -198,33 +267,38 @@ export const useSseStore = create<SseState>((set, get) => {
         break
 
       case 'tool_start':
-        updateLastTurn((t) => ({
-          toolCalls: [
-            ...t.toolCalls,
-            { tool: ev.tool, input: ev.input, output: undefined, done: false },
-          ],
-          statusLabel: '🛠️ 工具执行中…',
-        }))
+        updateLastTurn((t) => {
+          pushUnfinishedToolCallIndex(t.turnId, ev.tool, t.toolCalls.length)
+          return {
+            toolCalls: [
+              ...t.toolCalls,
+              { tool: ev.tool, input: ev.input, output: undefined, done: false },
+            ],
+            statusLabel: '🛠️ 工具执行中…',
+          }
+        })
         break
 
       case 'tool_end':
+        if (typeof ev.output === 'object' && ev.output !== null) {
+          updateWorkspaceFromPayload(ev.output as Record<string, unknown>)
+        }
         updateLastTurn((t) => {
           const calls = [...t.toolCalls]
-          // Find the last unfinished call with this tool name
-          let lastIdx = -1
-          for (let i = calls.length - 1; i >= 0; i--) {
-            if (calls[i].tool === ev.tool && !calls[i].done) { lastIdx = i; break }
-          }
+          const nextOutput = typeof ev.output === 'object' && ev.output !== null
+            ? (ev.output as Record<string, unknown>)
+            : { raw: ev.output }
+          const indexedIdx = popUnfinishedToolCallIndex(t.turnId, ev.tool)
+          const lastIdx = indexedIdx ?? calls.findLastIndex((call) => call.tool === ev.tool && !call.done)
+
           if (lastIdx !== -1) {
             calls[lastIdx] = {
               ...calls[lastIdx],
-              output: typeof ev.output === 'object' && ev.output !== null
-                ? (ev.output as Record<string, unknown>)
-                : { raw: ev.output },
+              output: nextOutput,
               done: true,
             }
-            if (calls[lastIdx].output) {
-              updateWorkspaceFromPayload(calls[lastIdx].output as Record<string, unknown>)
+            if (typeof ev.output === 'object' && ev.output !== null) {
+              rememberLatestToolOutput(t.turnId, ev.tool, ev.output as Record<string, unknown>)
             }
           }
           return { toolCalls: calls, statusLabel: '🧠 正在整合工具结果…' }
@@ -260,13 +334,12 @@ export const useSseStore = create<SseState>((set, get) => {
 
       case 'interrupt': {
         const iv = ev as SSEInterrupt
-        // Find the known SMILES from the last completed tool output if available
+        const currentTurnId = get().turns.at(-1)?.turnId
+        const knownSmiles = currentTurnId
+          ? readLatestToolOutput(currentTurnId, 'tool_pubchem_lookup')?.canonical_smiles as string | undefined
+          : undefined
+
         updateLastTurn((t) => {
-          const pubchemOutput = [...t.toolCalls]
-            .reverse()
-            .find((tc) => tc.tool === 'tool_pubchem_lookup' && tc.done)?.output
-          const knownSmiles =
-            (pubchemOutput as Record<string, unknown> | undefined)?.canonical_smiles as string | undefined
           return {
             isStreaming: false,
             activeNode: null,
@@ -289,9 +362,7 @@ export const useSseStore = create<SseState>((set, get) => {
             },
           }
         })
-        set({ isStreaming: false })
-        _abortCtrl?.abort()
-        _abortCtrl = null
+        stopStreamStatus('🙋 等待您的回复…')
         break
       }
 
@@ -309,26 +380,11 @@ export const useSseStore = create<SseState>((set, get) => {
           activeNode: null,
           statusLabel: '',
         }))
-        set({ isStreaming: false })
-        _nodeDepth = {}
-        // Abort the controller so fetchEventSource does NOT retry after the
-        // stream closes naturally — without this, it fires 10+ duplicate POSTs.
-        _abortCtrl?.abort()
-        _abortCtrl = null
+        finishStream()
         break
 
       case 'error':
-        updateLastTurn((t) => ({
-          isStreaming: false,
-          activeNode: null,
-          statusLabel: '',
-          assistantText:
-            t.assistantText + `\n\n> ❌ **错误**: ${(ev as SSEError).error}`,
-        }))
-        set({ isStreaming: false })
-        _nodeDepth = {}
-        _abortCtrl?.abort()
-        _abortCtrl = null
+        stopStreamWithMessage(`\n\n> ❌ **错误**: ${(ev as SSEError).error}`)
         break
     }
   }
@@ -340,10 +396,9 @@ export const useSseStore = create<SseState>((set, get) => {
     isStreaming: false,
 
     clearTurns: () => {
-      _abortCtrl?.abort()
-      _abortCtrl = null
+      abortActiveStream()
       _sessionId = null
-      _nodeDepth = {}
+      resetStreamCaches()
       set({ turns: [], isStreaming: false })
     },
 
@@ -411,7 +466,7 @@ export const useSseStore = create<SseState>((set, get) => {
                 statusLabel: '',
                 assistantText: `❌ HTTP ${response.status}: ${text}`,
               }))
-              set({ isStreaming: false })
+              finishStream()
               throw new Error(`HTTP ${response.status}`)
             }
           },
@@ -426,7 +481,7 @@ export const useSseStore = create<SseState>((set, get) => {
                 statusLabel: '',
                 assistantText: `❌ 连接中断: ${(err as Error)?.message ?? err}`,
               }))
-              set({ isStreaming: false })
+              finishStream()
             }
             throw err
           },
