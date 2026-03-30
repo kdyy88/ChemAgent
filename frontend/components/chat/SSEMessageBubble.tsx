@@ -8,7 +8,6 @@ import { ClarificationCard } from './ClarificationCard'
 import { LipinskiCard } from './LipinskiCard'
 import { ArtifactDispatcher } from './bubbles/ArtifactDispatcher'
 import { ResearchThinking } from './bubbles/ResearchThinking'
-import { PlanningCard } from './PlanningCard'
 import { parseLipinskiToolCalls } from '@/lib/chem-parsers'
 import type { SSETurn } from '@/lib/sse-types'
 
@@ -25,10 +24,6 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
   // Planning phase: activeNode==='planner_node' fires BEFORE tasks arrive (via node_start).
   // This is the reliable signal to show the planning card skeleton.
   const isPlanning = isStreaming && turn.activeNode === 'planner_node'
-  // Show inline plan card while streaming: during planning OR once tasks exist.
-  const showPlanCard = isStreaming && (isPlanning || turn.tasks.length > 0)
-
-  // Show "正在思考…" dots only when truly nothing has arrived (no thinking, no tasks, no plan node).
   const showThinkingDots = isStreaming && turn.thinkingSteps.length === 0 && !isPlanning && turn.tasks.length === 0
 
   // ── Artifact reveal: 1 s delay + skeleton after streaming ends ──────────────
@@ -83,13 +78,14 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
             </div>
           )}
 
-          {/* Planning card — skeleton while generating, then reveals task list */}
-          {showPlanCard && (
-            <PlanningCard
-              tasks={turn.tasks}
-              isGenerating={isPlanning}
-              isStreaming={isStreaming}
-            />
+          {/* Planning indicator — text-only, no card */}
+          {isPlanning && (
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground py-0.5">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:0ms]" aria-hidden="true" />
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:120ms]" aria-hidden="true" />
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:240ms]" aria-hidden="true" />
+              <span className="ml-1 text-muted-foreground/70">正在制定执行计划…</span>
+            </div>
           )}
 
           {/* HITL clarification card — shown when researcher needs user input */}
