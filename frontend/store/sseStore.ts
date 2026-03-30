@@ -43,9 +43,6 @@ function normalizeThinkingText(text: string): string {
     .replace(/[Ġ]/g, ' ')
     // Remove most ASCII control chars but keep newlines/tabs for readability
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-    // Keep \n and \t to preserve model formatting in reasoning panel
-    .replace(/[^\S\r\n\t]+/g, ' ')
-    .trim()
 }
 
 function updateWorkspaceFromPayload(payload: Record<string, unknown>) {
@@ -67,7 +64,7 @@ function appendThinkingStep(
   entry: SSEThinking,
 ): SSEThinking[] {
   const text = normalizeThinkingText(entry.text)
-  if (!text.trim()) return steps
+  if (!text) return steps
 
   const next = [...steps]
   const last = next[next.length - 1]
