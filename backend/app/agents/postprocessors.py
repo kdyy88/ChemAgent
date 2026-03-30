@@ -20,14 +20,22 @@ async def postprocess_render_smiles(
     config: RunnableConfig,
 ) -> ToolResult:
     if parsed.get("is_valid") and parsed.get("image"):
+        compound_name = parsed.get("compound_name") or str(_args.get("compound_name", ""))
+        highlight_atoms = parsed.get("highlight_atoms", [])
+        if compound_name and highlight_atoms:
+            title = f"{compound_name} · 高亮结构图"
+        elif compound_name:
+            title = f"{compound_name} · 2D 结构图"
+        else:
+            title = "2D 分子结构图"
         await _dispatch_artifact(
             artifacts,
             {
                 "kind": "molecule_image",
-                "title": "2D 分子结构图",
+                "title": title,
                 "smiles": parsed.get("smiles"),
                 "image": parsed.get("image"),
-                "highlight_atoms": parsed.get("highlight_atoms", []),
+                "highlight_atoms": highlight_atoms,
             },
             config,
         )
@@ -35,7 +43,7 @@ async def postprocess_render_smiles(
             "status": "success",
             "message": "2D结构图已发送给用户",
             "smiles": parsed.get("smiles"),
-            "highlight_atoms": parsed.get("highlight_atoms", []),
+            "highlight_atoms": highlight_atoms,
         }
     return parsed
 
@@ -80,11 +88,22 @@ async def postprocess_substructure_match(
         loader=lambda: substructure_match(str(args.get("smiles", "")), str(args.get("smarts_pattern", ""))),
     )
     if detailed.get("highlighted_image"):
+        # Build a human-readable title from optional name parameters
+        compound = detailed.get("compound_name") or str(args.get("compound_name", ""))
+        substruct = detailed.get("substructure_name") or str(args.get("substructure_name", ""))
+        if compound and substruct:
+            title = f"{compound} · {substruct} 子结构高亮"
+        elif compound:
+            title = f"{compound} · 子结构高亮图"
+        elif substruct:
+            title = f"{substruct} 子结构高亮图"
+        else:
+            title = "子结构高亮图"
         await _dispatch_artifact(
             artifacts,
             {
                 "kind": "highlighted_substructure",
-                "title": "子结构高亮图",
+                "title": title,
                 "smiles": detailed.get("smiles"),
                 "image": detailed.get("highlighted_image"),
                 "match_atoms": detailed.get("match_atoms", []),

@@ -113,13 +113,27 @@ def tool_compute_similarity(
 def tool_substructure_match(
     smiles: Annotated[str, "SMILES of the target molecule"],
     smarts_pattern: Annotated[str, "SMARTS pattern to search for (e.g. functional group)"],
+    compound_name: Annotated[str, "Human-readable name of the compound (e.g. 'Imatinib', '伊马替尼')"] = "",
+    substructure_name: Annotated[str, "Human-readable name of the substructure being searched (e.g. 'Pyrimidine', '嘧啶')"] = "",
 ) -> str:
     """Check if a SMARTS substructure pattern matches a molecule, report match
     atom indices, and run PAINS (Pan Assay Interference) alerts screening.
-    Returns JSON with matched, match_count, pains_alerts."""
+    Returns JSON with matched, match_count, pains_alerts.
+
+    IMPORTANT: This tool automatically generates and delivers a highlighted 2D
+    structure image (with the matched atoms highlighted) to the user.
+    Do NOT call tool_render_smiles afterward — it would produce a redundant
+    second image.  Use compound_name and substructure_name so the image title
+    is human-readable (e.g. compound_name='Imatinib', substructure_name='Pyrimidine').
+    """
     if err := _check_smiles_input(smiles):
         return err
     result = substructure_match(smiles, smarts_pattern)
+    # Attach display names so the postprocessor can build a descriptive title.
+    if compound_name:
+        result["compound_name"] = compound_name
+    if substructure_name:
+        result["substructure_name"] = substructure_name
     return _to_text(result)
 
 
@@ -159,6 +173,7 @@ def tool_strip_salts(
 def tool_render_smiles(
     smiles: Annotated[str, "Canonical SMILES to render as a 2D structure image"],
     highlight_atoms: Annotated[list[int], "Optional atom indices to highlight in the rendered image"] = [],
+    compound_name: Annotated[str, "Human-readable compound name used as the image title (e.g. 'Aspirin', '阿司匹林')"] = "",
 ) -> str:
     """Render a 2D structure image for a SMILES string.  Returns a JSON object
     with a base64-encoded PNG (no data-URI prefix) in the 'image' field.
@@ -166,6 +181,11 @@ def tool_render_smiles(
     If ``highlight_atoms`` is provided, those atom indices are highlighted in
     the rendered image.  This is useful for scaffold or substructure follow-up
     rendering after a previous matching step.
+
+    Note: If you just ran tool_substructure_match, a highlighted image was
+    already generated automatically — do NOT call this tool again unless you
+    need a separate plain (non-highlighted) structure image.
+    Always pass compound_name so the displayed title is human-readable.
     """
     mol = Chem.MolFromSmiles(smiles.strip())
     if mol is None:
@@ -185,14 +205,15 @@ def tool_render_smiles(
         image_b64 = mol_to_png_b64(mol, size=(400, 400))
 
     canonical = Chem.MolToSmiles(mol)
-    return json.dumps(
-        {
-            "is_valid": True,
-            "smiles": canonical,
-            "image": image_b64,
-            "highlight_atoms": normalized_highlights,
-        },
-        ensure_ascii=False,
+    result: dict[str, object] = {
+        "is_valid": True,
+        "smiles": canonical,
+        "image": image_b64,
+        "highlight_atoms": normalized_highlights,
+    }
+    if compound_name:
+        result["compound_name"] = compound_name
+    return json.dumps(result, ensure_ascii=False,
     )
 
 
