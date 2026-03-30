@@ -69,7 +69,13 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
             <ResearchThinking
               steps={turn.thinkingSteps}
               isStreaming={isStreaming}
-              hasPlan={turn.tasks.length > 0}
+              isPlanningPhase={
+                isStreaming &&
+                turn.tasks.length === 0 &&
+                turn.thinkingSteps.some(s =>
+                  s.text.includes('正在生成可执行任务清单') || s.text.includes('检测到复杂任务')
+                )
+              }
             />
           ) : (
             isStreaming ? (
