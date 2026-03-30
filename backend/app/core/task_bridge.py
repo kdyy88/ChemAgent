@@ -60,6 +60,14 @@ async def run_via_worker(
                 await asyncio.sleep(poll_interval)
     except TimeoutError:
         # ARQ worker is not consuming jobs (worker not started in local dev).
-        # Fall back to direct in-process execution so the endpoint still works.
+        # Attempt to abort the queued job so it isn't executed redundantly once
+        # the worker comes online.  abort_job may not be available in all arq
+        # versions; swallow any error so the fallback path is never blocked.
+        try:
+            arq_pool = await get_arq_pool()
+            await arq_pool.abort_job(task_id)
+        except Exception as abort_exc:
+            log.debug("Could not abort ARQ job %s: %s", task_id, abort_exc)
+
         log.debug("ARQ worker not responding after %.1fs — running %s directly", timeout, task_name)
         return await _run_direct(task_name, kwargs)

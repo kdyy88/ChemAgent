@@ -174,7 +174,7 @@ def strip_salts_and_neutralize(smiles: str) -> dict:
     # Step 1: Split into fragments, keep the largest (parent molecule)
     try:
         stripped = _SALT_REMOVER.StripMol(mol, dontRemoveEverything=True)
-    except Exception:
+    except (ValueError, RuntimeError, AttributeError):
         stripped = mol
 
     # Step 2: If multi-fragment, pick the heaviest fragment as parent

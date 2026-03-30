@@ -31,10 +31,15 @@ app = FastAPI(title="ChemAgent API", lifespan=lifespan)
 
 allowed_origins = get_allowed_origins()
 
+# Credentials cannot be combined with a wildcard origin (CORS spec violation).
+# When '*' is in the list the browser would reject the preflight response anyway,
+# so we explicitly disable credentials in that case.
+_allow_credentials = "*" not in allowed_origins
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials="*" not in allowed_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

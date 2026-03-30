@@ -22,7 +22,7 @@ class ChemState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     active_smiles: str | None
     artifacts: Annotated[list[dict], operator.add]
-    tasks: list[Task]
+    tasks: Annotated[list[Task], operator.add]
     is_complex: bool
 
 

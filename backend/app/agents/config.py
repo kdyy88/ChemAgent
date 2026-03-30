@@ -38,6 +38,16 @@ def _normalize_base_url(base_url: str) -> str:
     return normalized
 
 
+def _validate_base_url(url: str) -> None:
+    """Raise ValueError if the URL scheme is not http or https."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(
+            f"OPENAI_BASE_URL must use http or https scheme, got: '{parsed.scheme}://...'"
+        )
+
+
 def _load_environment() -> None:
     global _ENV_LOADED
     if _ENV_LOADED:
@@ -84,6 +94,7 @@ def build_llm_config(model: str | None = None) -> dict[str, list[dict[str, Any]]
 
     base_url = os.environ.get("OPENAI_BASE_URL")
     if base_url:
+        _validate_base_url(base_url)
         normalized_base_url = _normalize_base_url(base_url)
         config["base_url"] = normalized_base_url
         if normalized_base_url != base_url.strip().rstrip("/"):

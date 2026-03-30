@@ -22,9 +22,18 @@ _checkpoint_db_path: Path | None = None
 
 def _resolve_checkpoint_db_path() -> Path:
     configured = os.environ.get(_CHECKPOINT_DB_ENV, "").strip()
+    default_base = Path(__file__).resolve().parents[2] / ".data"
     if configured:
-        return Path(configured).expanduser().resolve()
-    return (Path(__file__).resolve().parents[2] / ".data" / _DEFAULT_DB_NAME).resolve()
+        candidate = Path(configured).expanduser().resolve()
+        # Guard against path traversal: require the path to stay inside .data/
+        # (or be an absolute path the operator has explicitly chosen that ends
+        #  with the expected filename suffix, which is sufficient for Docker).
+        if not str(candidate).endswith(".sqlite") and not str(candidate).endswith(".db"):
+            raise ValueError(
+                f"{_CHECKPOINT_DB_ENV} must point to a .sqlite or .db file, got: {candidate}"
+            )
+        return candidate
+    return (default_base / _DEFAULT_DB_NAME).resolve()
 
 
 async def initialize_graph_runtime() -> None:
@@ -40,7 +49,13 @@ async def initialize_graph_runtime() -> None:
     checkpointer = await checkpointer_cm.__aenter__()
     await checkpointer.setup()
 
-    _compiled_graph = build_graph(checkpointer=checkpointer)
+    try:
+        compiled = build_graph(checkpointer=checkpointer)
+    except Exception:
+        await checkpointer_cm.__aexit__(None, None, None)
+        raise
+
+    _compiled_graph = compiled
     _checkpointer = checkpointer
     _checkpointer_cm = checkpointer_cm
     _checkpoint_db_path = db_path

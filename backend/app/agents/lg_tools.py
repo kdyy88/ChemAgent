@@ -47,12 +47,28 @@ def _to_text(data: dict) -> str:
     return json.dumps(cleaned, ensure_ascii=False, indent=2)
 
 
+_SMILES_MAX_LEN = 10_000
+
+
+def _check_smiles_input(smiles: str) -> str | None:
+    """Return an error JSON string if the SMILES looks unsafe, else None."""
+    if len(smiles) > _SMILES_MAX_LEN:
+        return json.dumps({"is_valid": False, "error": f"SMILES 超出最大长度限制（{_SMILES_MAX_LEN} 字符）"})
+    if any(c in smiles for c in ("\x00", "\n", "\r")):
+        return json.dumps({"is_valid": False, "error": "SMILES 包含非法控制字符"})
+    if smiles.count("(") - smiles.count(")") != 0:
+        return json.dumps({"is_valid": False, "error": "SMILES 括号不匹配"})
+    return None
+
+
 # ── T1: Validate & Canonicalize SMILES ───────────────────────────────────────
 
 @tool
 def tool_validate_smiles(smiles: Annotated[str, "SMILES string to validate"]) -> str:
     """Validate a SMILES string and return its RDKit canonical form, formula,
     and atom/bond statistics.  Returns JSON with is_valid flag."""
+    if err := _check_smiles_input(smiles):
+        return err
     result = validate_smiles(smiles)
     return _to_text(result)
 
@@ -67,6 +83,8 @@ def tool_compute_descriptors(
     """Compute comprehensive molecular descriptors including Lipinski Rule-of-5
     (MW, LogP, HBD, HBA), TPSA, QED drug-likeness score, synthetic accessibility
     (SA Score), ring count, fraction sp3, and heavy atom count.  Returns JSON."""
+    if err := _check_smiles_input(smiles):
+        return err
     result = compute_descriptors(smiles, name)
     return _to_text(result)
 
@@ -82,6 +100,9 @@ def tool_compute_similarity(
     """Compute Tanimoto similarity between two molecules using Morgan (ECFP4)
     fingerprints.  Returns a similarity score from 0.0 (dissimilar) to 1.0
     (identical) plus a human-readable interpretation.  Returns JSON."""
+    for smi in (smiles1, smiles2):
+        if err := _check_smiles_input(smi):
+            return err
     result = compute_similarity(smiles1, smiles2, radius=radius)
     return _to_text(result)
 
@@ -96,6 +117,8 @@ def tool_substructure_match(
     """Check if a SMARTS substructure pattern matches a molecule, report match
     atom indices, and run PAINS (Pan Assay Interference) alerts screening.
     Returns JSON with matched, match_count, pains_alerts."""
+    if err := _check_smiles_input(smiles):
+        return err
     result = substructure_match(smiles, smarts_pattern)
     return _to_text(result)
 
@@ -109,6 +132,8 @@ def tool_murcko_scaffold(
     """Extract the Bemis-Murcko scaffold and generic carbon scaffold from a
     molecule.  Useful for analysing core ring systems in a drug series.
     Returns JSON with scaffold_smiles and generic_scaffold_smiles."""
+    if err := _check_smiles_input(smiles):
+        return err
     result = murcko_scaffold(smiles)
     return _to_text(result)
 
@@ -122,6 +147,8 @@ def tool_strip_salts(
     """Strip salt fragments (e.g. HCl, Na+) from a molecule and neutralize
     formal charges.  Returns the largest parent fragment in canonical SMILES.
     Returns JSON with cleaned_smiles and removed_fragments."""
+    if err := _check_smiles_input(smiles):
+        return err
     result = strip_salts_and_neutralize(smiles)
     return _to_text(result)
 
@@ -142,6 +169,8 @@ def tool_render_smiles(
     """
     mol = Chem.MolFromSmiles(smiles.strip())
     if mol is None:
+        if err := _check_smiles_input(smiles):
+            return err
         return json.dumps({"is_valid": False, "error": f"RDKit 无法解析 SMILES: {smiles}"})
 
     normalized_highlights = sorted({
