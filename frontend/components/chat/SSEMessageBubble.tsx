@@ -19,8 +19,12 @@ interface SSEMessageBubbleProps {
 
 export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMessageBubbleProps) {
   const isStreaming = turn.isStreaming
-  const showLoader = isStreaming && !turn.assistantText
+  // Only flash the typing loader when streaming hasn't produced any thinking steps yet.
+  // Once thinking steps appear, they already signal activity — the blinking bubble is distracting.
+  const showLoader = isStreaming && !turn.assistantText && turn.thinkingSteps.length === 0
   const lipinskiCards = parseLipinskiToolCalls(turn.toolCalls)
+  // Gate artifacts/Lipinski: don't reveal them until the final answer has started to appear.
+  const showArtifacts = !isStreaming || Boolean(turn.assistantText)
 
   return (
     <div className="flex flex-col gap-3">
@@ -86,7 +90,7 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
           ) : null}
 
           {/* Structured descriptor output rendered as Lipinski card */}
-          {lipinskiCards.length > 0 && (
+          {showArtifacts && lipinskiCards.length > 0 && (
             <div className="flex flex-col gap-3 mt-1">
               {lipinskiCards.map((card, i) => (
                 <LipinskiCard key={`lipinski-${turn.turnId}-${i}`} data={card} />
@@ -94,8 +98,10 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
             </div>
           )}
 
-          {/* Artifacts */}
-          <ArtifactDispatcher artifacts={turn.artifacts} />
+          {/* Artifacts — only revealed once final answer begins streaming */}
+          {showArtifacts && (
+            <ArtifactDispatcher artifacts={turn.artifacts} />
+          )}
 
           {/* Shadow errors */}
           {turn.shadowErrors.length > 0 && (
