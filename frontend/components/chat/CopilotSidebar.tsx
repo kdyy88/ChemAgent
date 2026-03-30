@@ -22,7 +22,7 @@ export function CopilotSidebar() {
       {/* ── Header ── */}
       <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-b bg-background/80 backdrop-blur">
         <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10">
-          <FlaskConical className="h-3.5 w-3.5 text-primary" />
+          <FlaskConical className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
         </div>
         <span className="text-sm font-semibold tracking-tight">ChemAgent</span>
 
@@ -52,8 +52,9 @@ export function CopilotSidebar() {
             onClick={clearTurns}
             disabled={isStreaming || turns.length === 0}
             title="清除对话记录"
+            aria-label="清除对话记录"
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
           </Button>
         </div>
       </div>

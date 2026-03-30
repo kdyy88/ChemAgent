@@ -87,6 +87,11 @@
 }
 
 /* Dark mode — deep molecular laboratory workstation */
+.dark,
+:root:has(.dark) {
+  color-scheme: dark;
+}
+
 .dark {
   --background: oklch(0.095 0.012 235);    /* deep slate-navy */
   --foreground: oklch(0.930 0.006 240);    /* warm off-white */
@@ -140,6 +145,13 @@
   }
   h1, h2, h3, h4, h5, h6 {
     font-family: var(--font-syne), var(--font-geist-sans), sans-serif;
+    text-wrap: balance;
+  }
+  p {
+    text-wrap: pretty;
+  }
+  button, [role="button"] {
+    touch-action: manipulation;
   }
 }
 
@@ -200,4 +212,15 @@
 @keyframes spinner-fade {
   0% { opacity: 0; }
   100% { opacity: 1; }
+}
+/* Respect user preference for reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -109,18 +109,24 @@ export function ToolSidebar() {
       {/* Activity Bar */}
       <div className="w-[50px] shrink-0 border-r bg-muted/30 flex flex-col items-center py-4 gap-4">
         <button 
+          type="button"
           onClick={() => setNavMode('software')}
           className={`p-2.5 rounded-lg transition-colors ${navMode === 'software' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
           title="按软件组件视角"
+          aria-label="软件组件视角"
+          aria-pressed={navMode === 'software'}
         >
-          <Box className="w-5 h-5" />
+          <Box className="w-5 h-5" aria-hidden="true" />
         </button>
         <button 
+          type="button"
           onClick={() => setNavMode('business')}
           className={`p-2.5 rounded-lg transition-colors ${navMode === 'business' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
           title="按业务场景视角"
+          aria-label="业务场景视角"
+          aria-pressed={navMode === 'business'}
         >
-          <LayoutDashboard className="w-5 h-5" />
+          <LayoutDashboard className="w-5 h-5" aria-hidden="true" />
         </button>
       </div>
 
@@ -131,11 +137,13 @@ export function ToolSidebar() {
             {navMode === 'software' ? '软件组件库' : '业务场景流'}
           </h2>
           <button 
+            type="button"
             onClick={() => setActiveFunctionId(null)}
             className="p-1.5 hover:bg-muted/80 rounded-md text-muted-foreground hover:text-foreground transition-colors"
             title="回首页"
+            aria-label="回首页"
           >
-            <Home className="w-3.5 h-3.5" />
+            <Home className="w-3.5 h-3.5" aria-hidden="true" />
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-2 scrollbar-thin overflow-x-hidden">
@@ -152,19 +160,23 @@ export function ToolSidebar() {
                 return (
                   <div key={section.title} className="mb-2">
                     <button 
+                      type="button"
                       onClick={() => toggleSection(section.title)}
                       className="flex items-center w-full px-1.5 py-1.5 text-sm font-medium text-foreground hover:bg-muted/50 rounded-md transition-colors"
+                      aria-expanded={isExpanded}
+                      aria-controls={`section-${section.title}`}
                     >
-                      <span className="mr-1 text-muted-foreground">
+                      <span className="mr-1 text-muted-foreground" aria-hidden="true">
                         {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                       </span>
-                      <span className="mr-1.5 text-muted-foreground">{section.icon}</span>
+                      <span className="mr-1.5 text-muted-foreground" aria-hidden="true">{section.icon}</span>
                       <span className="truncate flex-1 text-left">{section.title}</span>
                     </button>
                     {/* Collapsible content animation */}
                     <AnimatePresence initial={false}>
                       {isExpanded && (
                         <motion.div 
+                          id={`section-${section.title}`}
                           initial={{ height: 0, opacity: 0 }}
                           animate={{ height: "auto", opacity: 1 }}
                           exit={{ height: 0, opacity: 0 }}
@@ -174,6 +186,7 @@ export function ToolSidebar() {
                           {section.items.map(item => (
                             <button
                               key={item.id}
+                              type="button"
                               onClick={() => setActiveFunctionId(item.id as FunctionId)}
                               className={`flex items-center w-full pl-6 pr-2 py-1.5 text-xs rounded-md transition-colors ${activeFunctionId === item.id ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:bg-muted text-foreground'}`}
                             >

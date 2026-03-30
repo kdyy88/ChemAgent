@@ -45,6 +45,7 @@ export function HomeLandingPage() {
               fill="none"
               stroke="currentColor"
               strokeWidth="1"
+              aria-hidden="true"
             >
               <polygon points="32,4 58,18 58,46 32,60 6,46 6,18" strokeLinejoin="round" />
               <polygon points="32,14 50,24 50,44 32,54 14,44 14,24" strokeLinejoin="round" opacity="0.5" />
@@ -65,7 +66,7 @@ export function HomeLandingPage() {
           {/* Title */}
           <motion.h1
             variants={itemVariants}
-            className="font-display text-5xl md:text-6xl font-bold tracking-tight mb-6"
+            className="font-display text-5xl md:text-6xl font-bold tracking-tight mb-6 text-balance"
           >
             <span className="bg-gradient-to-r from-foreground via-foreground to-foreground/60 bg-clip-text text-transparent">
               Chem
@@ -81,7 +82,7 @@ export function HomeLandingPage() {
           {/* Subtitle */}
           <motion.p
             variants={itemVariants}
-            className="text-base md:text-lg text-muted-foreground font-light max-w-xl mb-12 leading-relaxed"
+            className="text-base md:text-lg text-muted-foreground font-light max-w-xl mb-12 leading-relaxed text-pretty"
           >
             权威检索 · 结构化工具调用 · 可解释流式过程展示
             <br />

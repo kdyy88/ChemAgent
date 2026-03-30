@@ -36,7 +36,7 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
       {/* Agent response — left-aligned */}
       <Message className="items-start gap-2.5">
         {/* Avatar */}
-        <div className="shrink-0 mt-0.5 flex h-7 w-7 items-center justify-center rounded-full bg-muted border">
+        <div className="shrink-0 mt-0.5 flex h-7 w-7 items-center justify-center rounded-full bg-muted border" aria-hidden="true">
           <FlaskConical className="h-3.5 w-3.5 text-muted-foreground" />
         </div>
 
@@ -48,12 +48,12 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
           {turn.thinkingSteps.length > 0 ? (
             <ResearchThinking steps={turn.thinkingSteps} isStreaming={isStreaming} />
           ) : (
-            isStreaming && turn.activeNode === 'chem_agent' && (
+            isStreaming && turn.activeNode === 'chem_agent' ? (
               <div className="flex items-center gap-2 text-xs text-muted-foreground animate-pulse">
-                <span className="inline-block w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
-                模型正在深度思考中，请稍候...
+                <span className="inline-block w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" aria-hidden="true" />
+                模型正在深度思考中，请稍候…
               </div>
-            )
+            ) : null
           )}
 
           {/* HITL clarification card — shown when researcher needs user input */}

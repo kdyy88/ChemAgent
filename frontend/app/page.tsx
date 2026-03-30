@@ -39,7 +39,7 @@ export default function Home() {
     <main className="flex flex-col h-[100dvh] bg-background">
       <header className="shrink-0 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="w-full px-4 md:px-6 py-3 flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary ring-2 ring-primary/20">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary ring-2 ring-primary/20" aria-hidden="true">
             <FlaskConical className="h-4 w-4 text-primary-foreground" />
           </div>
           <div className="flex-1">
@@ -54,15 +54,16 @@ export default function Home() {
             size="sm"
             onClick={clearTurns}
             className="gap-1.5 text-muted-foreground hover:text-foreground"
+            aria-label="新建对话"
           >
-            <PlusCircle className="h-4 w-4" />
+            <PlusCircle className="h-4 w-4" aria-hidden="true" />
             <span className="hidden sm:inline text-xs">New Chat</span>
           </Button>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground" asChild>
+              <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground" aria-label="Workflow Editor" asChild>
                 <Link href="/workflow">
-                  <LayoutTemplate className="h-4 w-4" />
+                  <LayoutTemplate className="h-4 w-4" aria-hidden="true" />
                 </Link>
               </Button>
             </TooltipTrigger>
