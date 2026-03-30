@@ -38,12 +38,14 @@ export default function Home() {
     <main className="flex flex-col h-[100dvh] bg-background">
       <header className="shrink-0 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="w-full px-4 md:px-6 py-3 flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary ring-2 ring-primary/20">
             <FlaskConical className="h-4 w-4 text-primary-foreground" />
           </div>
           <div className="flex-1">
-            <h1 className="text-sm font-semibold leading-none">ChemAgent</h1>
-            <p className="text-xs text-muted-foreground mt-0.5">AI Chemistry Expert</p>
+            <h1 className="font-display text-sm font-bold leading-none tracking-wide">
+              Chem<span className="text-primary">Agent</span>
+            </h1>
+            <p className="text-[10px] text-muted-foreground mt-0.5 font-mono tracking-widest uppercase">AI Chemistry Expert</p>
           </div>
 
           <Button
@@ -75,7 +77,7 @@ export default function Home() {
             <ToolSidebar />
           </ResizablePanel>
           <ResizableHandle withHandle />
-          <ResizablePanel defaultSize={60} minSize={40} className="bg-zinc-50/50 dark:bg-zinc-950/50">
+          <ResizablePanel defaultSize={60} minSize={40}>
             <div className="h-full w-full mx-auto max-w-4xl ">
               <WorkspaceArea />
             </div>
