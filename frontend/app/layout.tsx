@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Syne } from "next/font/google";
+import { ThemeProvider } from "next-themes";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ProgressBarProvider } from "@/components/providers/ProgressBarProvider";
 import { QueryProvider } from "@/components/providers/QueryProvider";
@@ -32,13 +33,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN" className="dark">
+    <html lang="zh-CN" suppressHydrationWarning>
       <body className={`${geistSans.variable} ${geistMono.variable} ${syne.variable} antialiased`}>
-        <QueryProvider>
-          <ProgressBarProvider>
-            <TooltipProvider>{children}</TooltipProvider>
-          </ProgressBarProvider>
-        </QueryProvider>
+        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
+          <QueryProvider>
+            <ProgressBarProvider>
+              <TooltipProvider>{children}</TooltipProvider>
+            </ProgressBarProvider>
+          </QueryProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

@@ -16,6 +16,7 @@ import { ToolSidebar } from '@/components/workspace/ToolSidebar'
 import { WorkspaceArea } from '@/components/workspace/WorkspaceArea'
 import { CopilotSidebar } from '@/components/chat/CopilotSidebar'
 import GlobalLoading from './loading'
+import { ThemeToggle } from '@/components/ui/ThemeToggle'
 
 function useHasMounted() {
   return useSyncExternalStore(
@@ -67,6 +68,7 @@ export default function Home() {
             </TooltipTrigger>
             <TooltipContent>Workflow Editor</TooltipContent>
           </Tooltip>
+          <ThemeToggle />
         </div>
       </header>
 
