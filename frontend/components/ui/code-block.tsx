@@ -41,16 +41,21 @@ function CodeBlockCode({
   const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null)
 
   useEffect(() => {
+    let cancelled = false
+
     async function highlight() {
       if (!code) {
-        setHighlightedHtml("<pre><code></code></pre>")
+        if (!cancelled) setHighlightedHtml("<pre><code></code></pre>")
         return
       }
 
+      // code comes from LLM/tool output only — not raw user input
       const html = await codeToHtml(code, { lang: language, theme })
-      setHighlightedHtml(html)
+      if (!cancelled) setHighlightedHtml(html)
     }
     highlight()
+
+    return () => { cancelled = true }
   }, [code, language, theme])
 
   const classNames = cn(

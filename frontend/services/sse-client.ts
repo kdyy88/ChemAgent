@@ -171,10 +171,10 @@ export class SSEClient {
           : { raw: ev.output }
 
         const index = this.popUnfinishedToolCallIndex(turnId, ev.tool)
-        if (typeof ev.output === 'object' && ev.output !== null) {
-          this.rememberLatestToolOutput(turnId, ev.tool, ev.output as ToolOutput)
-        }
         if (index !== undefined) {
+          if (typeof ev.output === 'object' && ev.output !== null) {
+            this.rememberLatestToolOutput(turnId, ev.tool, ev.output as ToolOutput)
+          }
           handlers.completeToolCall(index, nextOutput)
         }
         return
