@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Beaker, Brain, FlaskConical, Hammer, Sparkles } from 'lucide-react'
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ui/reasoning'
 import { Steps, StepsBar, StepsContent, StepsItem, StepsTrigger } from '@/components/ui/steps'
@@ -171,13 +171,10 @@ export function ResearchThinking({ steps, isStreaming }: ResearchThinkingProps) 
     return null
   }, [blocks])
 
-  // When the active block changes, auto-collapse all others and open the new one.
-  const prevActiveKeyRef = useRef<string | null>(null)
+  // When the active block changes, clear user overrides so the auto-open logic takes effect.
   useEffect(() => {
     if (!activeBlockKey) return
-    if (activeBlockKey === prevActiveKeyRef.current) return
-    prevActiveKeyRef.current = activeBlockKey
-    setOpenSteps({ [activeBlockKey]: true })
+    setOpenSteps({})
   }, [activeBlockKey])
 
   if (timeline.length === 0) return null
@@ -211,7 +208,7 @@ export function ResearchThinking({ steps, isStreaming }: ResearchThinkingProps) 
         {blocks.map((block, blockIndex) => {
           if (block.kind === 'tool_sequence') {
             const stepKey = `${block.id}-${blockIndex}`
-            const stepOpen = openSteps[stepKey] ?? false
+            const stepOpen = openSteps[stepKey] ?? (stepKey === activeBlockKey)
             const activeTitle = block.items.find((item) => item.isStreaming)?.title ?? block.items.at(-1)?.title ?? '工具调用'
 
             return (
@@ -262,7 +259,7 @@ export function ResearchThinking({ steps, isStreaming }: ResearchThinkingProps) 
           const group = block.item
           const Icon = groupIcon(group.kind)
           const stepKey = `${block.id}-${blockIndex}`
-          const stepOpen = openSteps[stepKey] ?? false
+          const stepOpen = openSteps[stepKey] ?? (stepKey === activeBlockKey)
           const mergedText = group.count > 1 ? `已合并 ${group.count} 条同类更新` : null
           const statusText = stepStatusText(group)
 
