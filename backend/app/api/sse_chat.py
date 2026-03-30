@@ -57,7 +57,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
-from app.agents.graph import ChemState
+from app.agents.state import ChemState
 from app.agents.runtime import get_compiled_graph, has_persisted_session
 
 router = APIRouter()
@@ -99,6 +99,8 @@ _TOOL_LABELS: dict[str, str] = {
     "update_task_status": "更新任务状态",
 }
 
+_DEFAULT_GRAPH_RECURSION_LIMIT = 60
+
 
 def _load_debug_env_once() -> None:
     """Load .env files so debug toggles are visible in this module too."""
@@ -120,6 +122,17 @@ def _env_truthy(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _graph_recursion_limit() -> int:
+    raw = os.environ.get("CHEMAGENT_GRAPH_RECURSION_LIMIT", "").strip()
+    if not raw:
+        return _DEFAULT_GRAPH_RECURSION_LIMIT
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_GRAPH_RECURSION_LIMIT
+    return max(25, value)
 
 
 def _preview(value: object, max_len: int = 1200) -> str:
@@ -445,7 +458,10 @@ async def _event_generator(req: StreamChatRequest):
     session_id = req.session_id
     turn_id = req.turn_id
     graph = get_compiled_graph()
-    graph_config = {"configurable": {"thread_id": session_id, "session_id": session_id, "turn_id": turn_id}}
+    graph_config = {
+        "configurable": {"thread_id": session_id, "session_id": session_id, "turn_id": turn_id},
+        "recursion_limit": _graph_recursion_limit(),
+    }
     has_persisted_state = await has_persisted_session(session_id)
     llm_reasoning_emitted = False
     lifecycle_depths: dict[str, int] = {}
