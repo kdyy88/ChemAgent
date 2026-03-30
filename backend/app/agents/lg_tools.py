@@ -15,7 +15,6 @@ the Shadow Lab intercepts the result SMILES and runs RDKit valence checks.
 
 from __future__ import annotations
 
-import functools
 import json
 import os
 from typing import Annotated
@@ -23,7 +22,9 @@ from typing import Annotated
 import requests
 from langchain_core.tools import tool
 
+from app.tools.babel.prep import ALL_BABEL_TOOLS
 from app.chem.rdkit_ops import (
+    _mol_to_highlighted_png_b64,
     compute_descriptors,
     compute_similarity,
     mol_to_png_b64,
@@ -128,15 +129,40 @@ def tool_strip_salts(
 @tool
 def tool_render_smiles(
     smiles: Annotated[str, "Canonical SMILES to render as a 2D structure image"],
+    highlight_atoms: Annotated[list[int], "Optional atom indices to highlight in the rendered image"] = [],
 ) -> str:
     """Render a 2D structure image for a SMILES string.  Returns a JSON object
-    with a base64-encoded PNG (no data-URI prefix) in the 'image' field."""
+    with a base64-encoded PNG (no data-URI prefix) in the 'image' field.
+
+    If ``highlight_atoms`` is provided, those atom indices are highlighted in
+    the rendered image.  This is useful for scaffold or substructure follow-up
+    rendering after a previous matching step.
+    """
     mol = Chem.MolFromSmiles(smiles.strip())
     if mol is None:
         return json.dumps({"is_valid": False, "error": f"RDKit 无法解析 SMILES: {smiles}"})
-    image_b64 = mol_to_png_b64(mol, size=(400, 400))
+
+    normalized_highlights = sorted({
+        int(atom_idx)
+        for atom_idx in highlight_atoms
+        if isinstance(atom_idx, int) and 0 <= atom_idx < mol.GetNumAtoms()
+    })
+
+    if normalized_highlights:
+        image_b64 = _mol_to_highlighted_png_b64(mol, normalized_highlights, size=(400, 400))
+    else:
+        image_b64 = mol_to_png_b64(mol, size=(400, 400))
+
     canonical = Chem.MolToSmiles(mol)
-    return json.dumps({"is_valid": True, "smiles": canonical, "image": image_b64})
+    return json.dumps(
+        {
+            "is_valid": True,
+            "smiles": canonical,
+            "image": image_b64,
+            "highlight_atoms": normalized_highlights,
+        },
+        ensure_ascii=False,
+    )
 
 
 # ── Exported catalog for graph.py ─────────────────────────────────────────────
@@ -276,7 +302,7 @@ def tool_ask_human(
     )
 
 
-ALL_TOOLS = [
+ALL_RDKIT_TOOLS = [
     tool_validate_smiles,
     tool_compute_descriptors,
     tool_compute_similarity,
@@ -289,28 +315,7 @@ ALL_TOOLS = [
     tool_ask_human,
 ]
 
-ANALYST_TOOLS = [
-    tool_validate_smiles,
-    tool_compute_descriptors,
-    tool_compute_similarity,
-    tool_substructure_match,
-    tool_murcko_scaffold,
-    tool_strip_salts,
-]
-
-VISUALIZER_TOOLS = [
-    tool_render_smiles,
-    tool_validate_smiles,
-]
-
-RESEARCHER_TOOLS = [
-    tool_pubchem_lookup,
-    tool_web_search,
-    tool_ask_human,
-    tool_validate_smiles,
-    tool_compute_descriptors,
-    tool_substructure_match,
-    tool_murcko_scaffold,
-    tool_render_smiles,
-    tool_strip_salts,
+ALL_CHEM_TOOLS = [
+    *ALL_RDKIT_TOOLS,
+    *ALL_BABEL_TOOLS,
 ]

@@ -77,6 +77,13 @@ export function nodeLabel(node: string): string {
 let _abortCtrl: AbortController | null = null
 /** Session ID persists for the whole conversation; reset only in clearTurns. */
 let _sessionId: string | null = null
+/**
+ * LangGraph astream_events fires on_chain_start/on_chain_end for internal
+ * sub-graph wrappers too, so the same node name can appear 2-4 times.
+ * We track the nesting depth per node and only clear activeNode when the
+ * outermost end event arrives (depth reaches 0).
+ */
+let _nodeDepth: Record<string, number> = {}
 
 export const useSseStore = create<SseState>((set, get) => {
   // ── Private helpers ──────────────────────────────────────────────────────
@@ -95,19 +102,32 @@ export const useSseStore = create<SseState>((set, get) => {
       case 'run_started':
         break
 
-      case 'node_start':
-        updateLastTurn(() => ({
-          activeNode: ev.node,
-          statusLabel: nodeLabel(ev.node),
-        }))
+      case 'node_start': {
+        // LangGraph fires on_chain_start for internal sub-graph wrappers too.
+        // Track nesting depth: only update UI on the outermost (first) start.
+        const prevDepth = _nodeDepth[ev.node] ?? 0
+        _nodeDepth[ev.node] = prevDepth + 1
+        if (prevDepth === 0) {
+          updateLastTurn(() => ({
+            activeNode: ev.node,
+            statusLabel: nodeLabel(ev.node),
+          }))
+        }
         break
+      }
 
-      case 'node_end':
-        updateLastTurn((t) => ({
-          activeNode: t.activeNode === ev.node ? null : t.activeNode,
-          statusLabel: t.activeNode === ev.node ? '' : t.statusLabel,
-        }))
+      case 'node_end': {
+        // Only clear activeNode when the outermost end event arrives.
+        const depth = Math.max(0, (_nodeDepth[ev.node] ?? 1) - 1)
+        _nodeDepth[ev.node] = depth
+        if (depth === 0) {
+          updateLastTurn((t) => ({
+            activeNode: t.activeNode === ev.node ? null : t.activeNode,
+            statusLabel: t.activeNode === ev.node ? '' : t.statusLabel,
+          }))
+        }
         break
+      }
 
       case 'token':
         updateLastTurn((t) => ({
@@ -189,20 +209,115 @@ export const useSseStore = create<SseState>((set, get) => {
 
       case 'thinking': {
         const thinkingEv = ev as SSEThinking
+        const source = thinkingEv.source || 'unknown'
+        
+        // Add source prefix for better context
+        const sourcePrefix = {
+          'intent': '🎯 意图识别',
+          'supervisor': '🧭 路由决策',
+          'researcher': '🔭 研究推理',
+          'visualizer': '🎨 可视化',
+          'analyst': '🔬 分析',
+          'prep': '⚗️ 准备',
+        }[source] || '💭 思考'
+        
+        const displayText = source && source !== 'unknown' 
+          ? `${sourcePrefix}: ${thinkingEv.text}`
+          : thinkingEv.text
+        
         updateLastTurn((t) => {
           const steps = [...t.thinkingSteps]
-          // 修复：使用字符串追加拼接流式 Chunk，禁止直接对象覆盖
-          if (steps.length > 0 && steps[steps.length - 1].iteration === thinkingEv.iteration) {
+          const last = steps.length > 0 ? steps[steps.length - 1] : null
+          // Append to the current step when:
+          //   - same iteration AND the step has not been marked done yet
+          // Create a new step when:
+          //   - no prior steps, OR different iteration, OR prior step is done
+          if (
+            last !== null &&
+            last.iteration === thinkingEv.iteration &&
+            last.done !== true
+          ) {
             steps[steps.length - 1] = {
-              ...steps[steps.length - 1],
-              text: steps[steps.length - 1].text + thinkingEv.text,
-              done: thinkingEv.done ?? steps[steps.length - 1].done,
+              ...last,
+              text: last.text + displayText,
+              done: thinkingEv.done ?? last.done,
             }
           } else {
-            steps.push({ ...thinkingEv })
+            // New iteration or prior step completed — start a fresh step.
+            steps.push({ 
+              text: displayText, 
+              iteration: thinkingEv.iteration, 
+              done: thinkingEv.done 
+            })
           }
           return { thinkingSteps: steps }
         })
+        break
+      }
+
+      case 'orchestration_step_start': {
+        const stepEv = ev as any
+        updateLastTurn((t) => {
+          const orchestrationSteps = [...(t.orchestrationSteps ?? [])]
+          // Initialize or update step
+          if (orchestrationSteps[stepEv.step_index]) {
+            orchestrationSteps[stepEv.step_index] = {
+              ...orchestrationSteps[stepEv.step_index],
+              status: 'running',
+            }
+          } else {
+            orchestrationSteps[stepEv.step_index] = {
+              step_index: stepEv.step_index,
+              tool_name: stepEv.tool_name,
+              status: 'running',
+              input_params: stepEv.input_params,
+            }
+          }
+          return {
+            orchestrationSteps,
+            statusLabel: `🔗 执行工具: ${stepEv.tool_name}…`,
+          }
+        })
+        break
+      }
+
+      case 'orchestration_step_end': {
+        const stepEv = ev as any
+        updateLastTurn((t) => {
+          const orchestrationSteps = [...(t.orchestrationSteps ?? [])]
+          orchestrationSteps[stepEv.step_index] = {
+            step_index: stepEv.step_index,
+            tool_name: stepEv.tool_name,
+            status: stepEv.status,
+            output: stepEv.output,
+            error: stepEv.error,
+          }
+          return {
+            orchestrationSteps,
+            statusLabel: stepEv.status === 'success' 
+              ? `✅ ${stepEv.tool_name} 完成`
+              : `❌ ${stepEv.tool_name} 失败`,
+          }
+        })
+        break
+      }
+
+      case 'orchestration_complete': {
+        const completeEv = ev as any
+        updateLastTurn((t) => ({
+          statusLabel: completeEv.success 
+            ? `✅ 工具链完成 (${completeEv.total_steps} 步)`
+            : `❌ 工具链失败: ${completeEv.error_message}`,
+        }))
+        break
+      }
+
+      case 'token': {
+        // Summarizer streams final conclusion via token events
+        const tokenEv = ev as { content: string }
+        updateLastTurn((t) => ({
+          assistantText: tokenEv.content,
+        }))
         break
       }
 
@@ -213,6 +328,7 @@ export const useSseStore = create<SseState>((set, get) => {
           statusLabel: '',
         }))
         set({ isStreaming: false })
+        _nodeDepth = {}
         // Abort the controller so fetchEventSource does NOT retry after the
         // stream closes naturally — without this, it fires 10+ duplicate POSTs.
         _abortCtrl?.abort()
@@ -228,6 +344,7 @@ export const useSseStore = create<SseState>((set, get) => {
             t.assistantText + `\n\n> ❌ **错误**: ${(ev as SSEError).error}`,
         }))
         set({ isStreaming: false })
+        _nodeDepth = {}
         _abortCtrl?.abort()
         _abortCtrl = null
         break
@@ -244,6 +361,7 @@ export const useSseStore = create<SseState>((set, get) => {
       _abortCtrl?.abort()
       _abortCtrl = null
       _sessionId = null
+      _nodeDepth = {}
       set({ turns: [], isStreaming: false })
     },
 

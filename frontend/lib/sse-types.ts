@@ -197,6 +197,40 @@ export interface SSEThinking {
   iteration: number
   /** false = still streaming this step; true = step complete. */
   done?: boolean
+  /** Source of reasoning: intent, supervisor, researcher, etc. */
+  source?: string
+  session_id: string
+  turn_id: string
+}
+
+/** Tool orchestration step started — shows progress in tool chain. */
+export interface SSEOrchestrationStepStart {
+  type: 'orchestration_step_start'
+  step_index: number
+  tool_name: string
+  input_params: Record<string, unknown>
+  session_id: string
+  turn_id: string
+}
+
+/** Tool orchestration step completed — shows result in tool chain. */
+export interface SSEOrchestrationStepEnd {
+  type: 'orchestration_step_end'
+  step_index: number
+  tool_name: string
+  status: 'success' | 'failed'
+  output?: Record<string, unknown>
+  error?: string
+  session_id: string
+  turn_id: string
+}
+
+/** Tool orchestration chain completed. */
+export interface SSEOrchestrationComplete {
+  type: 'orchestration_complete'
+  success: boolean
+  total_steps: number
+  error_message?: string
   session_id: string
   turn_id: string
 }
@@ -228,6 +262,9 @@ export type SSEEvent =
   | SSEShadowError
   | SSEInterrupt
   | SSEThinking
+  | SSEOrchestrationStepStart
+  | SSEOrchestrationStepEnd
+  | SSEOrchestrationComplete
   | SSEDone
   | SSEError
 
@@ -263,4 +300,13 @@ export interface SSETurn {
   }
   /** Intermediate reasoning steps captured before tool calls (inner monologue). */
   thinkingSteps: SSEThinking[]
+  /** Tool orchestration chain progress. */
+  orchestrationSteps?: Array<{
+    step_index: number
+    tool_name: string
+    status: 'pending' | 'running' | 'success' | 'failed'
+    input_params?: Record<string, unknown>
+    output?: Record<string, unknown>
+    error?: string
+  }>
 }

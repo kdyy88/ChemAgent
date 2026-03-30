@@ -215,17 +215,3 @@ ALL_BABEL_TOOLS = [
     tool_compute_partial_charges,
     tool_list_formats,
 ]
-
-# Prep node: format conversion + 3D generation + docking prep + format discovery
-PREP_TOOLS = [
-    tool_convert_format,
-    tool_build_3d_conformer,
-    tool_prepare_pdbqt,
-    tool_list_formats,
-]
-
-# Additional babel tools safe to add to the analyst node for cross-validation
-BABEL_ANALYSIS_TOOLS = [
-    tool_compute_mol_properties,
-    tool_compute_partial_charges,
-]

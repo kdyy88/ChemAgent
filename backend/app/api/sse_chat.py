@@ -50,7 +50,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
-from app.agents.graph import ChemMVPState, compiled_graph
+from app.agents.graph import ChemState, compiled_graph
 
 router = APIRouter()
 
@@ -88,16 +88,46 @@ def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _sanitize_tool_output_for_sse(tool_name: str, output: dict | str) -> dict | str:
+    """Strip bulky artifact payloads from `tool_end` SSE events.
+
+    Rich media and large files are emitted separately through custom `artifact`
+    events, so `tool_end` should carry only concise metadata for UI status.
+    """
+    if not isinstance(output, dict):
+        return output
+
+    sanitized = dict(output)
+    bulky_keys = {
+        "image",
+        "structure_image",
+        "highlighted_image",
+        "sdf_content",
+        "pdbqt_content",
+    }
+    removed = [key for key in bulky_keys if key in sanitized]
+    for key in removed:
+        sanitized.pop(key, None)
+
+    if tool_name == "tool_convert_format" and isinstance(sanitized.get("output"), str):
+        output_text = sanitized["output"]
+        if len(output_text) > 500:
+            sanitized["output"] = f"已生成 {sanitized.get('output_format', '').upper()} 内容，完整结果通过 artifact 事件发送"
+            removed.append("output")
+
+    if removed:
+        sanitized["artifact_payloads_removed"] = sorted(set(removed))
+
+    return sanitized
+
+
 # ── Nodes whose LLM tokens we want to stream to the client ────────────────────
 
 # Nodes whose LLM tokens we stream to the client.
-# NOTE: `supervisor` is intentionally excluded — it uses with_structured_output
-# which streams routing JSON, not user-facing text.  The `responder` node
-# handles direct replies when no tools are needed.
-_STREAMING_NODES = {"responder", "researcher", "visualizer", "analyst", "prep"}
+_STREAMING_NODES = {"chem_agent"}
 
 # LangGraph node names we surface as lifecycle events to the frontend
-_LIFECYCLE_NODES = {"supervisor", "responder", "researcher", "visualizer", "analyst", "prep", "shadow_lab"}
+_LIFECYCLE_NODES = {"chem_agent", "tools_executor"}
 
 
 # ── Core generator ─────────────────────────────────────────────────────────────
@@ -117,18 +147,13 @@ async def _event_generator(req: StreamChatRequest):
         elif h.role == "assistant" and h.content.strip():
             history_messages.append(AIMessage(content=h.content))
 
-    initial_state: ChemMVPState = {
+    initial_state: ChemState = {
         "messages": [*history_messages, HumanMessage(content=req.message)],
         "active_smiles": req.active_smiles,
-        "validation_errors": [],
         "artifacts": [],
-        "next_node": None,
-        "iteration_count": 0,
-        "pending_clarification": None,
-        "interrupt_options": [],
     }
 
-    # HITL resume: inject the interrupt context so researcher can continue
+    # HITL resume: inject the interrupt context so the unified agent can continue.
     if req.interrupt_context:
         ctx = req.interrupt_context
         ctx_lines = [
@@ -138,7 +163,7 @@ async def _event_generator(req: StreamChatRequest):
         if ctx.get("known_smiles"):
             ctx_lines.append(f"已知 SMILES：{ctx['known_smiles']}")
             initial_state["active_smiles"] = ctx["known_smiles"]
-        initial_state["pending_clarification"] = ctx.get("question")
+        initial_state["messages"].insert(-1, HumanMessage(content="\n".join(ctx_lines)))
 
     # ── Emit run.started ──────────────────────────────────────────────────────
     yield _sse(
@@ -214,7 +239,7 @@ async def _event_generator(req: StreamChatRequest):
                             {
                                 "type": "thinking",
                                 "text": thinking_token,
-                                "iteration": initial_state.get("iteration_count", 0),
+                                "iteration": 0,
                                 "session_id": session_id,
                                 "turn_id": turn_id,
                             }
@@ -275,6 +300,8 @@ async def _event_generator(req: StreamChatRequest):
                         parsed_output = json.loads(tool_output)
                     except Exception:
                         pass
+
+                parsed_output = _sanitize_tool_output_for_sse(event["name"], parsed_output)
 
                 yield _sse(
                     {
@@ -373,12 +400,11 @@ async def stream_chat(req: StreamChatRequest) -> StreamingResponse:
 
     Event types emitted (see module docstring for full schema):
     - ``run_started``  — immediately on connection
-    - ``node_start``   — when supervisor / visualizer / analyst / shadow_lab begins
+    - ``node_start``   — when chem_agent / tools_executor begins
     - ``token``        — individual LLM text tokens (for real-time typewriter UX)
-    - ``tool_start``   — when an RDKit @tool starts executing
-    - ``tool_end``     — when an RDKit @tool finishes, with parsed JSON output
+    - ``tool_start``   — when a tool starts executing
+    - ``tool_end``     — when a tool finishes, with parsed JSON output
     - ``artifact``     — molecule image (base64 PNG) or descriptor table (JSON)
-    - ``shadow_error`` — Shadow Lab SMILES validation failure details
     - ``node_end``     — when a node finishes
     - ``done``         — graph run complete
     - ``error``        — unhandled exception
