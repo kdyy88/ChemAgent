@@ -69,16 +69,11 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
             <ResearchThinking
               steps={turn.thinkingSteps}
               isStreaming={isStreaming}
-              isPlanningPhase={
-                isStreaming &&
-                turn.tasks.length === 0 &&
-                turn.thinkingSteps.some(s =>
-                  s.text.includes('正在生成可执行任务清单') || s.text.includes('检测到复杂任务')
-                )
-              }
             />
           ) : (
-            isStreaming ? (
+            // Only show "thinking..." dots when truly nothing has arrived yet.
+            // Once tasks appear, the TaskTracker itself signals activity.
+            isStreaming && turn.tasks.length === 0 ? (
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground py-0.5">
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:0ms]" aria-hidden="true" />
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:120ms]" aria-hidden="true" />

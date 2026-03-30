@@ -23,8 +23,6 @@ function MetaBadge({ children, highlight }: { children: React.ReactNode; highlig
 interface ResearchThinkingProps {
   steps: SSEThinking[]
   isStreaming: boolean
-  /** True when the planning thinking text has appeared but tasks haven't arrived yet. */
-  isPlanningPhase?: boolean
 }
 
 interface ThinkingGroup {
@@ -142,7 +140,7 @@ function buildTimelineBlocks(timeline: ThinkingGroup[]): TimelineBlock[] {
   return blocks
 }
 
-export function ResearchThinking({ steps, isStreaming, isPlanningPhase = false }: ResearchThinkingProps) {
+export function ResearchThinking({ steps, isStreaming }: ResearchThinkingProps) {
   const [openSteps, setOpenSteps] = useState<Record<string, boolean>>({})
   const timeline = useMemo(() => groupThinkingSteps(steps), [steps])
   const blocks = useMemo(() => buildTimelineBlocks(timeline), [timeline])
@@ -304,16 +302,6 @@ export function ResearchThinking({ steps, isStreaming, isPlanningPhase = false }
           )
         })}
       </div>
-
-      {/* Plan generation indicator — shown only while waiting for tasks to arrive */}
-      {isPlanningPhase && (
-        <div className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground/70">
-          <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/50 animate-bounce [animation-delay:0ms]" aria-hidden="true" />
-          <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/50 animate-bounce [animation-delay:120ms]" aria-hidden="true" />
-          <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/50 animate-bounce [animation-delay:240ms]" aria-hidden="true" />
-          <span className="ml-1">正在生成执行计划…</span>
-        </div>
-      )}
     </div>
   )
 }
