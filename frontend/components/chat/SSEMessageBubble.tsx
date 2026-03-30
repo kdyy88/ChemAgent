@@ -1,6 +1,6 @@
 'use client'
 
-import { memo, useEffect, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { FlaskConical, AlertTriangle } from 'lucide-react'
 import { Message, MessageContent } from '@/components/ui/message'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -8,8 +8,9 @@ import { ClarificationCard } from './ClarificationCard'
 import { LipinskiCard } from './LipinskiCard'
 import { ArtifactDispatcher } from './bubbles/ArtifactDispatcher'
 import { ResearchThinking } from './bubbles/ResearchThinking'
+import { WebSourcesArtifact } from './bubbles/WebSourcesArtifact'
 import { parseLipinskiToolCalls } from '@/lib/chem-parsers'
-import type { SSETurn } from '@/lib/sse-types'
+import type { SSETurn, WebSearchSourcesArtifact } from '@/lib/sse-types'
 
 // ── Main component ────────────────────────────────────────────────────────────
 
@@ -21,25 +22,37 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
   const isStreaming = turn.isStreaming
   const lipinskiCards = parseLipinskiToolCalls(turn.toolCalls)
 
+  // Split artifacts: web sources show immediately; the rest are delayed
+  const webSources = useMemo(
+    () => turn.artifacts.filter((a): a is WebSearchSourcesArtifact => a.kind === 'web_search_sources'),
+    [turn.artifacts],
+  )
+  const otherArtifacts = useMemo(
+    () => turn.artifacts.filter((a) => a.kind !== 'web_search_sources'),
+    [turn.artifacts],
+  )
+
   // Planning phase: activeNode==='planner_node' fires BEFORE tasks arrive (via node_start).
   // This is the reliable signal to show the planning card skeleton.
   const isPlanning = isStreaming && turn.activeNode === 'planner_node'
   const showThinkingDots = isStreaming && turn.thinkingSteps.length === 0 && !isPlanning
 
   // ── Artifact reveal: 1 s delay + skeleton after streaming ends ──────────────
-  const hasArtifacts = turn.artifacts.length > 0 || lipinskiCards.length > 0
+  const hasOtherArtifacts = otherArtifacts.length > 0 || lipinskiCards.length > 0
   const [artifactsReady, setArtifactsReady] = useState(false)
 
   useEffect(() => {
-    if (!isStreaming && hasArtifacts) {
+    if (!isStreaming && hasOtherArtifacts) {
       const t = setTimeout(() => setArtifactsReady(true), 1000)
       return () => clearTimeout(t)
     }
     if (isStreaming) setArtifactsReady(false)
-  }, [isStreaming, hasArtifacts])
+  }, [isStreaming, hasOtherArtifacts])
 
-  const showArtifactSkeleton = !isStreaming && hasArtifacts && !artifactsReady
+  const showArtifactSkeleton = !isStreaming && hasOtherArtifacts && !artifactsReady
   const showArtifacts = artifactsReady
+  // Web sources show immediately as soon as they arrive (no delay)
+  const showWebSources = webSources.length > 0
 
   return (
     <div className="flex flex-col gap-3">
@@ -66,6 +79,15 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
           {/* Thinking panel — auto-expands while streaming, collapses on completion */}
           {turn.thinkingSteps.length > 0 && (
             <ResearchThinking steps={turn.thinkingSteps} isStreaming={isStreaming} />
+          )}
+
+          {/* Web search sources — shown immediately after tool completes (no delay) */}
+          {showWebSources && (
+            <div className="flex flex-col gap-2">
+              {webSources.map((src, i) => (
+                <WebSourcesArtifact key={`ws-${i}`} artifact={src} />
+              ))}
+            </div>
           )}
 
           {/* Subtle thinking dots — only when truly nothing has arrived yet */}
@@ -116,7 +138,7 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
           {/* Artifact skeleton — shown for 1s after streaming ends, before real artifacts fade in */}
           {showArtifactSkeleton && (
             <div className="flex flex-row flex-wrap gap-3 mt-1" aria-label="加载结果中…">
-              {turn.artifacts.map((_, i) => (
+              {otherArtifacts.map((_, i) => (
                 <Skeleton key={`skel-${i}`} className="h-40 w-40 rounded-xl" />
               ))}
               {lipinskiCards.map((_, i) => (
@@ -134,7 +156,7 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
             </div>
           )}
           {showArtifacts && (
-            <ArtifactDispatcher artifacts={turn.artifacts} />
+            <ArtifactDispatcher artifacts={otherArtifacts} />
           )}
 
           {/* Shadow errors */}

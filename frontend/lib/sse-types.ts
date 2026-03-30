@@ -45,11 +45,25 @@ export interface FormatConversionArtifact {
   output: string
 }
 
+export interface WebSearchSourcesArtifact {
+  type: 'artifact'
+  kind: 'web_search_sources'
+  session_id: string
+  turn_id: string
+  query: string
+  sources: Array<{
+    title: string
+    url: string
+    snippet: string
+  }>
+}
+
 export type SSEArtifactEvent =
   | MoleculeImageArtifact
   | ConformerSdfArtifact
   | PdbqtFileArtifact
   | FormatConversionArtifact
+  | WebSearchSourcesArtifact
 
 
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed'

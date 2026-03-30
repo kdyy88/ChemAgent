@@ -216,6 +216,40 @@ async def postprocess_convert_format(
     return detailed
 
 
+async def postprocess_web_search(
+    parsed: ToolResult,
+    args: dict[str, object],
+    artifacts: list[dict],
+    config: RunnableConfig,
+) -> ToolResult:
+    results: list[dict] = parsed.get("results", [])  # type: ignore[assignment]
+    if results and parsed.get("status") == "success":
+        sources = [
+            {"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("snippet", "")}
+            for r in results[:8]
+            if r.get("url")
+        ]
+        if sources:
+            await _dispatch_artifact(
+                artifacts,
+                {
+                    "kind": "web_search_sources",
+                    "query": parsed.get("query") or str(args.get("query", "")),
+                    "sources": sources,
+                },
+                config,
+            )
+    # Return a compact summary so the LLM doesn't re-echo all raw text
+    return {
+        "status": parsed.get("status"),
+        "query": parsed.get("query"),
+        "result_count": len(results),
+        "message": f"已找到 {len(results)} 条结果，来源列表已展示给用户",
+        # Keep first result snippet for the LLM to reason with
+        "top_result": results[0] if results else None,
+    }
+
+
 TOOL_POSTPROCESSORS: dict[str, ToolPostprocessor] = {
     "tool_render_smiles": postprocess_render_smiles,
     "tool_compute_descriptors": postprocess_descriptors,
@@ -223,4 +257,5 @@ TOOL_POSTPROCESSORS: dict[str, ToolPostprocessor] = {
     "tool_build_3d_conformer": postprocess_build_3d_conformer,
     "tool_prepare_pdbqt": postprocess_prepare_pdbqt,
     "tool_convert_format": postprocess_convert_format,
+    "tool_web_search": postprocess_web_search,
 }
