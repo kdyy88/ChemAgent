@@ -8,6 +8,7 @@ import { ClarificationCard } from './ClarificationCard'
 import { LipinskiCard } from './LipinskiCard'
 import { ArtifactDispatcher } from './bubbles/ArtifactDispatcher'
 import { ResearchThinking } from './bubbles/ResearchThinking'
+import { PlanningCard } from './PlanningCard'
 import { parseLipinskiToolCalls } from '@/lib/chem-parsers'
 import type { SSETurn } from '@/lib/sse-types'
 
@@ -19,14 +20,18 @@ interface SSEMessageBubbleProps {
 
 export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMessageBubbleProps) {
   const isStreaming = turn.isStreaming
-  // showLoader: only when streaming but nothing has arrived yet (no thinking, no text).
-  // We deliberately never show the "..." bubble card — use a subtle inline indicator instead.
-  const showLoader = isStreaming && !turn.assistantText && turn.thinkingSteps.length === 0
   const lipinskiCards = parseLipinskiToolCalls(turn.toolCalls)
 
+  // Planning phase: activeNode==='planner_node' fires BEFORE tasks arrive (via node_start).
+  // This is the reliable signal to show the planning card skeleton.
+  const isPlanning = isStreaming && turn.activeNode === 'planner_node'
+  // Show inline plan card while streaming: during planning OR once tasks exist.
+  const showPlanCard = isStreaming && (isPlanning || turn.tasks.length > 0)
+
+  // Show "正在思考…" dots only when truly nothing has arrived (no thinking, no tasks, no plan node).
+  const showThinkingDots = isStreaming && turn.thinkingSteps.length === 0 && !isPlanning && turn.tasks.length === 0
+
   // ── Artifact reveal: 1 s delay + skeleton after streaming ends ──────────────
-  // While streaming: hide artifacts completely.
-  // After streaming: wait 1 s, show skeletons, then reveal the real cards.
   const hasArtifacts = turn.artifacts.length > 0 || lipinskiCards.length > 0
   const [artifactsReady, setArtifactsReady] = useState(false)
 
@@ -35,7 +40,6 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
       const t = setTimeout(() => setArtifactsReady(true), 1000)
       return () => clearTimeout(t)
     }
-    // Reset whenever the turn starts a new stream
     if (isStreaming) setArtifactsReady(false)
   }, [isStreaming, hasArtifacts])
 
@@ -65,22 +69,27 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
           <span className="text-xs font-medium text-muted-foreground">ChemAgent</span>
 
           {/* Thinking panel — auto-expands while streaming, collapses on completion */}
-          {turn.thinkingSteps.length > 0 ? (
-            <ResearchThinking
-              steps={turn.thinkingSteps}
+          {turn.thinkingSteps.length > 0 && (
+            <ResearchThinking steps={turn.thinkingSteps} isStreaming={isStreaming} />
+          )}
+
+          {/* Subtle thinking dots — only when truly nothing has arrived yet */}
+          {showThinkingDots && (
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground py-0.5">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:0ms]" aria-hidden="true" />
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:120ms]" aria-hidden="true" />
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:240ms]" aria-hidden="true" />
+              <span className="ml-1 text-muted-foreground/70">正在思考…</span>
+            </div>
+          )}
+
+          {/* Planning card — skeleton while generating, then reveals task list */}
+          {showPlanCard && (
+            <PlanningCard
+              tasks={turn.tasks}
+              isGenerating={isPlanning}
               isStreaming={isStreaming}
             />
-          ) : (
-            // Only show "thinking..." dots when truly nothing has arrived yet.
-            // Once tasks appear, the TaskTracker itself signals activity.
-            isStreaming && turn.tasks.length === 0 ? (
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground py-0.5">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:0ms]" aria-hidden="true" />
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:120ms]" aria-hidden="true" />
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:240ms]" aria-hidden="true" />
-                <span className="ml-1 text-muted-foreground/70">正在思考…</span>
-              </div>
-            ) : null
           )}
 
           {/* HITL clarification card — shown when researcher needs user input */}
@@ -91,8 +100,8 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
             />
           )}
 
-          {/* Assistant text — suppress the full bubble entirely while thinking is active */}
-          {showLoader ? null : turn.assistantText ? (
+          {/* Assistant text */}
+          {turn.assistantText ? (
             isStreaming ? (
               <div className="rounded-2xl border bg-card px-4 py-3 text-sm leading-relaxed shadow-sm">
                 <span className="whitespace-pre-wrap">{turn.assistantText}</span>
