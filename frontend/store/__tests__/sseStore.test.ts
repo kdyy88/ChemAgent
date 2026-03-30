@@ -162,4 +162,38 @@ describe('sseStore', () => {
     })
     expect(turn.statusLabel).toBe('')
   })
+
+  it('treats a clean close after done as successful completion', async () => {
+    fetchEventSourceMock.mockImplementation(async (_url: string, options?: {
+      onmessage?: (msg: { data: string }) => void
+      onclose?: () => void
+    }) => {
+      const emit = (event: SSEEvent) => {
+        options?.onmessage?.({ data: JSON.stringify(event) })
+      }
+
+      emit({ type: 'run_started', session_id: 'session-1', turn_id: 'turn-1', message: 'done close' })
+      emit({ type: 'done', session_id: 'session-1', turn_id: 'turn-1' })
+      options?.onclose?.()
+    })
+
+    await expect(useSseStore.getState().sendMessage('done close')).resolves.toBeUndefined()
+    expect(useSseStore.getState().isStreaming).toBe(false)
+  })
+
+  it('surfaces premature stream closure instead of silently allowing a retry', async () => {
+    fetchEventSourceMock.mockImplementation(async (_url: string, options?: {
+      onmessage?: (msg: { data: string }) => void
+      onclose?: () => void
+    }) => {
+      options?.onmessage?.({
+        data: JSON.stringify({ type: 'run_started', session_id: 'session-1', turn_id: 'turn-1', message: 'premature close' } satisfies SSEEvent),
+      })
+      options?.onclose?.()
+    })
+
+    await expect(useSseStore.getState().sendMessage('premature close')).rejects.toThrow(
+      'SSE stream closed before a terminal event was received',
+    )
+  })
 })

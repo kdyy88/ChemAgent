@@ -268,6 +268,19 @@ def _node_reasoning_text(node_name: str, event_name: str) -> str | None:
     return _NODE_REASONING_MESSAGES.get((node_name, event_name))
 
 
+def _is_primary_node_lifecycle_event(event: dict[str, Any], node_name: str) -> bool:
+    """Return True only for the top-level LangGraph node lifecycle event.
+
+    LangGraph v2 event streaming propagates the parent ``langgraph_node`` into
+    internal wrapper runs like ``RunnableSequence``, ``RunnableLambda``, and
+    branch routers such as ``route_from_router``. Those nested runs are not real
+    graph-node re-entries, but they currently look identical to the frontend if
+    we key only on ``metadata.langgraph_node``. The actual node run keeps its
+    own name equal to the graph node name, so that is the stable discriminator.
+    """
+    return event.get("name") == node_name
+
+
 def _tool_reasoning_text(tool_name: str, stage: str, payload: dict | str | None = None) -> str:
     pretty_name = tool_name.replace("tool_", "")
     label = _TOOL_LABELS.get(pretty_name, pretty_name)
@@ -464,7 +477,6 @@ async def _event_generator(req: StreamChatRequest):
     }
     has_persisted_state = await has_persisted_session(session_id)
     llm_reasoning_emitted = False
-    lifecycle_depths: dict[str, int] = {}
     custom_event_handlers = _build_custom_event_handlers(session_id=session_id, turn_id=turn_id)
 
     if req.interrupt_context and req.interrupt_context.get("interrupt_id") and not has_persisted_state:
@@ -561,33 +573,35 @@ async def _event_generator(req: StreamChatRequest):
                         )
 
             # ── 2. Node lifecycle events ───────────────────────────────────────
-            elif event_name == "on_chain_start" and node_name in _LIFECYCLE_NODES:
-                previous_depth = lifecycle_depths.get(node_name, 0)
-                lifecycle_depths[node_name] = previous_depth + 1
-                if previous_depth == 0:
-                    yield _event_sse("node_start", session_id, turn_id, node=node_name)
-                    thinking_text = _node_reasoning_text(node_name, event_name)
-                    if thinking_text:
-                        yield _thinking_event(
-                            text=thinking_text,
-                            session_id=session_id,
-                            turn_id=turn_id,
-                            source=node_name,
-                        )
+            elif (
+                event_name == "on_chain_start"
+                and node_name in _LIFECYCLE_NODES
+                and _is_primary_node_lifecycle_event(event, node_name)
+            ):
+                yield _event_sse("node_start", session_id, turn_id, node=node_name)
+                thinking_text = _node_reasoning_text(node_name, event_name)
+                if thinking_text:
+                    yield _thinking_event(
+                        text=thinking_text,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        source=node_name,
+                    )
 
-            elif event_name == "on_chain_end" and node_name in _LIFECYCLE_NODES:
-                next_depth = max(0, lifecycle_depths.get(node_name, 1) - 1)
-                lifecycle_depths[node_name] = next_depth
-                if next_depth == 0:
-                    yield _event_sse("node_end", session_id, turn_id, node=node_name)
-                    thinking_text = _node_reasoning_text(node_name, event_name)
-                    if thinking_text:
-                        yield _thinking_event(
-                            text=thinking_text,
-                            session_id=session_id,
-                            turn_id=turn_id,
-                            source=node_name,
-                        )
+            elif (
+                event_name == "on_chain_end"
+                and node_name in _LIFECYCLE_NODES
+                and _is_primary_node_lifecycle_event(event, node_name)
+            ):
+                yield _event_sse("node_end", session_id, turn_id, node=node_name)
+                thinking_text = _node_reasoning_text(node_name, event_name)
+                if thinking_text:
+                    yield _thinking_event(
+                        text=thinking_text,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        source=node_name,
+                    )
 
             # ── 3. @tool lifecycle events ──────────────────────────────────────
             elif event_name == "on_tool_start":

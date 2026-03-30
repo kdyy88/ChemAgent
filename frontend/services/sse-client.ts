@@ -71,6 +71,7 @@ export class SSEClient {
 
     const turnId = generateId()
     handlers.startTurn(turnId, message, previousTasks)
+    let terminalEventSeen = false
 
     this.abortActiveStream()
     const ctrl = new AbortController()
@@ -88,14 +89,25 @@ export class SSEClient {
           interrupt_context: options.interruptContext ?? null,
         }),
         signal: ctrl.signal,
+        openWhenHidden: true,
 
         onmessage: (msg) => {
           if (!msg.data) return
 
           try {
-            this.handleEvent(JSON.parse(msg.data) as SSEEvent, turnId, handlers)
+            const event = JSON.parse(msg.data) as SSEEvent
+            if (event.type === 'done' || event.type === 'error' || event.type === 'interrupt') {
+              terminalEventSeen = true
+            }
+            this.handleEvent(event, turnId, handlers)
           } catch {
             // Silently ignore malformed JSON payloads.
+          }
+        },
+
+        onclose: () => {
+          if (!terminalEventSeen && !ctrl.signal.aborted) {
+            throw new Error('SSE stream closed before a terminal event was received')
           }
         },
 
