@@ -154,6 +154,9 @@ export interface SSEThinking {
   iteration: number
   done?: boolean
   source?: string
+  category?: 'node' | 'tool' | 'llm' | 'status' | 'error'
+  importance?: 'high' | 'low'
+  group_key?: string
   session_id: string
   turn_id: string
 }

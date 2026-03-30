@@ -70,6 +70,7 @@ _BULKY_TOOL_OUTPUT_KEYS = frozenset({
     "sdf_content",
     "pdbqt_content",
 })
+_SILENT_TOOL_NAMES = frozenset({"tool_update_task_status"})
 
 _NODE_REASONING_MESSAGES: dict[tuple[str, str], str] = {
     ("task_router", "on_chain_start"): "正在快速判断这次请求是否需要显式任务规划...",
@@ -237,6 +238,9 @@ def _thinking_event(
     source: str,
     iteration: int = 0,
     done: bool = True,
+    category: str | None = None,
+    importance: str = "high",
+    group_key: str | None = None,
 ) -> str:
     return _sse(
         {
@@ -245,6 +249,9 @@ def _thinking_event(
             "iteration": iteration,
             "done": done,
             "source": source,
+            "category": category,
+            "importance": importance,
+            "group_key": group_key,
             "session_id": session_id,
             "turn_id": turn_id,
         }
@@ -286,40 +293,18 @@ def _tool_reasoning_text(tool_name: str, stage: str, payload: dict | str | None 
     label = _TOOL_LABELS.get(pretty_name, pretty_name)
 
     if stage == "start":
-        params_str = ""
-        if isinstance(payload, dict) and payload:
-            safe_params = {
-                k: v
-                for k, v in payload.items()
-                if k != "active_smiles" and v not in (None, "", [], {})
-            }
-            if safe_params:
-                params_str = f" 传入参数: {json.dumps(safe_params, ensure_ascii=False)}"
-        return f"👉 正在调用工具：{label}。{params_str}"
+        return f"正在调用：{label}"
 
     if stage == "end":
-        result_str = ""
-        if isinstance(payload, dict):
-            if "error" in payload:
-                result_str = f" ❌ 失败: {payload['error']}"
-            else:
-                msg = payload.get("message")
-                smiles = payload.get("smiles") or payload.get("canonical_smiles")
-                if msg:
-                    result_str = f" ✅ {msg}"
-                elif smiles:
-                    result_str = f" ✅ 获得结构: {smiles}"
-                else:
-                    result_str = f" ✅ 成功获取了 {len(payload)} 项数据字段"
-        elif isinstance(payload, str):
-            summary = payload[:50].replace("\n", " ") + ("..." if len(payload) > 50 else "")
-            result_str = f" ✅ 结果: {summary}"
-        else:
-            result_str = " ✅ 执行完毕"
-
-        return f"工具完成：{label}。{result_str}"
+        if isinstance(payload, dict) and "error" in payload:
+            return f"{label}失败：{payload['error']}"
+        return f"{label}已完成"
 
     return f"工具完成：{label}。"
+
+
+def _should_surface_tool(tool_name: str) -> bool:
+    return tool_name not in _SILENT_TOOL_NAMES
 
 
 # ── Nodes whose LLM tokens we want to stream to the client ────────────────────
@@ -354,6 +339,9 @@ def _build_custom_event_handlers(
             turn_id=turn_id,
             source=data.get("source", "chem_agent"),
             done=data.get("done", True),
+            category=data.get("category"),
+            importance=data.get("importance", "high"),
+            group_key=data.get("group_key"),
         ),
         "task_update": lambda data: _event_sse(
             "task_update",
@@ -546,6 +534,9 @@ async def _event_generator(req: StreamChatRequest):
                             turn_id=turn_id,
                             source="llm_reasoning",
                             done=False,
+                            category="llm",
+                            importance="high",
+                            group_key="llm_reasoning",
                         )
 
                     # 独立推流：最终回答
@@ -570,6 +561,9 @@ async def _event_generator(req: StreamChatRequest):
                             turn_id=turn_id,
                             source="llm_reasoning",
                             done=True,
+                            category="llm",
+                            importance="high",
+                            group_key="llm_reasoning",
                         )
 
             # ── 2. Node lifecycle events ───────────────────────────────────────
@@ -586,6 +580,9 @@ async def _event_generator(req: StreamChatRequest):
                         session_id=session_id,
                         turn_id=turn_id,
                         source=node_name,
+                        category="node",
+                        importance="low",
+                        group_key=node_name,
                     )
 
             elif (
@@ -601,10 +598,16 @@ async def _event_generator(req: StreamChatRequest):
                         session_id=session_id,
                         turn_id=turn_id,
                         source=node_name,
+                        category="node",
+                        importance="low",
+                        group_key=node_name,
                     )
 
             # ── 3. @tool lifecycle events ──────────────────────────────────────
             elif event_name == "on_tool_start":
+                if not _should_surface_tool(event["name"]):
+                    continue
+
                 tool_input = event["data"].get("input", {})
                 yield _event_sse("tool_start", session_id, turn_id, tool=event["name"], input=tool_input)
                 yield _thinking_event(
@@ -612,9 +615,15 @@ async def _event_generator(req: StreamChatRequest):
                     session_id=session_id,
                     turn_id=turn_id,
                     source="tools_executor",
+                    category="tool",
+                    importance="high",
+                    group_key=event["name"],
                 )
 
             elif event_name == "on_tool_end":
+                if not _should_surface_tool(event["name"]):
+                    continue
+
                 tool_output = event["data"].get("output")
                 parsed_output = _sanitize_tool_output_for_sse(
                     event["name"],
@@ -628,12 +637,16 @@ async def _event_generator(req: StreamChatRequest):
                     tool=event["name"],
                     output=parsed_output,
                 )
-                yield _thinking_event(
-                    text=_tool_reasoning_text(event["name"], "end", parsed_output),
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    source="tools_executor",
-                )
+                if isinstance(parsed_output, dict) and "error" in parsed_output:
+                    yield _thinking_event(
+                        text=_tool_reasoning_text(event["name"], "end", parsed_output),
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        source="tools_executor",
+                        category="error",
+                        importance="high",
+                        group_key=event["name"],
+                    )
 
             # ── 4. Custom artifact events (dispatched from worker nodes) ───────
             elif event_name == "on_custom_event":
@@ -644,19 +657,6 @@ async def _event_generator(req: StreamChatRequest):
                     yield handler(custom_data)
 
         # ── Emit run.done ─────────────────────────────────────────────────────
-        if not llm_reasoning_emitted:
-            yield _thinking_event(
-                text=(
-                    "本轮未收到可展示的模型 reasoning 摘要。"
-                    "可能原因：网关对 reasoning summary 做了抑制/清洗，或该轮生成未产出可公开摘要。"
-                    "可尝试提高 OPENAI_REASONING_EFFORT，或切换到明确返回 reasoning summary 的网关端点。"
-                ),
-                session_id=session_id,
-                turn_id=turn_id,
-                source="llm_reasoning",
-                done=True,
-            )
-
         snapshot = await graph.aget_state(graph_config)
         if snapshot.interrupts:
             pending_interrupt = snapshot.interrupts[0]

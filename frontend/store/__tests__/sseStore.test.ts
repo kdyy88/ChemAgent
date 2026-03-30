@@ -163,6 +163,69 @@ describe('sseStore', () => {
     expect(turn.statusLabel).toBe('')
   })
 
+  it('filters low-value thinking logs while keeping meaningful tool actions', async () => {
+    fetchEventSourceMock.mockImplementation(async (_url: string, options?: { onmessage?: (msg: { data: string }) => void }) => {
+      const emit = (event: SSEEvent) => {
+        options?.onmessage?.({ data: JSON.stringify(event) })
+      }
+
+      emit({ type: 'run_started', session_id: 'session-1', turn_id: 'turn-1', message: 'optimize' })
+      emit({
+        type: 'thinking',
+        text: '准备转入工具执行流水线...',
+        iteration: 0,
+        done: true,
+        source: 'tools_executor',
+        category: 'node',
+        importance: 'low',
+        session_id: 'session-1',
+        turn_id: 'turn-1',
+      })
+      emit({
+        type: 'thinking',
+        text: '正在调用：生成三维构象',
+        iteration: 0,
+        done: true,
+        source: 'tools_executor',
+        category: 'tool',
+        importance: 'high',
+        group_key: 'tool_build_3d_conformer',
+        session_id: 'session-1',
+        turn_id: 'turn-1',
+      })
+      emit({ type: 'done', session_id: 'session-1', turn_id: 'turn-1' })
+    })
+
+    await useSseStore.getState().sendMessage('optimize')
+
+    const turn = useSseStore.getState().turns[0]
+    expect(turn.thinkingSteps).toHaveLength(1)
+    expect(turn.thinkingSteps[0].text).toBe('正在调用：生成三维构象')
+  })
+
+  it('ignores silent task-status tools in the client tool timeline', async () => {
+    fetchEventSourceMock.mockImplementation(async (_url: string, options?: { onmessage?: (msg: { data: string }) => void }) => {
+      const emit = (event: SSEEvent) => {
+        options?.onmessage?.({ data: JSON.stringify(event) })
+      }
+
+      emit({ type: 'run_started', session_id: 'session-1', turn_id: 'turn-1', message: 'silent tool' })
+      emit({ type: 'tool_start', tool: 'tool_update_task_status', input: { task_id: '1' }, session_id: 'session-1', turn_id: 'turn-1' })
+      emit({
+        type: 'tool_end',
+        tool: 'tool_update_task_status',
+        output: { task_id: '1', task_status: 'completed' },
+        session_id: 'session-1',
+        turn_id: 'turn-1',
+      })
+      emit({ type: 'done', session_id: 'session-1', turn_id: 'turn-1' })
+    })
+
+    await useSseStore.getState().sendMessage('silent tool')
+
+    expect(useSseStore.getState().turns[0].toolCalls).toHaveLength(0)
+  })
+
   it('treats a clean close after done as successful completion', async () => {
     fetchEventSourceMock.mockImplementation(async (_url: string, options?: {
       onmessage?: (msg: { data: string }) => void

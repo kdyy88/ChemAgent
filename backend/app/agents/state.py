@@ -37,10 +37,10 @@ class RouteDecision(BaseModel):
 class PlannedTaskItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    description: str = Field(description="单个可执行子任务，要求具体明确。")
+    description: str = Field(description="单个可执行子任务的简短标签。要求具体明确，但必须非常精炼，建议 4-12 个中文字符，避免长句和细节。")
 
 
 class PlanStructure(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    tasks: list[PlannedTaskItem] = Field(description="按顺序排列的 3-5 个子任务。")
+    tasks: list[PlannedTaskItem] = Field(description="按顺序排列的 3-5 个子任务，每项都必须是简短标签式描述。")

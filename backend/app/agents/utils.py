@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Awaitable, Callable
 
 from langchain_core.callbacks.manager import adispatch_custom_event
@@ -60,6 +61,23 @@ _ACTIVE_SMILES_UPDATES: dict[str, tuple[str, str]] = {
 
 ToolResult = dict[str, Any]
 ToolPostprocessor = Callable[[ToolResult, dict[str, Any], list[dict], RunnableConfig], Awaitable[ToolResult]]
+_TASK_MAX_LENGTH = 16
+_TASK_SPLIT_RE = re.compile(r"[，,；;。:：(（\[]")
+
+
+def _condense_task_description(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", text).strip(" -•\t\r\n'\"“”‘’")
+    if not cleaned:
+        return ""
+
+    condensed = _TASK_SPLIT_RE.split(cleaned, maxsplit=1)[0].strip()
+    condensed = re.sub(r"^(步骤\s*\d+|第\s*\d+\s*步)\s*[:：.-]?\s*", "", condensed)
+    condensed = condensed.strip(" -•\t\r\n'\"“”‘’")
+
+    if len(condensed) > _TASK_MAX_LENGTH:
+        condensed = condensed[:_TASK_MAX_LENGTH].rstrip() + "…"
+
+    return condensed
 
 
 def strip_binary_fields(data: dict) -> dict:
@@ -103,10 +121,15 @@ def format_tasks_for_prompt(tasks: list[Task] | None) -> str:
 
 
 def normalize_tasks(raw_tasks: list[PlannedTaskItem]) -> list[Task]:
-    descriptions = [item.description.strip() for item in raw_tasks if item.description.strip()]
+    descriptions = []
+    for item in raw_tasks:
+        condensed = _condense_task_description(item.description)
+        if condensed:
+            descriptions.append(condensed)
+
     normalized = descriptions[:5]
     if not normalized:
-        normalized = ["分析用户请求并给出可执行结论"]
+        normalized = ["分析请求"]
     return [
         {
             "id": str(index),

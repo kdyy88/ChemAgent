@@ -19,6 +19,7 @@ const API_BASE =
   'http://localhost:8000'
 
 const STREAM_URL = `${API_BASE}/api/chat/stream`
+const SILENT_TOOLS = new Set(['tool_update_task_status'])
 
 type ToolOutput = Record<string, unknown>
 
@@ -157,12 +158,14 @@ export class SSEClient {
         return
 
       case 'tool_start': {
+        if (SILENT_TOOLS.has(ev.tool)) return
         const index = handlers.addToolCall(ev.tool, ev.input)
         this.pushUnfinishedToolCallIndex(turnId, ev.tool, index)
         return
       }
 
       case 'tool_end': {
+        if (SILENT_TOOLS.has(ev.tool)) return
         const nextOutput = typeof ev.output === 'object' && ev.output !== null
           ? (ev.output as ToolOutput)
           : { raw: ev.output }

@@ -33,11 +33,30 @@ const NODE_LABELS: Record<string, string> = {
   tools_executor: '🛠️ 工具执行中…',
 }
 
+const IGNORED_LOW_VALUE_THINKING = new Set([
+  '正在快速判断这次请求是否需要显式任务规划...',
+  '复杂度判断完成。',
+  '检测到复杂任务，正在生成可执行任务清单...',
+  '任务清单已生成，准备进入执行阶段。',
+  '进入智能体大脑，正在评估当前信息并规划下一步行动...',
+  '智能体本轮思考完毕。',
+  '准备转入工具执行流水线...',
+  '工具调用链执行完毕，正在将实验数据交回给智能体大脑。',
+])
+
 function normalizeThinkingText(text: string): string {
   return text
     .replace(/[▁]/g, ' ')
     .replace(/[Ġ]/g, ' ')
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+}
+
+function shouldIgnoreThinking(entry: SSEThinking, text: string): boolean {
+  if (!text) return true
+  if (entry.importance === 'low') return true
+  if (IGNORED_LOW_VALUE_THINKING.has(text.trim())) return true
+  if (text.includes('本轮未收到可展示的模型 reasoning 摘要')) return true
+  return false
 }
 
 function updateWorkspaceFromPayload(payload: Record<string, unknown>) {
@@ -51,7 +70,7 @@ function updateWorkspaceFromPayload(payload: Record<string, unknown>) {
 
 function appendThinkingStep(steps: SSEThinking[], entry: SSEThinking): SSEThinking[] {
   const text = normalizeThinkingText(entry.text)
-  if (!text) return steps
+  if (shouldIgnoreThinking(entry, text)) return steps
 
   const next = [...steps]
   const last = next[next.length - 1]
@@ -66,6 +85,9 @@ function appendThinkingStep(steps: SSEThinking[], entry: SSEThinking): SSEThinki
       ...last,
       text: `${last.text}${text}`,
       done: entry.done,
+      category: entry.category ?? last.category,
+      importance: entry.importance ?? last.importance,
+      group_key: entry.group_key ?? last.group_key,
     }
     return next
   }
@@ -82,6 +104,9 @@ function appendThinkingStep(steps: SSEThinking[], entry: SSEThinking): SSEThinki
         ...last,
         text: text.length >= last.text.length ? text : last.text,
         done: entry.done,
+        category: entry.category ?? last.category,
+        importance: entry.importance ?? last.importance,
+        group_key: entry.group_key ?? last.group_key,
       }
       return next
     }
