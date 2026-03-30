@@ -121,6 +121,70 @@ def _sanitize_tool_output_for_sse(tool_name: str, output: dict | str) -> dict | 
     return sanitized
 
 
+def _thinking_event(
+    *,
+    text: str,
+    session_id: str,
+    turn_id: str,
+    source: str,
+    iteration: int = 0,
+    done: bool = True,
+) -> str:
+    return _sse(
+        {
+            "type": "thinking",
+            "text": text,
+            "iteration": iteration,
+            "done": done,
+            "source": source,
+            "session_id": session_id,
+            "turn_id": turn_id,
+        }
+    )
+
+
+def _node_reasoning_text(node_name: str, event_name: str) -> str | None:
+    if node_name == "chem_agent" and event_name == "on_chain_start":
+        return "进入智能体推理阶段，正在理解问题并规划下一步。"
+    if node_name == "tools_executor" and event_name == "on_chain_start":
+        return "进入工具执行阶段，开始调用化学工具获取中间结果。"
+    if node_name == "tools_executor" and event_name == "on_chain_end":
+        return "工具执行完成，正在把结果返回给智能体继续整合。"
+    if node_name == "chem_agent" and event_name == "on_chain_end":
+        return "本轮智能体推理完成，准备输出最终结论。"
+    return None
+
+
+def _tool_reasoning_text(tool_name: str, stage: str, output: dict | str | None = None) -> str:
+    pretty_name = tool_name.replace("tool_", "")
+    label_map = {
+        "validate_smiles": "校验 SMILES",
+        "strip_salts": "去除盐和溶剂",
+        "pubchem_lookup": "PubChem 检索",
+        "compute_descriptors": "计算分子描述符",
+        "compute_mol_properties": "计算分子性质",
+        "substructure_match": "子结构匹配",
+        "murcko_scaffold": "提取 Murcko Scaffold",
+        "render_smiles": "渲染二维结构图",
+        "build_3d_conformer": "生成三维构象",
+        "prepare_pdbqt": "准备 PDBQT 文件",
+        "convert_format": "格式转换",
+        "ask_human": "请求用户澄清",
+        "web_search": "联网搜索",
+    }
+    label = label_map.get(pretty_name, pretty_name)
+
+    if stage == "start":
+        return f"正在调用工具：{label}。"
+
+    if isinstance(output, dict):
+        message = str(output.get("message", "")).strip()
+        if message:
+            return f"工具完成：{label}。{message}"
+
+    return f"工具完成：{label}。"
+
+
 # ── Nodes whose LLM tokens we want to stream to the client ────────────────────
 
 # Nodes whose LLM tokens we stream to the client.
@@ -235,14 +299,13 @@ async def _event_generator(req: StreamChatRequest):
 
                     # 独立推流：思考过程
                     if thinking_token:
-                        yield _sse(
-                            {
-                                "type": "thinking",
-                                "text": thinking_token,
-                                "iteration": 0,
-                                "session_id": session_id,
-                                "turn_id": turn_id,
-                            }
+                        yield _thinking_event(
+                            text=thinking_token,
+                            iteration=0,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            source=node_name or "chem_agent",
+                            done=False,
                         )
 
                     # 独立推流：最终回答
@@ -267,6 +330,14 @@ async def _event_generator(req: StreamChatRequest):
                         "turn_id": turn_id,
                     }
                 )
+                thinking_text = _node_reasoning_text(node_name, event_name)
+                if thinking_text:
+                    yield _thinking_event(
+                        text=thinking_text,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        source=node_name,
+                    )
 
             elif event_name == "on_chain_end" and node_name in _LIFECYCLE_NODES:
                 yield _sse(
@@ -277,6 +348,14 @@ async def _event_generator(req: StreamChatRequest):
                         "turn_id": turn_id,
                     }
                 )
+                thinking_text = _node_reasoning_text(node_name, event_name)
+                if thinking_text:
+                    yield _thinking_event(
+                        text=thinking_text,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        source=node_name,
+                    )
 
             # ── 3. @tool lifecycle events ──────────────────────────────────────
             elif event_name == "on_tool_start":
@@ -289,6 +368,12 @@ async def _event_generator(req: StreamChatRequest):
                         "session_id": session_id,
                         "turn_id": turn_id,
                     }
+                )
+                yield _thinking_event(
+                    text=_tool_reasoning_text(event["name"], "start"),
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    source="tools_executor",
                 )
 
             elif event_name == "on_tool_end":
@@ -312,6 +397,12 @@ async def _event_generator(req: StreamChatRequest):
                         "turn_id": turn_id,
                     }
                 )
+                yield _thinking_event(
+                    text=_tool_reasoning_text(event["name"], "end", parsed_output),
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    source="tools_executor",
+                )
 
             # ── 4. Custom artifact events (dispatched from worker nodes) ───────
             elif event_name == "on_custom_event":
@@ -329,14 +420,13 @@ async def _event_generator(req: StreamChatRequest):
                     )
 
                 elif custom_name == "thinking":
-                    yield _sse(
-                        {
-                            "type": "thinking",
-                            "text": custom_data.get("text", ""),
-                            "iteration": custom_data.get("iteration", 0),
-                            "session_id": session_id,
-                            "turn_id": turn_id,
-                        }
+                    yield _thinking_event(
+                        text=custom_data.get("text", ""),
+                        iteration=custom_data.get("iteration", 0),
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        source=custom_data.get("source", "chem_agent"),
+                        done=custom_data.get("done", True),
                     )
 
                 elif custom_name == "shadow_lab_error":

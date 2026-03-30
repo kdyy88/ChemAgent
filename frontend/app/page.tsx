@@ -1,11 +1,10 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { PlusCircle, FlaskConical, LayoutTemplate } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { TeamSettingsPopover } from '@/components/chat/TeamSettingsPopover'
 import { useSseStore } from '@/store/sseStore'
 import {
   ResizableHandle,
@@ -18,14 +17,18 @@ import { WorkspaceArea } from '@/components/workspace/WorkspaceArea'
 import { CopilotSidebar } from '@/components/chat/CopilotSidebar'
 import GlobalLoading from './loading'
 
+function useHasMounted() {
+  return useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false,
+  )
+}
+
 export default function Home() {
   const clearTurns = useSseStore((s) => s.clearTurns)
   const isDesktop = useMediaQuery('(min-width: 768px)')
-  const [isMounted, setIsMounted] = useState(false)
-
-  useEffect(() => {
-    setIsMounted(true)
-  }, [])
+  const isMounted = useHasMounted()
 
   if (!isMounted) {
     return <GlobalLoading />
@@ -62,7 +65,6 @@ export default function Home() {
             </TooltipTrigger>
             <TooltipContent>Workflow Editor</TooltipContent>
           </Tooltip>
-          <TeamSettingsPopover />
         </div>
       </header>
 
@@ -84,7 +86,7 @@ export default function Home() {
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>
-      
+
       {/* Footer */}
       <footer className="shrink-0 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-t pt-1 pb-1">
         <p className="text-center text-[10px] text-muted-foreground/70 select-none">

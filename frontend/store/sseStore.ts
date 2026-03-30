@@ -18,6 +18,7 @@ import type {
   SSEThinking,
   SSETurn,
 } from '@/lib/sse-types'
+import { useWorkspaceStore } from '@/store/workspaceStore'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -33,6 +34,52 @@ const STREAM_URL = `${API_BASE}/api/chat/stream`
 
 function generateId(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36)
+}
+
+function normalizeThinkingText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+function updateWorkspaceFromPayload(payload: Record<string, unknown>) {
+  const nextSmiles =
+    typeof payload.cleaned_smiles === 'string' ? payload.cleaned_smiles
+    : typeof payload.canonical_smiles === 'string' ? payload.canonical_smiles
+    : typeof payload.scaffold_smiles === 'string' ? payload.scaffold_smiles
+    : typeof payload.smiles === 'string' ? payload.smiles
+    : undefined
+
+  const nextName = typeof payload.name === 'string' ? payload.name : undefined
+  const workspace = useWorkspaceStore.getState()
+  if (nextSmiles) workspace.setSmiles(nextSmiles)
+  if (nextName) workspace.setName(nextName)
+}
+
+function appendThinkingStep(
+  steps: SSEThinking[],
+  entry: SSEThinking,
+): SSEThinking[] {
+  const text = normalizeThinkingText(entry.text)
+  if (!text) return steps
+
+  const next = [...steps]
+  const last = next[next.length - 1]
+  if (
+    last &&
+    last.done !== true &&
+    entry.done === false &&
+    last.source === entry.source &&
+    last.iteration === entry.iteration
+  ) {
+    next[next.length - 1] = {
+      ...last,
+      text: `${last.text}${text}`,
+      done: entry.done,
+    }
+    return next
+  }
+
+  next.push({ ...entry, text })
+  return next
 }
 
 
@@ -60,13 +107,8 @@ export interface SseState {
 /** Exported so components can reuse the same mapping. */
 export function nodeLabel(node: string): string {
   const labels: Record<string, string> = {
-    supervisor:  '🧭 思考中…',
-    responder:   '💬 组织回答中…',
-    researcher:  '🔭 调研中（PubChem + 联网分析）…',
-    visualizer:  '🎨 渲染 2D 结构图…',
-    analyst:     '🔬 计算分子描述符…',
-    prep:        '⚗️ 格式转换 / 构象 / 对接准备中…',
-    shadow_lab:  '🧪 Shadow Lab 验证 SMILES…',
+    chem_agent: '🧠 智能体推理中…',
+    tools_executor: '🛠️ 工具执行中…',
   }
   return labels[node] ?? `${node} 执行中…`
 }
@@ -141,7 +183,7 @@ export const useSseStore = create<SseState>((set, get) => {
             ...t.toolCalls,
             { tool: ev.tool, input: ev.input, output: undefined, done: false },
           ],
-          statusLabel: `🔬 ${ev.tool} 执行中…`,
+          statusLabel: '🛠️ 工具执行中…',
         }))
         break
 
@@ -161,21 +203,38 @@ export const useSseStore = create<SseState>((set, get) => {
                 : { raw: ev.output },
               done: true,
             }
+            if (calls[lastIdx].output) {
+              updateWorkspaceFromPayload(calls[lastIdx].output as Record<string, unknown>)
+            }
           }
-          return { toolCalls: calls, statusLabel: `✅ ${ev.tool} 完成` }
+          return { toolCalls: calls, statusLabel: '🧠 正在整合工具结果…' }
         })
         break
 
-      case 'artifact':
+      case 'artifact': {
+        const artifact = ev as SSEArtifactEvent
+        if ('smiles' in artifact && artifact.smiles) {
+          useWorkspaceStore.getState().setSmiles(artifact.smiles)
+        }
         updateLastTurn((t) => ({
-          artifacts: [...t.artifacts, ev as SSEArtifactEvent],
+          artifacts: [...t.artifacts, artifact],
         }))
         break
+      }
 
       case 'shadow_error':
         updateLastTurn((t) => ({
           shadowErrors: [...t.shadowErrors, ev as SSEShadowError],
-          statusLabel: '⚠️ Shadow Lab 发现 SMILES 错误，正在自我纠正…',
+          statusLabel: '⚠️ 正在修正结构问题…',
+          thinkingSteps: appendThinkingStep(t.thinkingSteps, {
+            type: 'thinking',
+            text: `检测到结构问题：${(ev as SSEShadowError).error}`,
+            iteration: 0,
+            done: true,
+            source: 'tools_executor',
+            session_id: ev.session_id,
+            turn_id: ev.turn_id,
+          }),
         }))
         break
 
@@ -192,6 +251,15 @@ export const useSseStore = create<SseState>((set, get) => {
             isStreaming: false,
             activeNode: null,
             statusLabel: '🙋 等待您的回复…',
+            thinkingSteps: appendThinkingStep(t.thinkingSteps, {
+              type: 'thinking',
+              text: `需要用户澄清：${iv.question}`,
+              iteration: 0,
+              done: true,
+              source: 'chem_agent',
+              session_id: iv.session_id,
+              turn_id: iv.turn_id,
+            }),
             pendingInterrupt: {
               question: iv.question,
               options: iv.options,
@@ -209,115 +277,19 @@ export const useSseStore = create<SseState>((set, get) => {
 
       case 'thinking': {
         const thinkingEv = ev as SSEThinking
-        const source = thinkingEv.source || 'unknown'
-        
-        // Add source prefix for better context
-        const sourcePrefix = {
-          'intent': '🎯 意图识别',
-          'supervisor': '🧭 路由决策',
-          'researcher': '🔭 研究推理',
-          'visualizer': '🎨 可视化',
-          'analyst': '🔬 分析',
-          'prep': '⚗️ 准备',
-        }[source] || '💭 思考'
-        
-        const displayText = source && source !== 'unknown' 
-          ? `${sourcePrefix}: ${thinkingEv.text}`
-          : thinkingEv.text
-        
         updateLastTurn((t) => {
-          const steps = [...t.thinkingSteps]
-          const last = steps.length > 0 ? steps[steps.length - 1] : null
-          // Append to the current step when:
-          //   - same iteration AND the step has not been marked done yet
-          // Create a new step when:
-          //   - no prior steps, OR different iteration, OR prior step is done
-          if (
-            last !== null &&
-            last.iteration === thinkingEv.iteration &&
-            last.done !== true
-          ) {
-            steps[steps.length - 1] = {
-              ...last,
-              text: last.text + displayText,
-              done: thinkingEv.done ?? last.done,
-            }
-          } else {
-            // New iteration or prior step completed — start a fresh step.
-            steps.push({ 
-              text: displayText, 
-              iteration: thinkingEv.iteration, 
-              done: thinkingEv.done 
-            })
+          const prefixMap: Record<string, string> = {
+            chem_agent: '🧠',
+            tools_executor: '🛠️',
           }
-          return { thinkingSteps: steps }
-        })
-        break
-      }
-
-      case 'orchestration_step_start': {
-        const stepEv = ev as any
-        updateLastTurn((t) => {
-          const orchestrationSteps = [...(t.orchestrationSteps ?? [])]
-          // Initialize or update step
-          if (orchestrationSteps[stepEv.step_index]) {
-            orchestrationSteps[stepEv.step_index] = {
-              ...orchestrationSteps[stepEv.step_index],
-              status: 'running',
-            }
-          } else {
-            orchestrationSteps[stepEv.step_index] = {
-              step_index: stepEv.step_index,
-              tool_name: stepEv.tool_name,
-              status: 'running',
-              input_params: stepEv.input_params,
-            }
-          }
+          const prefix = thinkingEv.source ? `${prefixMap[thinkingEv.source] ?? '💭'} ` : ''
           return {
-            orchestrationSteps,
-            statusLabel: `🔗 执行工具: ${stepEv.tool_name}…`,
+            thinkingSteps: appendThinkingStep(t.thinkingSteps, {
+              ...thinkingEv,
+              text: `${prefix}${thinkingEv.text}`,
+            }),
           }
         })
-        break
-      }
-
-      case 'orchestration_step_end': {
-        const stepEv = ev as any
-        updateLastTurn((t) => {
-          const orchestrationSteps = [...(t.orchestrationSteps ?? [])]
-          orchestrationSteps[stepEv.step_index] = {
-            step_index: stepEv.step_index,
-            tool_name: stepEv.tool_name,
-            status: stepEv.status,
-            output: stepEv.output,
-            error: stepEv.error,
-          }
-          return {
-            orchestrationSteps,
-            statusLabel: stepEv.status === 'success' 
-              ? `✅ ${stepEv.tool_name} 完成`
-              : `❌ ${stepEv.tool_name} 失败`,
-          }
-        })
-        break
-      }
-
-      case 'orchestration_complete': {
-        const completeEv = ev as any
-        updateLastTurn((t) => ({
-          statusLabel: completeEv.success 
-            ? `✅ 工具链完成 (${completeEv.total_steps} 步)`
-            : `❌ 工具链失败: ${completeEv.error_message}`,
-        }))
-        break
-      }
-
-      case 'token': {
-        // Summarizer streams final conclusion via token events
-        const tokenEv = ev as { content: string }
-        updateLastTurn((t) => ({
-          assistantText: tokenEv.content,
-        }))
         break
       }
 
@@ -381,7 +353,7 @@ export const useSseStore = create<SseState>((set, get) => {
         toolCalls: [],
         artifacts: [],
         shadowErrors: [],
-        statusLabel: '🧭 Supervisor 路由分析中…',
+        statusLabel: '🧠 智能体推理中…',
         pendingInterrupt: undefined,
         thinkingSteps: [],
       }
