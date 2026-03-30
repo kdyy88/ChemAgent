@@ -114,6 +114,7 @@ describe('sseStore', () => {
         options: ['阿司匹林', '水杨酸'],
         called_tools: ['tool_pubchem_lookup'],
         interrupt_id: 'interrupt-1',
+        known_smiles: 'CC(=O)OC1=CC=CC=C1C(=O)O',
         session_id: 'session-1',
         turn_id: 'turn-1',
       })
@@ -127,5 +128,38 @@ describe('sseStore', () => {
       known_smiles: 'CC(=O)OC1=CC=CC=C1C(=O)O',
     })
     expect(useSseStore.getState().isStreaming).toBe(false)
+  })
+
+  it('tracks planner task updates for the active turn', async () => {
+    fetchEventSourceMock.mockImplementation(async (_url: string, options?: { onmessage?: (msg: { data: string }) => void }) => {
+      const emit = (event: SSEEvent) => {
+        options?.onmessage?.({ data: JSON.stringify(event) })
+      }
+
+      emit({ type: 'run_started', session_id: 'session-1', turn_id: 'turn-1', message: 'complex job' })
+      emit({ type: 'node_start', node: 'planner_node', session_id: 'session-1', turn_id: 'turn-1' })
+      emit({
+        type: 'task_update',
+        tasks: [
+          { id: '1', description: '联网搜索 KRAS 抑制剂', status: 'completed' },
+          { id: '2', description: '提取候选分子骨架', status: 'in_progress' },
+          { id: '3', description: '计算骨架的 Lipinski 规则', status: 'pending' },
+        ],
+        source: 'planner_node',
+        session_id: 'session-1',
+        turn_id: 'turn-1',
+      })
+      emit({ type: 'done', session_id: 'session-1', turn_id: 'turn-1' })
+    })
+
+    await useSseStore.getState().sendMessage('complex job')
+
+    const turn = useSseStore.getState().turns[0]
+    expect(turn.tasks).toHaveLength(3)
+    expect(turn.tasks[1]).toMatchObject({
+      id: '2',
+      status: 'in_progress',
+    })
+    expect(turn.statusLabel).toBe('')
   })
 })

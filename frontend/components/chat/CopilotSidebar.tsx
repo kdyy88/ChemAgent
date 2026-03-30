@@ -7,10 +7,12 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { SSEMessageList } from './SSEMessageList'
 import { SSEChatInput } from './SSEChatInput'
+import { TaskTracker } from './TaskTracker'
 
 export function CopilotSidebar() {
   const { turns, isStreaming, sendMessage, clearTurns } = useSSEChemAgent()
   const { currentSmiles, currentName } = useWorkspaceStore()
+  const latestTasks = turns.at(-1)?.tasks ?? []
 
   const hasSmiles = Boolean(currentSmiles)
   const smilesLabel = currentName || (currentSmiles ? currentSmiles.slice(0, 22) + (currentSmiles.length > 22 ? '…' : '') : '')
@@ -55,6 +57,12 @@ export function CopilotSidebar() {
           </Button>
         </div>
       </div>
+
+      {latestTasks.length > 0 && (
+        <div className="shrink-0 border-b bg-background/70 px-3 py-3">
+          <TaskTracker tasks={latestTasks} isStreaming={isStreaming} />
+        </div>
+      )}
 
       {/* ── Message area ── */}
       <div className="flex-1 overflow-hidden">

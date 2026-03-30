@@ -15,6 +15,7 @@ import type {
   SSEEvent,
   SSEInterrupt,
   SSEShadowError,
+  SSETaskUpdate,
   SSEThinking,
   SSETurn,
 } from '@/lib/sse-types'
@@ -38,6 +39,8 @@ const WORKSPACE_SMILES_KEYS = [
 ] as const
 
 const NODE_LABELS: Record<string, string> = {
+  task_router: '🧭 正在判断任务复杂度…',
+  planner_node: '🗂️ 正在生成任务清单…',
   chem_agent: '🧠 智能体推理中…',
   tools_executor: '🛠️ 工具执行中…',
 }
@@ -118,11 +121,7 @@ function appendThinkingStep(
 // ── State shape ───────────────────────────────────────────────────────────────
 
 export interface InterruptContext {
-  question: string
-  options: string[]
-  called_tools: string[]
   interrupt_id: string
-  known_smiles?: string
 }
 
 export interface SseState {
@@ -316,6 +315,16 @@ export const useSseStore = create<SseState>((set, get) => {
         break
       }
 
+      case 'task_update': {
+        const taskEvent = ev as SSETaskUpdate
+        const activeTask = taskEvent.tasks.find((task) => task.status === 'in_progress')
+        updateLastTurn(() => ({
+          tasks: taskEvent.tasks,
+          statusLabel: activeTask ? `📋 正在执行任务 ${activeTask.id}` : '📋 任务清单已更新',
+        }))
+        break
+      }
+
       case 'shadow_error':
         updateLastTurn((t) => ({
           shadowErrors: [...t.shadowErrors, ev as SSEShadowError],
@@ -335,9 +344,11 @@ export const useSseStore = create<SseState>((set, get) => {
       case 'interrupt': {
         const iv = ev as SSEInterrupt
         const currentTurnId = get().turns.at(-1)?.turnId
-        const knownSmiles = currentTurnId
-          ? readLatestToolOutput(currentTurnId, 'tool_pubchem_lookup')?.canonical_smiles as string | undefined
-          : undefined
+        const knownSmiles = iv.known_smiles ?? (
+          currentTurnId
+            ? readLatestToolOutput(currentTurnId, 'tool_pubchem_lookup')?.canonical_smiles as string | undefined
+            : undefined
+        )
 
         updateLastTurn((t) => {
           return {
@@ -417,6 +428,7 @@ export const useSseStore = create<SseState>((set, get) => {
         activeNode: null,
         toolCalls: [],
         artifacts: [],
+        tasks: get().turns.at(-1)?.tasks ?? [],
         shadowErrors: [],
         statusLabel: '🧠 智能体推理中…',
         pendingInterrupt: undefined,
@@ -439,13 +451,6 @@ export const useSseStore = create<SseState>((set, get) => {
             turn_id: turnId,
             active_smiles: options.activeSmiles ?? null,
             interrupt_context: options.interruptContext ?? null,
-            // Send completed prior turns so the backend has full conversation context
-            history: get().turns
-              .filter((t) => !t.isStreaming && t.assistantText.trim())
-              .flatMap((t) => [
-                { role: 'human', content: t.userMessage },
-                { role: 'assistant', content: t.assistantText },
-              ]),
           }),
           signal: ctrl.signal,
 

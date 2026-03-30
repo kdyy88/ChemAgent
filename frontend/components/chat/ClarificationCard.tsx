@@ -3,10 +3,10 @@
 /**
  * ClarificationCard — Human-in-the-Loop UI
  *
- * Rendered when the researcher node calls tool_ask_human to pause and request
+ * Rendered when LangGraph pauses on a native interrupt and requests
  * clarification.  Displays the question, quick-reply option buttons, and a
- * free-text input.  On submission it calls useSseStore.sendMessage() with
- * the interruptContext so the backend can resume research from where it paused.
+ * free-text input.  On submission it calls useSseStore.sendMessage() with the
+ * interrupt id so the backend can resume from the persisted checkpoint.
  */
 
 import { useState, useRef, useEffect } from 'react'
@@ -45,14 +45,10 @@ export function ClarificationCard({ interrupt, researchTopic }: ClarificationCar
     setSubmitted(true)
 
     const interruptContext: InterruptContext = {
-      question: interrupt.question,
-      options: interrupt.options,
-      called_tools: interrupt.called_tools,
       interrupt_id: interrupt.interrupt_id,
-      known_smiles: interrupt.known_smiles,
     }
 
-    // Compose the message: user's answer, so supervisor routes back to researcher
+    // The backend submits this as Command(resume=...) against the pending interrupt.
     const message = answer.trim()
 
     await sendMessage(message, { interruptContext })

@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Annotated
+from typing import Annotated, Literal
+from urllib.parse import quote
 
-import requests
+import httpx
 from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 
 from app.tools.babel.prep import ALL_BABEL_TOOLS
 from app.chem.rdkit_ops import (
@@ -170,30 +172,33 @@ def tool_render_smiles(
 # ── Rx. PubChem compound lookup ───────────────────────────────────────────────
 
 _PUBCHEM_BASE = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
+_PUBCHEM_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+_SERPER_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
 
 @tool
-def tool_pubchem_lookup(
+async def tool_pubchem_lookup(
     name: Annotated[str, "Drug or compound name (e.g. 'azithromycin', 'aspirin')"],
 ) -> str:
     """Look up a compound by name in PubChem.  Returns canonical SMILES,
     molecular formula, molecular weight, IUPAC name, and CID.
     Use this first when the user provides only a compound name and no SMILES."""
     try:
-        # Step 1: resolve name → CID
-        cid_url = f"{_PUBCHEM_BASE}/compound/name/{requests.utils.quote(name)}/cids/JSON"
-        r = requests.get(cid_url, timeout=10)
-        r.raise_for_status()
-        cid = r.json()["IdentifierList"]["CID"][0]
+        async with httpx.AsyncClient(timeout=_PUBCHEM_TIMEOUT) as client:
+            # Step 1: resolve name → CID
+            cid_url = f"{_PUBCHEM_BASE}/compound/name/{quote(name)}/cids/JSON"
+            r = await client.get(cid_url)
+            r.raise_for_status()
+            cid = r.json()["IdentifierList"]["CID"][0]
 
-        # Step 2: fetch properties for the CID
-        # PubChem returns IsomericSMILES as "SMILES" and CanonicalSMILES as
-        # "ConnectivitySMILES" for many compounds — request both name variants.
-        props = "IsomericSMILES,CanonicalSMILES,SMILES,MolecularFormula,MolecularWeight,IUPACName"
-        prop_url = f"{_PUBCHEM_BASE}/compound/cid/{cid}/property/{props}/JSON"
-        p = requests.get(prop_url, timeout=10)
-        p.raise_for_status()
-        prop = p.json()["PropertyTable"]["Properties"][0]
+            # Step 2: fetch properties for the CID
+            # PubChem returns IsomericSMILES as "SMILES" and CanonicalSMILES as
+            # "ConnectivitySMILES" for many compounds — request both name variants.
+            props = "IsomericSMILES,CanonicalSMILES,SMILES,MolecularFormula,MolecularWeight,IUPACName"
+            prop_url = f"{_PUBCHEM_BASE}/compound/cid/{cid}/property/{props}/JSON"
+            p = await client.get(prop_url)
+            p.raise_for_status()
+            prop = p.json()["PropertyTable"]["Properties"][0]
 
         # Field names differ by compound type; fall back gracefully
         isomeric = (
@@ -232,7 +237,7 @@ _SERPER_URL = "https://google.serper.dev/search"
 
 
 @tool
-def tool_web_search(
+async def tool_web_search(
     query: Annotated[str, "Search query (e.g. 'azithromycin clinical trials 2024')"],
 ) -> str:
     """Search the web and medical literature for recent drug approvals, clinical
@@ -246,14 +251,14 @@ def tool_web_search(
             "error": "SERPER_API_KEY not set — web search unavailable.",
         })
     try:
-        r = requests.post(
-            _SERPER_URL,
-            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
-            json={"q": query, "num": 8},
-            timeout=15,
-        )
-        r.raise_for_status()
-        data = r.json()
+        async with httpx.AsyncClient(timeout=_SERPER_TIMEOUT) as client:
+            r = await client.post(
+                _SERPER_URL,
+                headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+                json={"q": query, "num": 8},
+            )
+            r.raise_for_status()
+            data = r.json()
     except Exception as exc:
         return json.dumps({"status": "error", "error": str(exc), "query": query})
 
@@ -271,7 +276,29 @@ def tool_web_search(
 # ── Human-in-the-loop pause tool ─────────────────────────────────────────────
 
 
-@tool
+class AskHumanArgs(BaseModel):
+    question: str = Field(
+        ...,
+        description=(
+            "A single concise clarification question in Chinese. "
+            "This is a terminal control action, not a data tool. "
+            "If you call this tool, it must be the ONLY tool call in the current turn."
+        ),
+        min_length=4,
+        max_length=160,
+    )
+    options: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional 2-4 short quick-reply choices in Chinese. "
+            "Keep them mutually exclusive and user-facing. "
+            "Do not include analysis text, explanations, or more than four choices."
+        ),
+        max_length=4,
+    )
+
+
+@tool(args_schema=AskHumanArgs)
 def tool_ask_human(
     question: Annotated[str, "The clarifying question to ask the user, in Chinese"],
     options: Annotated[
@@ -279,7 +306,15 @@ def tool_ask_human(
         "2-4 quick-reply options for the user to choose from (optional, Chinese)",
     ] = [],
 ) -> str:
-    """Pause research and ask the user a clarifying question when you are uncertain.
+    """Terminal HITL control tool for requesting a user clarification.
+
+    HARD RULES:
+    1. This tool is not a chemistry data tool. It is a stop-and-wait control action.
+    2. If you call this tool, it MUST be the only tool call in the current turn.
+    3. After deciding to call this tool, stop immediately and do not call PubChem,
+       web search, RDKit, Open Babel, or any other tool in the same turn.
+    4. Ask exactly one concrete question. Do not bundle multiple questions.
+    5. Only use this when progress is blocked by missing user input.
 
     WHEN TO USE — call this tool (and stop further tool calls in this turn) when:
     1. tool_pubchem_lookup returns found=false for the compound name, AND a backup
@@ -302,6 +337,29 @@ def tool_ask_human(
     )
 
 
+@tool
+def tool_update_task_status(
+    task_id: Annotated[str, "Task id from the planner-generated task list"],
+    status: Annotated[
+        Literal["in_progress", "completed", "failed"],
+        "New execution status for the task",
+    ],
+) -> str:
+    """Report task execution progress for planner-generated task lists.
+
+    Call this tool before starting a planned task and again after finishing it.
+    Only use task ids that already exist in the current plan.
+    """
+    return json.dumps(
+        {
+            "status": "success",
+            "task_id": task_id,
+            "task_status": status,
+        },
+        ensure_ascii=False,
+    )
+
+
 ALL_RDKIT_TOOLS = [
     tool_validate_smiles,
     tool_compute_descriptors,
@@ -313,6 +371,7 @@ ALL_RDKIT_TOOLS = [
     tool_pubchem_lookup,
     tool_web_search,
     tool_ask_human,
+    tool_update_task_status,
 ]
 
 ALL_CHEM_TOOLS = [

@@ -52,6 +52,15 @@ export type SSEArtifactEvent =
   | FormatConversionArtifact
 
 
+export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed'
+
+export interface SSETaskItem {
+  id: string
+  description: string
+  status: TaskStatus
+}
+
+
 // ── SSE event union ───────────────────────────────────────────────────────────
 
 /** Fired immediately when the POST is accepted and the graph begins. */
@@ -65,7 +74,7 @@ export interface SSERunStarted {
 /** Fired when a named LangGraph node begins execution. */
 export interface SSENodeStart {
   type: 'node_start'
-  node: 'chem_agent' | 'tools_executor'
+  node: 'task_router' | 'planner_node' | 'chem_agent' | 'tools_executor'
   session_id: string
   turn_id: string
 }
@@ -73,7 +82,15 @@ export interface SSENodeStart {
 /** Fired when a named LangGraph node finishes execution. */
 export interface SSENodeEnd {
   type: 'node_end'
-  node: 'chem_agent' | 'tools_executor'
+  node: 'task_router' | 'planner_node' | 'chem_agent' | 'tools_executor'
+  session_id: string
+  turn_id: string
+}
+
+export interface SSETaskUpdate {
+  type: 'task_update'
+  tasks: SSETaskItem[]
+  source?: string
   session_id: string
   turn_id: string
 }
@@ -125,6 +142,7 @@ export interface SSEInterrupt {
   called_tools: string[]
   /** Opaque ID for correlation. */
   interrupt_id: string
+  known_smiles?: string
   session_id: string
   turn_id: string
 }
@@ -145,6 +163,7 @@ export interface SSEDone {
   type: 'done'
   session_id: string
   turn_id: string
+  checkpoint_id?: string
 }
 
 /** Unhandled exception — stream terminates after this. */
@@ -164,6 +183,7 @@ export type SSEEvent =
   | SSEToolStart
   | SSEToolEnd
   | SSEArtifactEvent
+  | SSETaskUpdate
   | SSEShadowError
   | SSEInterrupt
   | SSEThinking
@@ -188,6 +208,8 @@ export interface SSETurn {
   toolCalls: Array<{ tool: string; input: Record<string, unknown>; output?: Record<string, unknown>; done: boolean }>
   /** Rich artifacts (images, descriptor tables). */
   artifacts: SSEArtifactEvent[]
+  /** Planner-generated tasks and their live execution states. */
+  tasks: SSETaskItem[]
   /** Shadow Lab errors to surface in UI. */
   shadowErrors: SSEShadowError[]
   /** Human-readable status label (e.g. "analyst 分析中…"). */

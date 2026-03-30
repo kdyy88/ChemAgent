@@ -14,6 +14,7 @@ Each ``data:`` line carries a JSON object with a ``type`` discriminator:
   type="tool_start"    — an @tool call started
   type="tool_end"      — an @tool call finished with result
   type="artifact"      — a rich artifact (molecule image, descriptor table)
+    type="task_update"   — planner/task execution progress update
   type="shadow_error"  — Shadow Lab detected an invalid SMILES
   type="done"          — the graph run completed (final event)
   type="error"         — unhandled exception; stream terminates
@@ -33,10 +34,10 @@ Usage
 
     → text/event-stream
 
-The endpoint is stateless between requests (each POST bootstraps its own
-LangGraph state from the message).  Session-level memory (cross-turn context)
-can be added later by persisting / rehydrating the messages list via a
-LangGraph checkpointer (e.g. SqliteSaver or RedisSaver).
+The endpoint is session-aware across requests by persisting LangGraph state
+through a checkpointer.  The frontend `session_id` is mapped directly to the
+LangGraph `thread_id`, so follow-up turns can resume from the latest saved
+checkpoint without re-sending the full conversation transcript.
 """
 
 from __future__ import annotations
@@ -52,10 +53,12 @@ from uuid import uuid4
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
-from app.agents.graph import ChemState, compiled_graph
+from app.agents.graph import ChemState
+from app.agents.runtime import get_compiled_graph, has_persisted_session
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -69,6 +72,10 @@ _BULKY_TOOL_OUTPUT_KEYS = frozenset({
 })
 
 _NODE_REASONING_MESSAGES: dict[tuple[str, str], str] = {
+    ("task_router", "on_chain_start"): "正在快速判断这次请求是否需要显式任务规划...",
+    ("task_router", "on_chain_end"): "复杂度判断完成。",
+    ("planner_node", "on_chain_start"): "检测到复杂任务，正在生成可执行任务清单...",
+    ("planner_node", "on_chain_end"): "任务清单已生成，准备进入执行阶段。",
     ("chem_agent", "on_chain_start"): "进入智能体大脑，正在评估当前信息并规划下一步行动...",
     ("chem_agent", "on_chain_end"): "智能体本轮思考完毕。",
     ("tools_executor", "on_chain_start"): "准备转入工具执行流水线...",
@@ -89,6 +96,7 @@ _TOOL_LABELS: dict[str, str] = {
     "convert_format": "格式转换",
     "ask_human": "请求用户澄清",
     "web_search": "联网搜索",
+    "update_task_status": "更新任务状态",
 }
 
 
@@ -167,7 +175,7 @@ class StreamChatRequest(BaseModel):
     )
     interrupt_context: dict | None = Field(
         default=None,
-        description="HITL 续研上下文：含 question、called_tools、known_smiles 等",
+        description="LangGraph 原生 HITL 恢复上下文；至少包含 interrupt_id",
     )
     history: list[HistoryMessage] = Field(
         default_factory=list,
@@ -294,7 +302,7 @@ def _tool_reasoning_text(tool_name: str, stage: str, payload: dict | str | None 
 _STREAMING_NODES = {"chem_agent"}
 
 # LangGraph node names we surface as lifecycle events to the frontend
-_LIFECYCLE_NODES = {"chem_agent", "tools_executor"}
+_LIFECYCLE_NODES = {"task_router", "planner_node", "chem_agent", "tools_executor"}
 
 
 def _parse_tool_output(tool_output: Any) -> dict | str:
@@ -321,21 +329,19 @@ def _build_custom_event_handlers(
             source=data.get("source", "chem_agent"),
             done=data.get("done", True),
         ),
+        "task_update": lambda data: _event_sse(
+            "task_update",
+            session_id,
+            turn_id,
+            tasks=data.get("tasks", []),
+            source=data.get("source", "tools_executor"),
+        ),
         "shadow_lab_error": lambda data: _event_sse(
             "shadow_error",
             session_id,
             turn_id,
             smiles=data.get("smiles"),
             error=data.get("error"),
-        ),
-        "clarification_request": lambda data: _event_sse(
-            "interrupt",
-            session_id,
-            turn_id,
-            question=data.get("question", ""),
-            options=data.get("options", []),
-            called_tools=data.get("called_tools", []),
-            interrupt_id=uuid4().hex,
         ),
     }
 
@@ -438,35 +444,47 @@ async def _event_generator(req: StreamChatRequest):
 
     session_id = req.session_id
     turn_id = req.turn_id
+    graph = get_compiled_graph()
+    graph_config = {"configurable": {"thread_id": session_id, "session_id": session_id, "turn_id": turn_id}}
+    has_persisted_state = await has_persisted_session(session_id)
     llm_reasoning_emitted = False
+    lifecycle_depths: dict[str, int] = {}
     custom_event_handlers = _build_custom_event_handlers(session_id=session_id, turn_id=turn_id)
 
-    # ── Build initial graph state ─────────────────────────────────────────────
-    # Reconstruct prior conversation turns so the graph has full context.
-    history_messages = []
-    for h in req.history:
-        if h.role == "human":
-            history_messages.append(HumanMessage(content=h.content))
-        elif h.role == "assistant" and h.content.strip():
-            history_messages.append(AIMessage(content=h.content))
+    if req.interrupt_context and req.interrupt_context.get("interrupt_id") and not has_persisted_state:
+        yield _event_sse(
+            "error",
+            session_id,
+            turn_id,
+            error="Cannot resume interruption because no persisted LangGraph session was found.",
+        )
+        return
 
+    # ── Build initial graph state ─────────────────────────────────────────────
+    # Legacy fallback: only replay client-sent history when this session has no
+    # saved checkpoints yet, so persisted threads avoid prompt inflation.
+    history_messages = []
+    if not has_persisted_state:
+        for h in req.history:
+            if h.role == "human":
+                history_messages.append(HumanMessage(content=h.content))
+            elif h.role == "assistant" and h.content.strip():
+                history_messages.append(AIMessage(content=h.content))
+
+    messages = [*history_messages, HumanMessage(content=req.message)]
     initial_state: ChemState = {
-        "messages": [*history_messages, HumanMessage(content=req.message)],
-        "active_smiles": req.active_smiles,
+        "messages": messages,
         "artifacts": [],
+        "tasks": [],
+        "is_complex": False,
     }
 
-    # HITL resume: inject the interrupt context so the unified agent can continue.
-    if req.interrupt_context:
-        ctx = req.interrupt_context
-        ctx_lines = [
-            f"[HITL 续研] 研究暂停原因：{ctx.get('question', '')}",
-            f"已调用工具：{', '.join(ctx.get('called_tools', []))}",
-        ]
-        if ctx.get("known_smiles"):
-            ctx_lines.append(f"已知 SMILES：{ctx['known_smiles']}")
-            initial_state["active_smiles"] = ctx["known_smiles"]
-        initial_state["messages"].insert(-1, HumanMessage(content="\n".join(ctx_lines)))
+    if req.active_smiles:
+        initial_state["active_smiles"] = req.active_smiles
+
+    graph_input: ChemState | Command = initial_state
+    if req.interrupt_context and req.interrupt_context.get("interrupt_id"):
+        graph_input = Command(resume={req.interrupt_context["interrupt_id"]: req.message})
 
     # ── Emit run.started ──────────────────────────────────────────────────────
     yield _sse(
@@ -474,10 +492,10 @@ async def _event_generator(req: StreamChatRequest):
     )
 
     try:
-        async for event in compiled_graph.astream_events(
-            initial_state,
+        async for event in graph.astream_events(
+            graph_input,
             version="v2",
-            config={"configurable": {"session_id": session_id, "turn_id": turn_id}},
+            config=graph_config,
         ):
             event_name: str = event["event"]
             node_name: str = event.get("metadata", {}).get("langgraph_node", "")
@@ -528,26 +546,32 @@ async def _event_generator(req: StreamChatRequest):
 
             # ── 2. Node lifecycle events ───────────────────────────────────────
             elif event_name == "on_chain_start" and node_name in _LIFECYCLE_NODES:
-                yield _event_sse("node_start", session_id, turn_id, node=node_name)
-                thinking_text = _node_reasoning_text(node_name, event_name)
-                if thinking_text:
-                    yield _thinking_event(
-                        text=thinking_text,
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        source=node_name,
-                    )
+                previous_depth = lifecycle_depths.get(node_name, 0)
+                lifecycle_depths[node_name] = previous_depth + 1
+                if previous_depth == 0:
+                    yield _event_sse("node_start", session_id, turn_id, node=node_name)
+                    thinking_text = _node_reasoning_text(node_name, event_name)
+                    if thinking_text:
+                        yield _thinking_event(
+                            text=thinking_text,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            source=node_name,
+                        )
 
             elif event_name == "on_chain_end" and node_name in _LIFECYCLE_NODES:
-                yield _event_sse("node_end", session_id, turn_id, node=node_name)
-                thinking_text = _node_reasoning_text(node_name, event_name)
-                if thinking_text:
-                    yield _thinking_event(
-                        text=thinking_text,
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        source=node_name,
-                    )
+                next_depth = max(0, lifecycle_depths.get(node_name, 1) - 1)
+                lifecycle_depths[node_name] = next_depth
+                if next_depth == 0:
+                    yield _event_sse("node_end", session_id, turn_id, node=node_name)
+                    thinking_text = _node_reasoning_text(node_name, event_name)
+                    if thinking_text:
+                        yield _thinking_event(
+                            text=thinking_text,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            source=node_name,
+                        )
 
             # ── 3. @tool lifecycle events ──────────────────────────────────────
             elif event_name == "on_tool_start":
@@ -603,7 +627,24 @@ async def _event_generator(req: StreamChatRequest):
                 done=True,
             )
 
-        yield _event_sse("done", session_id, turn_id)
+        snapshot = await graph.aget_state(graph_config)
+        if snapshot.interrupts:
+            pending_interrupt = snapshot.interrupts[0]
+            pending_value = pending_interrupt.value if isinstance(pending_interrupt.value, dict) else {}
+            yield _event_sse(
+                "interrupt",
+                session_id,
+                turn_id,
+                question=str(pending_value.get("question", "")),
+                options=list(pending_value.get("options", [])),
+                called_tools=list(pending_value.get("called_tools", [])),
+                known_smiles=pending_value.get("known_smiles"),
+                interrupt_id=pending_interrupt.id,
+            )
+            return
+
+        checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")
+        yield _event_sse("done", session_id, turn_id, checkpoint_id=checkpoint_id)
 
     except Exception as exc:
         tb = traceback.format_exc()
@@ -618,7 +659,7 @@ async def stream_chat(req: StreamChatRequest) -> StreamingResponse:
     """LangGraph-powered SSE chat endpoint.
 
     Accepts a JSON body and returns a ``text/event-stream`` response driven by
-    ``compiled_graph.astream_events(version="v2")``.
+    ``graph.astream_events(version="v2")``.
 
     The client reads the stream with ``@microsoft/fetch-event-source`` (or any
     SSE-capable fetch wrapper that supports POST bodies).
