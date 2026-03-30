@@ -73,7 +73,7 @@ def build_llm_config(model: str | None = None) -> dict[str, list[dict[str, Any]]
 
     if _is_reasoning_capable_model(resolved_model):
         effort = os.environ.get("OPENAI_REASONING_EFFORT", "medium").strip() or "medium"
-        summary = os.environ.get("OPENAI_REASONING_SUMMARY", "detailed").strip() or "detailed"
+        summary = os.environ.get("OPENAI_REASONING_SUMMARY", "auto").strip() or "auto"
         config["reasoning"] = {
             "effort": effort,
             "summary": summary,

@@ -42,17 +42,79 @@ LangGraph checkpointer (e.g. SqliteSaver or RedisSaver).
 from __future__ import annotations
 
 import json
+import logging
+import os
 import traceback
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 
 from app.agents.graph import ChemState, compiled_graph
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _load_debug_env_once() -> None:
+    """Load .env files so debug toggles are visible in this module too."""
+    candidates = [
+        Path(__file__).resolve().parents[2] / ".env",  # backend/.env
+        Path(__file__).resolve().parents[3] / ".env",  # project-root/.env
+        Path.cwd() / ".env",
+    ]
+    for env_file in candidates:
+        if env_file.exists():
+            load_dotenv(dotenv_path=env_file, override=False)
+
+
+_load_debug_env_once()
+
+
+def _env_truthy(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _preview(value: object, max_len: int = 1200) -> str:
+    """Best-effort compact preview for debug logs."""
+    try:
+        if isinstance(value, (dict, list)):
+            text = json.dumps(value, ensure_ascii=False)
+        else:
+            text = str(value)
+    except Exception:
+        text = repr(value)
+    if len(text) > max_len:
+        return text[:max_len] + "...<truncated>"
+    return text
+
+
+def _debug_reasoning_payload(stage: str, node_name: str, message_obj: object) -> None:
+    """Emit raw reasoning-related payloads when DEBUG_REASONING_RAW is enabled."""
+    if not _env_truthy("DEBUG_REASONING_RAW", False):
+        return
+
+    raw_content = getattr(message_obj, "content", None)
+    additional_kwargs = getattr(message_obj, "additional_kwargs", None)
+
+    log_line = (
+        "[reasoning-debug] "
+        f"stage={stage} "
+        f"node={node_name} "
+        f"content_type={type(raw_content).__name__ if raw_content is not None else 'None'} "
+        f"additional_keys={list(additional_kwargs.keys()) if isinstance(additional_kwargs, dict) else None} "
+        f"content_preview={_preview(raw_content)} "
+        f"additional_preview={_preview(additional_kwargs)}"
+    )
+    logger.warning(log_line)
+    print(log_line, flush=True)
 
 
 # ── Request schema ─────────────────────────────────────────────────────────────
@@ -145,17 +207,17 @@ def _thinking_event(
 
 def _node_reasoning_text(node_name: str, event_name: str) -> str | None:
     if node_name == "chem_agent" and event_name == "on_chain_start":
-        return "进入智能体推理阶段，正在理解问题并规划下一步。"
-    if node_name == "tools_executor" and event_name == "on_chain_start":
-        return "进入工具执行阶段，开始调用化学工具获取中间结果。"
-    if node_name == "tools_executor" and event_name == "on_chain_end":
-        return "工具执行完成，正在把结果返回给智能体继续整合。"
+        return "进入智能体大脑，正在评估当前信息并规划下一步行动..."
     if node_name == "chem_agent" and event_name == "on_chain_end":
-        return "本轮智能体推理完成，准备输出最终结论。"
+        return "智能体本轮思考完毕。"
+    if node_name == "tools_executor" and event_name == "on_chain_start":
+        return "准备转入工具执行流水线..."
+    if node_name == "tools_executor" and event_name == "on_chain_end":
+        return "工具调用链执行完毕，正在将实验数据交回给智能体大脑。"
     return None
 
 
-def _tool_reasoning_text(tool_name: str, stage: str, output: dict | str | None = None) -> str:
+def _tool_reasoning_text(tool_name: str, stage: str, payload: dict | str | None = None) -> str:
     pretty_name = tool_name.replace("tool_", "")
     label_map = {
         "validate_smiles": "校验 SMILES",
@@ -175,12 +237,38 @@ def _tool_reasoning_text(tool_name: str, stage: str, output: dict | str | None =
     label = label_map.get(pretty_name, pretty_name)
 
     if stage == "start":
-        return f"正在调用工具：{label}。"
+        params_str = ""
+        if isinstance(payload, dict) and payload:
+            safe_params = {
+                k: v
+                for k, v in payload.items()
+                if k != "active_smiles" and v not in (None, "", [], {})
+            }
+            if safe_params:
+                params_str = f" 传入参数: {json.dumps(safe_params, ensure_ascii=False)}"
+        return f"👉 正在调用工具：{label}。{params_str}"
 
-    if isinstance(output, dict):
-        message = str(output.get("message", "")).strip()
-        if message:
-            return f"工具完成：{label}。{message}"
+    if stage == "end":
+        result_str = ""
+        if isinstance(payload, dict):
+            if "error" in payload:
+                result_str = f" ❌ 失败: {payload['error']}"
+            else:
+                msg = payload.get("message")
+                smiles = payload.get("smiles") or payload.get("canonical_smiles")
+                if msg:
+                    result_str = f" ✅ {msg}"
+                elif smiles:
+                    result_str = f" ✅ 获得结构: {smiles}"
+                else:
+                    result_str = f" ✅ 成功获取了 {len(payload)} 项数据字段"
+        elif isinstance(payload, str):
+            summary = payload[:50].replace("\n", " ") + ("..." if len(payload) > 50 else "")
+            result_str = f" ✅ 结果: {summary}"
+        else:
+            result_str = " ✅ 执行完毕"
+
+        return f"工具完成：{label}。{result_str}"
 
     return f"工具完成：{label}。"
 
@@ -344,6 +432,7 @@ async def _event_generator(req: StreamChatRequest):
             if event_name == "on_chat_model_stream" and node_name in _STREAMING_NODES:
                 chunk = event["data"].get("chunk")
                 if chunk is not None:
+                    _debug_reasoning_payload("stream", node_name, chunk)
                     raw = getattr(chunk, "content", "") or ""
                     token, thinking_token = _extract_stream_text(raw, chunk)
 
@@ -377,6 +466,7 @@ async def _event_generator(req: StreamChatRequest):
                 # final aggregated reasoning block at model end. Emit the end block
                 # only when stream phase had no reasoning to avoid duplicate panels.
                 if output_msg is not None and not llm_reasoning_emitted:
+                    _debug_reasoning_payload("end", node_name, output_msg)
                     raw = getattr(output_msg, "content", "") or ""
                     _, thinking_token = _extract_stream_text(raw, output_msg)
                     if thinking_token:
@@ -440,7 +530,7 @@ async def _event_generator(req: StreamChatRequest):
                     }
                 )
                 yield _thinking_event(
-                    text=_tool_reasoning_text(event["name"], "start"),
+                    text=_tool_reasoning_text(event["name"], "start", tool_input),
                     session_id=session_id,
                     turn_id=turn_id,
                     source="tools_executor",
@@ -527,8 +617,9 @@ async def _event_generator(req: StreamChatRequest):
         if not llm_reasoning_emitted:
             yield _thinking_event(
                 text=(
-                    "当前模型或网关未返回原生 reasoning 内容。"
-                    "如需显示模型推理摘要，请使用支持 reasoning summary 的模型（例如 GPT-5 系列）并在环境变量中设置 OPENAI_MODEL。"
+                    "本轮未收到可展示的模型 reasoning 摘要。"
+                    "可能原因：网关对 reasoning summary 做了抑制/清洗，或该轮生成未产出可公开摘要。"
+                    "可尝试提高 OPENAI_REASONING_EFFORT，或切换到明确返回 reasoning summary 的网关端点。"
                 ),
                 session_id=session_id,
                 turn_id=turn_id,
