@@ -245,13 +245,21 @@ export function ResearchThinking({ steps, isStreaming, webSources }: ResearchThi
                     </span>
                   </StepsTrigger>
 
-                  {/* Only show step list when there are no sources to replace it */}
-                  {!blockSources && (
-                    <StepsContent className="w-full" bar={<StepsBar className="mr-2 ml-1.5" />}>
+                  {/* StepsContent: sources if available, otherwise step list */}
+                  <StepsContent className="w-full" bar={blockSources ? null : <StepsBar className="mr-2 ml-1.5" />}>
+                    {blockSources ? (
+                      <div className="flex flex-wrap gap-1.5 pt-1 pb-0.5">
+                        {blockSources.sources.map((src, i) => (
+                          <Source key={`${src.url}-${i}`} href={src.url}>
+                            <SourceTrigger showFavicon />
+                            <SourceContent title={src.title || src.url} description={src.snippet} />
+                          </Source>
+                        ))}
+                      </div>
+                    ) : (
                       <div className="space-y-0.5 pt-0.5">
                         {block.items.map((item, itemIndex) => {
                           const mergedText = item.count > 1 ? `合并 ${item.count} 条` : null
-
                           return (
                             <StepsItem key={`${item.id}-${itemIndex}`} className="text-xs">
                               <div className="flex items-center justify-between gap-2 py-0.5">
@@ -269,21 +277,9 @@ export function ResearchThinking({ steps, isStreaming, webSources }: ResearchThi
                           )
                         })}
                       </div>
-                    </StepsContent>
-                  )}
+                    )}
+                  </StepsContent>
                 </Steps>
-
-                {/* Web search sources — shown inline right under this tool step */}
-                {blockSources && blockSources.sources.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 px-3 pb-1">
-                    {blockSources.sources.map((src, i) => (
-                      <Source key={`${src.url}-${i}`} href={src.url}>
-                        <SourceTrigger showFavicon />
-                        <SourceContent title={src.title || src.url} description={src.snippet} />
-                      </Source>
-                    ))}
-                  </div>
-                )}
               </div>
             )
           }
