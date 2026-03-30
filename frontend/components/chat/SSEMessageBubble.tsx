@@ -24,7 +24,7 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
   // Planning phase: activeNode==='planner_node' fires BEFORE tasks arrive (via node_start).
   // This is the reliable signal to show the planning card skeleton.
   const isPlanning = isStreaming && turn.activeNode === 'planner_node'
-  const showThinkingDots = isStreaming && turn.thinkingSteps.length === 0 && !isPlanning && turn.tasks.length === 0
+  const showThinkingDots = isStreaming && turn.thinkingSteps.length === 0 && !isPlanning
 
   // ── Artifact reveal: 1 s delay + skeleton after streaming ends ──────────────
   const hasArtifacts = turn.artifacts.length > 0 || lipinskiCards.length > 0
