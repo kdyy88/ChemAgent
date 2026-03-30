@@ -245,29 +245,32 @@ export function ResearchThinking({ steps, isStreaming, webSources }: ResearchThi
                     </span>
                   </StepsTrigger>
 
-                  <StepsContent className="w-full" bar={<StepsBar className="mr-2 ml-1.5" />}>
-                    <div className="space-y-0.5 pt-0.5">
-                      {block.items.map((item, itemIndex) => {
-                        const mergedText = item.count > 1 ? `合并 ${item.count} 条` : null
+                  {/* Only show step list when there are no sources to replace it */}
+                  {!blockSources && (
+                    <StepsContent className="w-full" bar={<StepsBar className="mr-2 ml-1.5" />}>
+                      <div className="space-y-0.5 pt-0.5">
+                        {block.items.map((item, itemIndex) => {
+                          const mergedText = item.count > 1 ? `合并 ${item.count} 条` : null
 
-                        return (
-                          <StepsItem key={`${item.id}-${itemIndex}`} className="text-xs">
-                            <div className="flex items-center justify-between gap-2 py-0.5">
-                              <div className="flex items-center gap-1.5 min-w-0 text-foreground/75">
-                                <FlaskConical className="h-3 w-3 shrink-0 text-muted-foreground/50" aria-hidden="true" />
-                                <span className="min-w-0 truncate">{item.title}</span>
+                          return (
+                            <StepsItem key={`${item.id}-${itemIndex}`} className="text-xs">
+                              <div className="flex items-center justify-between gap-2 py-0.5">
+                                <div className="flex items-center gap-1.5 min-w-0 text-foreground/75">
+                                  <FlaskConical className="h-3 w-3 shrink-0 text-muted-foreground/50" aria-hidden="true" />
+                                  <span className="min-w-0 truncate">{item.title}</span>
+                                </div>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <MetaBadge>{item.caption}</MetaBadge>
+                                  {mergedText && <MetaBadge>{mergedText}</MetaBadge>}
+                                  {isStreaming && item.isStreaming && <MetaBadge highlight>进行中</MetaBadge>}
+                                </div>
                               </div>
-                              <div className="flex items-center gap-1 shrink-0">
-                                <MetaBadge>{item.caption}</MetaBadge>
-                                {mergedText && <MetaBadge>{mergedText}</MetaBadge>}
-                                {isStreaming && item.isStreaming && <MetaBadge highlight>进行中</MetaBadge>}
-                              </div>
-                            </div>
-                          </StepsItem>
-                        )
-                      })}
-                    </div>
-                  </StepsContent>
+                            </StepsItem>
+                          )
+                        })}
+                      </div>
+                    </StepsContent>
+                  )}
                 </Steps>
 
                 {/* Web search sources — shown inline right under this tool step */}
