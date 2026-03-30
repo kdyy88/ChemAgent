@@ -6,6 +6,20 @@ import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ui/r
 import { Steps, StepsBar, StepsContent, StepsItem, StepsTrigger } from '@/components/ui/steps'
 import type { SSEThinking } from '@/lib/sse-types'
 
+function MetaBadge({ children, highlight }: { children: React.ReactNode; highlight?: boolean }) {
+  return (
+    <span
+      className={`rounded-full px-1.5 py-0.5 text-[10px] leading-none ${
+        highlight
+          ? 'bg-primary/10 text-primary/70'
+          : 'bg-muted/70 text-muted-foreground/70'
+      }`}
+    >
+      {children}
+    </span>
+  )
+}
+
 interface ResearchThinkingProps {
   steps: SSEThinking[]
   isStreaming: boolean
@@ -126,14 +140,30 @@ export function ResearchThinking({ steps, isStreaming }: ResearchThinkingProps) 
 
   return (
     <div className="w-full space-y-2">
-      <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground/80">
-        <Beaker className="size-4" />
-        <span className="font-medium">{headerTitle}</span>
-        <span>{isStreaming ? '思考内容正在实时输出' : '展开可查看完整思考与工具步骤'}</span>
-        <span className="ml-auto shrink-0">{timeline.length} 个阶段</span>
+      {/* Header: icon + stacked title/hint on left, stage count on right */}
+      <div className="flex items-start justify-between gap-2 px-1">
+        <div className="flex items-start gap-1.5">
+          <Beaker className="mt-0.5 size-4 shrink-0 text-muted-foreground/70" />
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-medium text-foreground/80">{headerTitle}</span>
+              {isStreaming && (
+                <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] leading-none text-primary/70">
+                  输出中
+                </span>
+              )}
+            </div>
+            <p className="text-[10px] leading-tight text-muted-foreground/55">
+              {isStreaming ? '思考内容正在实时输出' : '展开可查看完整思考与工具步骤'}
+            </p>
+          </div>
+        </div>
+        <span className="shrink-0 pt-0.5 text-[10px] tabular-nums text-muted-foreground/60">
+          {timeline.length} 个阶段
+        </span>
       </div>
 
-      <div className="w-full space-y-2">
+      <div className="w-full space-y-1.5">
         {blocks.map((block, blockIndex) => {
           if (block.kind === 'tool_sequence') {
             const stepKey = `${block.id}-${blockIndex}`
@@ -152,29 +182,31 @@ export function ResearchThinking({ steps, isStreaming }: ResearchThinkingProps) 
                 <StepsTrigger leftIcon={<Hammer className="size-4" />} className="text-xs">
                   <span className="flex min-w-0 flex-1 items-center gap-2">
                     <span className="min-w-0 flex-1 truncate text-foreground/80">{activeTitle}</span>
-                    <span className="shrink-0 text-[10px] text-muted-foreground/80">{block.items.length} 个工具步骤</span>
+                    <span className="shrink-0 rounded-full bg-muted/80 px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground/70">
+                      {block.items.length} 步
+                    </span>
                   </span>
                 </StepsTrigger>
 
                 <StepsContent className="w-full" bar={<StepsBar className="mr-2 ml-1.5" />}>
-                  <div className="space-y-1">
+                  <div className="space-y-2 pt-0.5">
                     {block.items.map((item, itemIndex) => {
-                      const mergedText = item.count > 1 ? `已合并 ${item.count} 条同类更新` : null
+                      const mergedText = item.count > 1 ? `合并 ${item.count} 条` : null
                       const statusText = stepStatusText(item)
 
                       return (
                         <StepsItem key={`${item.id}-${itemIndex}`} className="space-y-1 text-xs">
-                          <div className="flex items-center gap-2 text-foreground/80">
-                            <FlaskConical className="h-3.5 w-3.5 shrink-0 text-muted-foreground/75" />
-                            <span className="min-w-0 flex-1 break-words">{item.title}</span>
+                          <div className="flex items-center gap-1.5 text-foreground/80">
+                            <FlaskConical className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+                            <span className="min-w-0 flex-1 break-words font-medium">{item.title}</span>
                           </div>
-                          <div className="whitespace-pre-wrap break-words pl-[1.35rem] leading-5 text-foreground/75">
+                          <div className="whitespace-pre-wrap break-words pl-5 leading-relaxed text-foreground/70">
                             {item.detail}
                           </div>
-                          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 pl-[1.35rem] text-[10px] text-muted-foreground/75">
-                            <span>{item.caption}</span>
-                            {mergedText ? <span>{mergedText}</span> : null}
-                            {statusText ? <span>{statusText}</span> : null}
+                          <div className="flex flex-wrap items-center gap-1 pl-5">
+                            <MetaBadge>{item.caption}</MetaBadge>
+                            {mergedText && <MetaBadge>{mergedText}</MetaBadge>}
+                            {statusText && <MetaBadge highlight>{statusText}</MetaBadge>}
                           </div>
                         </StepsItem>
                       )
@@ -203,24 +235,26 @@ export function ResearchThinking({ steps, isStreaming }: ResearchThinkingProps) 
                 className="w-full px-3 py-2 shadow-none"
                 isStreaming={group.isStreaming}
               >
-                <ReasoningTrigger className="w-full justify-between text-left text-xs text-muted-foreground/90 hover:text-foreground">
+                <ReasoningTrigger className="w-full text-left text-xs text-muted-foreground/90 hover:text-foreground">
                   <span className="flex min-w-0 flex-1 items-center gap-2">
-                    <span className="flex shrink-0 items-center gap-2">
-                      <Icon className="size-4 text-muted-foreground" />
-                    </span>
+                    <Icon className="size-3.5 shrink-0 text-muted-foreground/60" />
                     <span className="min-w-0 flex-1 truncate text-foreground/80">{group.title}</span>
-                    {group.isStreaming ? <span className="shrink-0 text-[10px] text-foreground/70">进行中</span> : null}
+                    {group.isStreaming && (
+                      <span className="shrink-0 text-[10px] text-primary/60">进行中</span>
+                    )}
                   </span>
                 </ReasoningTrigger>
 
                 <ReasoningContent
                   className="mt-2 w-full"
-                  contentClassName="w-full max-w-none space-y-2 border-l border-border/40 pl-3 text-xs leading-relaxed whitespace-pre-wrap"
+                  contentClassName="w-full max-w-none space-y-2 border-l border-border/40 pl-3 text-xs leading-relaxed"
                 >
-                  <div className="break-words text-foreground/80">{group.detail}</div>
-                  <div className="text-[11px] text-muted-foreground/80">{group.caption}</div>
-                  {mergedText ? <div className="text-[11px] text-muted-foreground/80">{mergedText}</div> : null}
-                  {statusText ? <div className="text-[11px] text-muted-foreground/80">{statusText}</div> : null}
+                  <div className="whitespace-pre-wrap break-words text-foreground/75">{group.detail}</div>
+                  <div className="flex flex-wrap items-center gap-1">
+                    <MetaBadge>{group.caption}</MetaBadge>
+                    {mergedText && <MetaBadge>{mergedText}</MetaBadge>}
+                    {statusText && <MetaBadge highlight>{statusText}</MetaBadge>}
+                  </div>
                 </ReasoningContent>
               </Reasoning>
             )
@@ -235,24 +269,26 @@ export function ResearchThinking({ steps, isStreaming }: ResearchThinkingProps) 
               }}
               className="w-full px-3 py-2 shadow-none"
             >
-              <ReasoningTrigger className="w-full justify-between text-left text-xs text-muted-foreground/90 hover:text-foreground">
+              <ReasoningTrigger className="w-full text-left text-xs text-muted-foreground/90 hover:text-foreground">
                 <span className="flex min-w-0 flex-1 items-center gap-2">
-                  <span className="flex shrink-0 items-center gap-2">
-                    <Icon className="size-4 text-muted-foreground" />
-                  </span>
+                  <Icon className="size-3.5 shrink-0 text-muted-foreground/60" />
                   <span className="min-w-0 flex-1 truncate text-foreground/80">{group.title}</span>
-                  {group.isStreaming ? <span className="shrink-0 text-[10px] text-foreground/70">进行中</span> : null}
+                  {group.isStreaming && (
+                    <span className="shrink-0 text-[10px] text-primary/60">进行中</span>
+                  )}
                 </span>
               </ReasoningTrigger>
 
               <ReasoningContent
                 className="mt-2 w-full"
-                contentClassName="w-full max-w-none space-y-2 border-l border-border/40 pl-3 text-xs leading-relaxed whitespace-pre-wrap"
+                contentClassName="w-full max-w-none space-y-2 border-l border-border/40 pl-3 text-xs leading-relaxed"
               >
-                <div className="break-words text-foreground/80">{group.detail}</div>
-                <div className="text-[11px] text-muted-foreground/80">{group.caption}</div>
-                {mergedText ? <div className="text-[11px] text-muted-foreground/80">{mergedText}</div> : null}
-                {statusText ? <div className="text-[11px] text-muted-foreground/80">{statusText}</div> : null}
+                <div className="whitespace-pre-wrap break-words text-foreground/75">{group.detail}</div>
+                <div className="flex flex-wrap items-center gap-1">
+                  <MetaBadge>{group.caption}</MetaBadge>
+                  {mergedText && <MetaBadge>{mergedText}</MetaBadge>}
+                  {statusText && <MetaBadge highlight>{statusText}</MetaBadge>}
+                </div>
               </ReasoningContent>
             </Reasoning>
           )
