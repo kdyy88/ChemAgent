@@ -1,1 +1,8 @@
+# Environment files — never commit real secrets
 .env
+backend/.env
+frontend/.env.local
+
+# Dev logs
+.dev-logs/
+

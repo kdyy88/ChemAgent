@@ -116,14 +116,16 @@ function LipinskiSuccessCard({ data }: { data: LipinskiResult }) {
       </CardHeader>
 
       <CardContent className="pt-3 pb-0 flex flex-col gap-3 sm:flex-row sm:items-start">
-        {/* 2D structure image — prefix added here and ONLY here */}
-        <img
-          src={`data:image/png;base64,${data.structure_image}`}
-          alt={data.name || data.smiles}
-          width={160}
-          height={160}
-          className="rounded-md border bg-white object-contain shrink-0 self-center sm:self-start"
-        />
+        {/* 2D structure image — only rendered when image data is available */}
+        {data.structure_image && (
+          <img
+            src={`data:image/png;base64,${data.structure_image}`}
+            alt={data.name || data.smiles}
+            width={160}
+            height={160}
+            className="rounded-md border bg-white object-contain shrink-0 self-center sm:self-start"
+          />
+        )}
 
         {/* Descriptor table */}
         <div className="overflow-x-auto w-full">

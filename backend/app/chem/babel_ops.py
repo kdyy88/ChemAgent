@@ -420,13 +420,6 @@ def sdf_split(sdf_content: str) -> dict:
     molecules = []
     zip_buffer = io.BytesIO()
 
-    try:
-        # pybel.readstring can read multi-mol SDF via the supplier interface
-        mol_gen = pybel.readstring("sdf", sdf_content)
-        # Actually for multi-mol we need to split manually
-    except Exception:
-        pass
-
     # Split by the $$$$ delimiter (standard SDF separator)
     blocks = sdf_content.strip().split("$$$$")
     blocks = [b.strip() for b in blocks if b.strip()]
