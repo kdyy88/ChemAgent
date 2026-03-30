@@ -78,11 +78,11 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
 
           {/* Thinking panel — auto-expands while streaming, collapses on completion */}
           {turn.thinkingSteps.length > 0 && (
-            <ResearchThinking steps={turn.thinkingSteps} isStreaming={isStreaming} />
+            <ResearchThinking steps={turn.thinkingSteps} isStreaming={isStreaming} webSources={webSources} />
           )}
 
-          {/* Web search sources — shown immediately after tool completes (no delay) */}
-          {showWebSources && (
+          {/* Web sources fallback — when there are no thinking steps to embed into */}
+          {showWebSources && turn.thinkingSteps.length === 0 && (
             <div className="flex flex-col gap-2">
               {webSources.map((src, i) => (
                 <WebSourcesArtifact key={`ws-${i}`} artifact={src} />

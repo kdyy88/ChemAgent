@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { Beaker, Brain, FlaskConical, Hammer, Sparkles } from 'lucide-react'
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ui/reasoning'
 import { Steps, StepsBar, StepsContent, StepsItem, StepsTrigger } from '@/components/ui/steps'
-import type { SSEThinking } from '@/lib/sse-types'
+import { Source, SourceContent, SourceTrigger } from '@/components/ui/source'
+import type { SSEThinking, WebSearchSourcesArtifact } from '@/lib/sse-types'
 
 function MetaBadge({ children, highlight }: { children: React.ReactNode; highlight?: boolean }) {
   return (
@@ -23,6 +24,7 @@ function MetaBadge({ children, highlight }: { children: React.ReactNode; highlig
 interface ResearchThinkingProps {
   steps: SSEThinking[]
   isStreaming: boolean
+  webSources?: WebSearchSourcesArtifact[]
 }
 
 interface ThinkingGroup {
@@ -152,7 +154,7 @@ function buildTimelineBlocks(timeline: ThinkingGroup[]): TimelineBlock[] {
   return blocks
 }
 
-export function ResearchThinking({ steps, isStreaming }: ResearchThinkingProps) {
+export function ResearchThinking({ steps, isStreaming, webSources }: ResearchThinkingProps) {
   const [openSteps, setOpenSteps] = useState<Record<string, boolean>>({})
   const timeline = useMemo(() => groupThinkingSteps(steps), [steps])
   const blocks = useMemo(() => buildTimelineBlocks(timeline), [timeline])
@@ -211,48 +213,75 @@ export function ResearchThinking({ steps, isStreaming }: ResearchThinkingProps) 
             const stepOpen = openSteps[stepKey] ?? (stepKey === activeBlockKey)
             const activeTitle = block.items.find((item) => item.isStreaming)?.title ?? block.items.at(-1)?.title ?? '工具调用'
 
+            // Detect web search block by id or title
+            const isWebSearch =
+              block.id.toLowerCase().includes('web_search') ||
+              block.id.toLowerCase().includes('web search') ||
+              block.items.some((item) => item.title.includes('搜索') || item.id.toLowerCase().includes('web'))
+            const blockSources = isWebSearch && webSources && webSources.length > 0 ? webSources[0] : null
+
             return (
-              <Steps
-                key={stepKey}
-                open={stepOpen}
-                onOpenChange={(nextOpen) => {
-                  setOpenSteps((current) => ({ ...current, [stepKey]: nextOpen }))
-                }}
-                className="w-full px-3 py-2 shadow-none"
-              >
-                <StepsTrigger leftIcon={<Hammer className="size-4" />} className="text-xs">
-                  <span className="flex min-w-0 flex-1 items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate text-foreground/80">{activeTitle}</span>
-                    <span className="shrink-0 rounded-full bg-muted/80 px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground/70">
-                      {block.items.length} 步
+              <div key={stepKey} className="w-full space-y-1.5">
+                <Steps
+                  open={stepOpen}
+                  onOpenChange={(nextOpen) => {
+                    setOpenSteps((current) => ({ ...current, [stepKey]: nextOpen }))
+                  }}
+                  className="w-full px-3 py-2 shadow-none"
+                >
+                  <StepsTrigger leftIcon={<Hammer className="size-4" />} className="text-xs">
+                    <span className="flex min-w-0 flex-1 items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate text-foreground/80">
+                        {activeTitle}
+                        {blockSources?.query && (
+                          <span className="ml-1.5 text-muted-foreground/50 font-normal">
+                            · {blockSources.query}
+                          </span>
+                        )}
+                      </span>
+                      <span className="shrink-0 rounded-full bg-muted/80 px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground/70">
+                        {block.items.length} 步
+                      </span>
                     </span>
-                  </span>
-                </StepsTrigger>
+                  </StepsTrigger>
 
-                <StepsContent className="w-full" bar={<StepsBar className="mr-2 ml-1.5" />}>
-                  <div className="space-y-0.5 pt-0.5">
-                    {block.items.map((item, itemIndex) => {
-                      const mergedText = item.count > 1 ? `合并 ${item.count} 条` : null
+                  <StepsContent className="w-full" bar={<StepsBar className="mr-2 ml-1.5" />}>
+                    <div className="space-y-0.5 pt-0.5">
+                      {block.items.map((item, itemIndex) => {
+                        const mergedText = item.count > 1 ? `合并 ${item.count} 条` : null
 
-                      return (
-                        <StepsItem key={`${item.id}-${itemIndex}`} className="text-xs">
-                          <div className="flex items-center justify-between gap-2 py-0.5">
-                            <div className="flex items-center gap-1.5 min-w-0 text-foreground/75">
-                              <FlaskConical className="h-3 w-3 shrink-0 text-muted-foreground/50" aria-hidden="true" />
-                              <span className="min-w-0 truncate">{item.title}</span>
+                        return (
+                          <StepsItem key={`${item.id}-${itemIndex}`} className="text-xs">
+                            <div className="flex items-center justify-between gap-2 py-0.5">
+                              <div className="flex items-center gap-1.5 min-w-0 text-foreground/75">
+                                <FlaskConical className="h-3 w-3 shrink-0 text-muted-foreground/50" aria-hidden="true" />
+                                <span className="min-w-0 truncate">{item.title}</span>
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <MetaBadge>{item.caption}</MetaBadge>
+                                {mergedText && <MetaBadge>{mergedText}</MetaBadge>}
+                                {isStreaming && item.isStreaming && <MetaBadge highlight>进行中</MetaBadge>}
+                              </div>
                             </div>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <MetaBadge>{item.caption}</MetaBadge>
-                              {mergedText && <MetaBadge>{mergedText}</MetaBadge>}
-                              {isStreaming && item.isStreaming && <MetaBadge highlight>进行中</MetaBadge>}
-                            </div>
-                          </div>
-                        </StepsItem>
-                      )
-                    })}
+                          </StepsItem>
+                        )
+                      })}
+                    </div>
+                  </StepsContent>
+                </Steps>
+
+                {/* Web search sources — shown inline right under this tool step */}
+                {blockSources && blockSources.sources.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 px-3 pb-1">
+                    {blockSources.sources.map((src, i) => (
+                      <Source key={`${src.url}-${i}`} href={src.url}>
+                        <SourceTrigger showFavicon />
+                        <SourceContent title={src.title || src.url} description={src.snippet} />
+                      </Source>
+                    ))}
                   </div>
-                </StepsContent>
-              </Steps>
+                )}
+              </div>
             )
           }
 
