@@ -175,6 +175,30 @@ export interface SSEError {
   turn_id: string
 }
 
+export interface InterruptContext {
+  interrupt_id: string
+}
+
+export interface SSESendMessageOptions {
+  activeSmiles?: string | null
+  interruptContext?: InterruptContext
+}
+
+export interface SSEToolCall {
+  tool: string
+  input: Record<string, unknown>
+  output?: Record<string, unknown>
+  done: boolean
+}
+
+export interface SSEPendingInterrupt {
+  question: string
+  options: string[]
+  called_tools: string[]
+  interrupt_id: string
+  known_smiles?: string
+}
+
 export type SSEEvent =
   | SSERunStarted
   | SSENodeStart
@@ -205,7 +229,7 @@ export interface SSETurn {
   /** Currently executing node, if any. */
   activeNode: string | null
   /** All tools called so far in this turn. */
-  toolCalls: Array<{ tool: string; input: Record<string, unknown>; output?: Record<string, unknown>; done: boolean }>
+  toolCalls: SSEToolCall[]
   /** Rich artifacts (images, descriptor tables). */
   artifacts: SSEArtifactEvent[]
   /** Planner-generated tasks and their live execution states. */
@@ -215,13 +239,7 @@ export interface SSETurn {
   /** Human-readable status label (e.g. "analyst 分析中…"). */
   statusLabel: string
   /** Set when researcher pauses for user clarification (HITL). Cleared on next send. */
-  pendingInterrupt?: {
-    question: string
-    options: string[]
-    called_tools: string[]
-    interrupt_id: string
-    known_smiles?: string
-  }
+  pendingInterrupt?: SSEPendingInterrupt
   /** Unified reasoning stream shown in the chain-of-thought area. */
   thinkingSteps: SSEThinking[]
 }

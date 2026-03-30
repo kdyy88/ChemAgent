@@ -13,7 +13,8 @@ import { useState, useRef, useEffect } from 'react'
 import { HelpCircle, ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { useSseStore, type InterruptContext } from '@/store/sseStore'
+import type { InterruptContext } from '@/lib/sse-types'
+import { useSseStore } from '@/store/sseStore'
 
 interface ClarificationCardProps {
   interrupt: {
