@@ -678,7 +678,12 @@ async def _event_generator(req: StreamChatRequest):
 
     except Exception as exc:
         tb = traceback.format_exc()
-        yield _event_sse("error", session_id, turn_id, error=str(exc), traceback=tb)
+        # Provide a more user-friendly message for common network errors
+        # (e.g. LLM API / proxy closing chunked connection prematurely).
+        err_str = str(exc)
+        if "incomplete chunked read" in err_str or "peer closed connection" in err_str:
+            err_str = "与 LLM 服务的连接被意外中断（incomplete chunked read）。请检查网络连接或 API 服务状态后重试。"
+        yield _event_sse("error", session_id, turn_id, error=err_str, traceback=tb)
 
 
 # ── FastAPI route ──────────────────────────────────────────────────────────────
