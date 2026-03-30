@@ -149,6 +149,10 @@
   }
 }
 
+@keyframes teal-glow {
+  0%, 100% { box-shadow: 0 0 8px 2px oklch(0.74 0.145 192 / 0.15); }
+  50% { box-shadow: 0 0 20px 6px oklch(0.74 0.145 192 / 0.30); }
+}
 @keyframes typing {
   0%, 100% { transform: translateY(0); opacity: 0.5; }
   50% { transform: translateY(-2px); opacity: 1; }
