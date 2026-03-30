@@ -182,10 +182,10 @@ redis[hiredis]>=5.0
 
 ```bash
 # 后端开发服务（热重载）
-cd backend && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+cd backend; uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 # 前端开发服务
-cd frontend && pnpm dev
+cd frontend; pnpm dev
 
 # 烟雾测试（需要服务运行）
 cd backend

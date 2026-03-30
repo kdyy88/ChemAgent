@@ -194,6 +194,97 @@ _STREAMING_NODES = {"chem_agent"}
 _LIFECYCLE_NODES = {"chem_agent", "tools_executor"}
 
 
+def _extract_stream_text(raw: object, chunk: object) -> tuple[str, str]:
+    """Extract assistant token text and model reasoning text from stream chunks.
+
+    Supports common OpenAI/Responses, Anthropic, and compatibility payload shapes.
+    Returns ``(token_text, reasoning_text)``.
+    """
+    token_parts: list[str] = []
+    reasoning_parts: list[str] = []
+
+    def _append_text(target: list[str], value: object) -> None:
+        if isinstance(value, str) and value:
+            target.append(value)
+
+    if isinstance(raw, str):
+        token_parts.append(raw)
+    elif isinstance(raw, dict):
+        block_type = str(raw.get("type", "")).lower()
+        if block_type in {"reasoning", "thinking"}:
+            summary = raw.get("summary")
+            if isinstance(summary, list):
+                for item in summary:
+                    if isinstance(item, dict):
+                        _append_text(reasoning_parts, item.get("text"))
+                    else:
+                        _append_text(reasoning_parts, item)
+            else:
+                _append_text(reasoning_parts, summary)
+            _append_text(reasoning_parts, raw.get("text"))
+            _append_text(reasoning_parts, raw.get("thinking"))
+        elif block_type in {"text", "output_text"}:
+            _append_text(token_parts, raw.get("text"))
+        elif block_type == "message":
+            msg_content = raw.get("content", [])
+            if isinstance(msg_content, list):
+                for c in msg_content:
+                    if isinstance(c, dict):
+                        _append_text(token_parts, c.get("text"))
+                    else:
+                        _append_text(token_parts, c)
+            else:
+                _append_text(token_parts, msg_content)
+        else:
+            _append_text(token_parts, raw.get("text"))
+            _append_text(reasoning_parts, raw.get("reasoning"))
+    elif isinstance(raw, list):
+        for block in raw:
+            if isinstance(block, dict):
+                block_type = str(block.get("type", "")).lower()
+
+                if block_type == "reasoning":
+                    summary = block.get("summary", [])
+                    if isinstance(summary, list):
+                        for s in summary:
+                            if isinstance(s, dict):
+                                _append_text(reasoning_parts, s.get("text"))
+                            else:
+                                _append_text(reasoning_parts, s)
+                    elif isinstance(summary, str):
+                        _append_text(reasoning_parts, summary)
+                    _append_text(reasoning_parts, block.get("text"))
+
+                elif block_type == "message":
+                    msg_content = block.get("content", [])
+                    if isinstance(msg_content, list):
+                        for c in msg_content:
+                            if isinstance(c, dict):
+                                _append_text(token_parts, c.get("text"))
+                            else:
+                                _append_text(token_parts, c)
+                    elif isinstance(msg_content, str):
+                        _append_text(token_parts, msg_content)
+
+                elif block_type in {"text", "output_text"}:
+                    _append_text(token_parts, block.get("text"))
+
+                elif block_type == "thinking":
+                    _append_text(reasoning_parts, block.get("thinking"))
+                    _append_text(reasoning_parts, block.get("text"))
+
+            else:
+                _append_text(token_parts, block)
+
+    additional_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
+    if isinstance(additional_kwargs, dict):
+        _append_text(reasoning_parts, additional_kwargs.get("reasoning_content"))
+        _append_text(reasoning_parts, additional_kwargs.get("thinking"))
+        _append_text(reasoning_parts, additional_kwargs.get("reasoning"))
+
+    return "".join(token_parts), "".join(reasoning_parts)
+
+
 # ── Core generator ─────────────────────────────────────────────────────────────
 
 async def _event_generator(req: StreamChatRequest):
@@ -201,6 +292,7 @@ async def _event_generator(req: StreamChatRequest):
 
     session_id = req.session_id
     turn_id = req.turn_id
+    llm_reasoning_emitted = False
 
     # ── Build initial graph state ─────────────────────────────────────────────
     # Reconstruct prior conversation turns so the graph has full context.
@@ -253,58 +345,17 @@ async def _event_generator(req: StreamChatRequest):
                 chunk = event["data"].get("chunk")
                 if chunk is not None:
                     raw = getattr(chunk, "content", "") or ""
-                    token = ""
-                    thinking_token = ""
-
-                    # 兼容普通字符串输出
-                    if isinstance(raw, str):
-                        token = raw
-
-                    # 核心修复：兼容 GPT-5 复杂嵌套列表 (Responses API) 及 Claude Blocks
-                    elif isinstance(raw, list):
-                        for block in raw:
-                            if isinstance(block, dict):
-                                block_type = block.get("type")
-
-                                # 适配 GPT-5 的推理块 (reasoning -> summary)
-                                if block_type == "reasoning":
-                                    summary = block.get("summary", [])
-                                    if isinstance(summary, list):
-                                        for s in summary:
-                                            thinking_token += s.get("text", "")
-                                    elif isinstance(summary, str):
-                                        thinking_token += summary
-
-                                # 适配 GPT-5 的正文块 (message -> content)
-                                elif block_type == "message":
-                                    msg_content = block.get("content", [])
-                                    if isinstance(msg_content, list):
-                                        for c in msg_content:
-                                            token += c.get("text", "")
-                                    elif isinstance(msg_content, str):
-                                        token += msg_content
-
-                                # 适配 Anthropic 标准块
-                                elif block_type == "text":
-                                    token += block.get("text", "")
-                                elif block_type == "thinking":
-                                    thinking_token += block.get("thinking", "")
-                            else:
-                                token += str(block)
-
-                    # 兼容 DeepSeek 的 additional_kwargs
-                    additional_kwargs = getattr(chunk, "additional_kwargs", {})
-                    if "reasoning_content" in additional_kwargs:
-                        thinking_token += additional_kwargs.get("reasoning_content", "")
+                    token, thinking_token = _extract_stream_text(raw, chunk)
 
                     # 独立推流：思考过程
                     if thinking_token:
+                        llm_reasoning_emitted = True
                         yield _thinking_event(
                             text=thinking_token,
                             iteration=0,
                             session_id=session_id,
                             turn_id=turn_id,
-                            source=node_name or "chem_agent",
+                            source="llm_reasoning",
                             done=False,
                         )
 
@@ -318,6 +369,25 @@ async def _event_generator(req: StreamChatRequest):
                                 "turn_id": turn_id,
                                 "content": token,
                             }
+                        )
+
+            elif event_name == "on_chat_model_end" and node_name in _STREAMING_NODES:
+                output_msg = event.get("data", {}).get("output")
+                # Some providers stream reasoning token-by-token and also include a
+                # final aggregated reasoning block at model end. Emit the end block
+                # only when stream phase had no reasoning to avoid duplicate panels.
+                if output_msg is not None and not llm_reasoning_emitted:
+                    raw = getattr(output_msg, "content", "") or ""
+                    _, thinking_token = _extract_stream_text(raw, output_msg)
+                    if thinking_token:
+                        llm_reasoning_emitted = True
+                        yield _thinking_event(
+                            text=thinking_token,
+                            iteration=0,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            source="llm_reasoning",
+                            done=True,
                         )
 
             # ── 2. Node lifecycle events ───────────────────────────────────────
@@ -454,6 +524,18 @@ async def _event_generator(req: StreamChatRequest):
                     )
 
         # ── Emit run.done ─────────────────────────────────────────────────────
+        if not llm_reasoning_emitted:
+            yield _thinking_event(
+                text=(
+                    "当前模型或网关未返回原生 reasoning 内容。"
+                    "如需显示模型推理摘要，请使用支持 reasoning summary 的模型（例如 GPT-5 系列）并在环境变量中设置 OPENAI_MODEL。"
+                ),
+                session_id=session_id,
+                turn_id=turn_id,
+                source="llm_reasoning",
+                done=True,
+            )
+
         yield _sse(
             {
                 "type": "done",

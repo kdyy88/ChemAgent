@@ -13,6 +13,23 @@ _DEFAULT_MODEL = "gpt-4o-mini"
 _ENV_LOADED = False
 
 
+def _is_reasoning_capable_model(model_name: str) -> bool:
+    lowered = model_name.lower()
+    return (
+        lowered.startswith("gpt-5")
+        or lowered.startswith("o1")
+        or lowered.startswith("o3")
+        or lowered.startswith("o4")
+    )
+
+
+def _env_truthy(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _normalize_base_url(base_url: str) -> str:
     normalized = base_url.strip().rstrip("/")
     for suffix in ("/chat/completions", "/completions", "/responses"):
@@ -53,6 +70,17 @@ def build_llm_config(model: str | None = None) -> dict[str, list[dict[str, Any]]
         "model": resolved_model,
         "api_key": api_key,
     }
+
+    if _is_reasoning_capable_model(resolved_model):
+        effort = os.environ.get("OPENAI_REASONING_EFFORT", "medium").strip() or "medium"
+        summary = os.environ.get("OPENAI_REASONING_SUMMARY", "detailed").strip() or "detailed"
+        config["reasoning"] = {
+            "effort": effort,
+            "summary": summary,
+        }
+        if _env_truthy("OPENAI_USE_RESPONSES_API", True):
+            config["use_responses_api"] = True
+            config["output_version"] = os.environ.get("OPENAI_OUTPUT_VERSION", "responses/v1").strip() or "responses/v1"
 
     base_url = os.environ.get("OPENAI_BASE_URL")
     if base_url:

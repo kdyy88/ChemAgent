@@ -37,7 +37,14 @@ function generateId(): string {
 }
 
 function normalizeThinkingText(text: string): string {
-  return text.replace(/\s+/g, ' ').trim()
+  return text
+    // Common tokenizer markers from some gateways/providers
+    .replace(/[▁]/g, ' ')
+    .replace(/[Ġ]/g, ' ')
+    // Remove most ASCII control chars but keep newlines/tabs for readability
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function updateWorkspaceFromPayload(payload: Record<string, unknown>) {
@@ -76,6 +83,15 @@ function appendThinkingStep(
       done: entry.done,
     }
     return next
+  }
+
+  if (last && last.source === entry.source && last.iteration === entry.iteration) {
+    // Avoid duplicate final append when provider sends both streamed fragments
+    // and a near-identical aggregated reasoning block.
+    if (last.text === text || text.startsWith(last.text) || last.text.startsWith(text)) {
+      next[next.length - 1] = { ...last, text: text.length >= last.text.length ? text : last.text, done: entry.done }
+      return next
+    }
   }
 
   next.push({ ...entry, text })
@@ -279,10 +295,11 @@ export const useSseStore = create<SseState>((set, get) => {
         const thinkingEv = ev as SSEThinking
         updateLastTurn((t) => {
           const prefixMap: Record<string, string> = {
-            chem_agent: '🧠',
-            tools_executor: '🛠️',
+            chem_agent: '[chem_agent] ',
+            tools_executor: '[tools_executor] ',
+            llm_reasoning: '[llm] ',
           }
-          const prefix = thinkingEv.source ? `${prefixMap[thinkingEv.source] ?? '💭'} ` : ''
+          const prefix = thinkingEv.source ? `${prefixMap[thinkingEv.source] ?? '[reasoning] '}` : ''
           return {
             thinkingSteps: appendThinkingStep(t.thinkingSteps, {
               ...thinkingEv,
