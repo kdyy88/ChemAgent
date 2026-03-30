@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Beaker, Brain, FlaskConical, Hammer, Sparkles } from 'lucide-react'
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ui/reasoning'
 import { Steps, StepsBar, StepsContent, StepsItem, StepsTrigger } from '@/components/ui/steps'
@@ -158,6 +158,28 @@ export function ResearchThinking({ steps, isStreaming }: ResearchThinkingProps) 
   const blocks = useMemo(() => buildTimelineBlocks(timeline), [timeline])
   const headerTitle = summarizeHeaderTitle(isStreaming)
 
+  // Derive the key of the currently streaming block (always the last one).
+  const activeBlockKey = useMemo(() => {
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const block = blocks[i]
+      const streaming =
+        block.kind === 'tool_sequence'
+          ? block.items.some((item) => item.isStreaming)
+          : block.item.isStreaming
+      if (streaming) return `${block.id}-${i}`
+    }
+    return null
+  }, [blocks])
+
+  // When the active block changes, auto-collapse all others and open the new one.
+  const prevActiveKeyRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!activeBlockKey) return
+    if (activeBlockKey === prevActiveKeyRef.current) return
+    prevActiveKeyRef.current = activeBlockKey
+    setOpenSteps({ [activeBlockKey]: true })
+  }, [activeBlockKey])
+
   if (timeline.length === 0) return null
 
   return (
@@ -189,7 +211,7 @@ export function ResearchThinking({ steps, isStreaming }: ResearchThinkingProps) 
         {blocks.map((block, blockIndex) => {
           if (block.kind === 'tool_sequence') {
             const stepKey = `${block.id}-${blockIndex}`
-            const stepOpen = openSteps[stepKey] ?? block.items.some((item) => item.isStreaming)
+            const stepOpen = openSteps[stepKey] ?? false
             const activeTitle = block.items.find((item) => item.isStreaming)?.title ?? block.items.at(-1)?.title ?? '工具调用'
 
             return (
@@ -240,7 +262,7 @@ export function ResearchThinking({ steps, isStreaming }: ResearchThinkingProps) 
           const group = block.item
           const Icon = groupIcon(group.kind)
           const stepKey = `${block.id}-${blockIndex}`
-          const stepOpen = openSteps[stepKey] ?? group.isStreaming
+          const stepOpen = openSteps[stepKey] ?? false
           const mergedText = group.count > 1 ? `已合并 ${group.count} 条同类更新` : null
           const statusText = stepStatusText(group)
 
