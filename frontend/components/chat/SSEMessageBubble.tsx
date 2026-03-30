@@ -50,8 +50,15 @@ function ResearchThinking({ steps, isStreaming }: { steps: SSEThinking[]; isStre
       >
         {displayedSteps.map((step, idx) => {
           const stepStreaming = isStreaming && step.done !== true && idx === displayedSteps.length - 1
+          const prefixMap: Record<string, string> = {
+            chem_agent: '[系统规划] ',
+            tools_executor: '[工具执行] ',
+            llm_reasoning: '[模型推理] ',
+          }
+          const prefixText = prefixMap[step.source || 'llm_reasoning'] || ''
           return (
             <div key={idx} className="relative">
+              <span className="font-semibold text-primary/80 mr-1">{prefixText}</span>
               {step.text}
               {stepStreaming && (
                 <span className="inline-block w-[2px] h-[1em] ml-0.5 bg-current align-middle animate-pulse" />
@@ -247,8 +254,15 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
           <span className="text-xs font-medium text-muted-foreground">ChemAgent</span>
 
           {/* Thinking panel — auto-expands while streaming, collapses on completion */}
-          {turn.thinkingSteps.length > 0 && (
+          {turn.thinkingSteps.length > 0 ? (
             <ResearchThinking steps={turn.thinkingSteps} isStreaming={isStreaming} />
+          ) : (
+            isStreaming && turn.activeNode === 'chem_agent' && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground animate-pulse">
+                <span className="inline-block w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                模型正在深度思考中，请稍候...
+              </div>
+            )
           )}
 
           {/* HITL clarification card — shown when researcher needs user input */}

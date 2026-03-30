@@ -43,7 +43,8 @@ function normalizeThinkingText(text: string): string {
     .replace(/[Ġ]/g, ' ')
     // Remove most ASCII control chars but keep newlines/tabs for readability
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-    .replace(/\s+/g, ' ')
+    // Keep \n and \t to preserve model formatting in reasoning panel
+    .replace(/[^\S\r\n\t]+/g, ' ')
     .trim()
 }
 
@@ -66,7 +67,7 @@ function appendThinkingStep(
   entry: SSEThinking,
 ): SSEThinking[] {
   const text = normalizeThinkingText(entry.text)
-  if (!text) return steps
+  if (!text.trim()) return steps
 
   const next = [...steps]
   const last = next[next.length - 1]
@@ -88,7 +89,13 @@ function appendThinkingStep(
   if (last && last.source === entry.source && last.iteration === entry.iteration) {
     // Avoid duplicate final append when provider sends both streamed fragments
     // and a near-identical aggregated reasoning block.
-    if (last.text === text || text.startsWith(last.text) || last.text.startsWith(text)) {
+    const lastTrimmed = last.text.trim()
+    const textTrimmed = text.trim()
+    if (
+      lastTrimmed === textTrimmed ||
+      textTrimmed.startsWith(lastTrimmed) ||
+      lastTrimmed.startsWith(textTrimmed)
+    ) {
       next[next.length - 1] = { ...last, text: text.length >= last.text.length ? text : last.text, done: entry.done }
       return next
     }
@@ -293,20 +300,9 @@ export const useSseStore = create<SseState>((set, get) => {
 
       case 'thinking': {
         const thinkingEv = ev as SSEThinking
-        updateLastTurn((t) => {
-          const prefixMap: Record<string, string> = {
-            chem_agent: '[chem_agent] ',
-            tools_executor: '[tools_executor] ',
-            llm_reasoning: '[llm] ',
-          }
-          const prefix = thinkingEv.source ? `${prefixMap[thinkingEv.source] ?? '[reasoning] '}` : ''
-          return {
-            thinkingSteps: appendThinkingStep(t.thinkingSteps, {
-              ...thinkingEv,
-              text: `${prefix}${thinkingEv.text}`,
-            }),
-          }
-        })
+        updateLastTurn((t) => ({
+          thinkingSteps: appendThinkingStep(t.thinkingSteps, thinkingEv),
+        }))
         break
       }
 
