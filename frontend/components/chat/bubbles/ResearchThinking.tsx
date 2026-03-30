@@ -99,7 +99,7 @@ function groupThinkingSteps(steps: SSEThinking[]): ThinkingGroup[] {
       id: groupId,
       detail: cleanDetail || latestText,
       title: latestText,
-      caption: step.source === 'llm_reasoning' ? '模型摘要' : kind === 'tool' ? '化学操作' : '执行动态',
+      caption: step.source === 'llm_reasoning' ? '模型摘要' : kind === 'tool' ? '使用工具' : '执行动态',
       count: 1,
       kind,
       isStreaming: step.done !== true,
