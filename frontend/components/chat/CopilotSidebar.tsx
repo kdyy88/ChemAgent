@@ -1,5 +1,6 @@
 'use client'
 
+import { AnimatePresence, motion } from 'framer-motion'
 import { FlaskConical, Trash2 } from 'lucide-react'
 import { useSSEChemAgent } from '@/hooks/useSSEChemAgent'
 import { useWorkspaceStore } from '@/store/workspaceStore'
@@ -66,18 +67,27 @@ export function CopilotSidebar() {
 
       {/* ── Footer: task tracker + input ── */}
       <div className="shrink-0 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        {latestTasks.length > 0 && (
-          <div className="px-4 pt-3">
-            <TaskTracker tasks={latestTasks} isStreaming={isStreaming} />
-          </div>
-        )}
+        <AnimatePresence initial={false}>
+          {latestTasks.length > 0 && (
+            <motion.div
+              key="task-tracker"
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.25, ease: 'easeOut' }}
+              className="overflow-hidden px-4 pt-3"
+            >
+              <TaskTracker tasks={latestTasks} isStreaming={isStreaming} />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <div className="p-4 pt-3">
-        <SSEChatInput
-          isStreaming={isStreaming}
-          sendMessage={sendMessage}
-          clearTurns={clearTurns}
-        />
+          <SSEChatInput
+            isStreaming={isStreaming}
+            sendMessage={sendMessage}
+            clearTurns={clearTurns}
+          />
         </div>
       </div>
     </div>

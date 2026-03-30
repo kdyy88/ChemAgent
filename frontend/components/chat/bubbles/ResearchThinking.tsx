@@ -23,6 +23,7 @@ function MetaBadge({ children, highlight }: { children: React.ReactNode; highlig
 interface ResearchThinkingProps {
   steps: SSEThinking[]
   isStreaming: boolean
+  hasPlan?: boolean
 }
 
 interface ThinkingGroup {
@@ -45,13 +46,21 @@ function summarizeHeaderTitle(isStreaming: boolean): string {
 
 function summarizeGroupTitle(step: SSEThinking): string {
   const raw = step.text.trim()
-  // Strip markdown bold/italic that LLM inner monologue often leaks into step text
-  const text = raw.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').trim()
-  if (!text) return '处理中'
+  if (!raw) return '处理中'
 
   if (step.category === 'llm') {
-    return text.length > 56 ? `${text.slice(0, 56).trimEnd()}…` : text
+    // If the text starts with **Title** ... extract only the bold part as the title.
+    // This prevents leaking raw LLM inner monologue ("**Processing drug data** I'm thinking...").
+    const leadingBold = raw.match(/^\*\*(.+?)\*\*/)
+    if (leadingBold) return leadingBold[1]
+    // No leading bold — strip inline markdown and truncate
+    const plain = raw.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').trim()
+    return plain.length > 56 ? `${plain.slice(0, 56).trimEnd()}…` : plain
   }
+
+  // Strip markdown for tool/other categories
+  const text = raw.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').trim()
+  if (!text) return '处理中'
 
   if (step.category === 'tool') {
     return text.replace(/^正在调用：/, '').replace(/^工具完成：/, '')
@@ -132,7 +141,7 @@ function buildTimelineBlocks(timeline: ThinkingGroup[]): TimelineBlock[] {
   return blocks
 }
 
-export function ResearchThinking({ steps, isStreaming }: ResearchThinkingProps) {
+export function ResearchThinking({ steps, isStreaming, hasPlan = false }: ResearchThinkingProps) {
   const [openSteps, setOpenSteps] = useState<Record<string, boolean>>({})
   const timeline = useMemo(() => groupThinkingSteps(steps), [steps])
   const blocks = useMemo(() => buildTimelineBlocks(timeline), [timeline])
@@ -294,6 +303,16 @@ export function ResearchThinking({ steps, isStreaming }: ResearchThinkingProps) 
           )
         })}
       </div>
+
+      {/* Plan generation indicator — shown when tasks appear during streaming */}
+      {isStreaming && hasPlan && (
+        <div className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground/70">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/50 animate-bounce [animation-delay:0ms]" aria-hidden="true" />
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/50 animate-bounce [animation-delay:120ms]" aria-hidden="true" />
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/50 animate-bounce [animation-delay:240ms]" aria-hidden="true" />
+          <span className="ml-1">正在生成执行计划…</span>
+        </div>
+      )}
     </div>
   )
 }

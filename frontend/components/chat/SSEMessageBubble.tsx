@@ -1,9 +1,9 @@
 'use client'
 
-import { memo } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { FlaskConical, AlertTriangle } from 'lucide-react'
 import { Message, MessageContent } from '@/components/ui/message'
-import { Loader } from '@/components/ui/loader'
+import { Skeleton } from '@/components/ui/skeleton'
 import { ClarificationCard } from './ClarificationCard'
 import { LipinskiCard } from './LipinskiCard'
 import { ArtifactDispatcher } from './bubbles/ArtifactDispatcher'
@@ -19,12 +19,28 @@ interface SSEMessageBubbleProps {
 
 export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMessageBubbleProps) {
   const isStreaming = turn.isStreaming
-  // Only flash the typing loader when streaming hasn't produced any thinking steps yet.
-  // Once thinking steps appear, they already signal activity — the blinking bubble is distracting.
+  // showLoader: only when streaming but nothing has arrived yet (no thinking, no text).
+  // We deliberately never show the "..." bubble card — use a subtle inline indicator instead.
   const showLoader = isStreaming && !turn.assistantText && turn.thinkingSteps.length === 0
   const lipinskiCards = parseLipinskiToolCalls(turn.toolCalls)
-  // Gate artifacts/Lipinski: don't reveal them until the final answer has started to appear.
-  const showArtifacts = !isStreaming || Boolean(turn.assistantText)
+
+  // ── Artifact reveal: 1 s delay + skeleton after streaming ends ──────────────
+  // While streaming: hide artifacts completely.
+  // After streaming: wait 1 s, show skeletons, then reveal the real cards.
+  const hasArtifacts = turn.artifacts.length > 0 || lipinskiCards.length > 0
+  const [artifactsReady, setArtifactsReady] = useState(false)
+
+  useEffect(() => {
+    if (!isStreaming && hasArtifacts) {
+      const t = setTimeout(() => setArtifactsReady(true), 1000)
+      return () => clearTimeout(t)
+    }
+    // Reset whenever the turn starts a new stream
+    if (isStreaming) setArtifactsReady(false)
+  }, [isStreaming, hasArtifacts])
+
+  const showArtifactSkeleton = !isStreaming && hasArtifacts && !artifactsReady
+  const showArtifacts = artifactsReady
 
   return (
     <div className="flex flex-col gap-3">
@@ -50,12 +66,18 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
 
           {/* Thinking panel — auto-expands while streaming, collapses on completion */}
           {turn.thinkingSteps.length > 0 ? (
-            <ResearchThinking steps={turn.thinkingSteps} isStreaming={isStreaming} />
+            <ResearchThinking
+              steps={turn.thinkingSteps}
+              isStreaming={isStreaming}
+              hasPlan={turn.tasks.length > 0}
+            />
           ) : (
-            isStreaming && turn.activeNode === 'chem_agent' ? (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground animate-pulse">
-                <span className="inline-block w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" aria-hidden="true" />
-                模型正在深度思考中，请稍候…
+            isStreaming ? (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground py-0.5">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:0ms]" aria-hidden="true" />
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:120ms]" aria-hidden="true" />
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:240ms]" aria-hidden="true" />
+                <span className="ml-1 text-muted-foreground/70">正在思考…</span>
               </div>
             ) : null
           )}
@@ -68,16 +90,12 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
             />
           )}
 
-          {/* Assistant text */}
-          {showLoader ? (
-            <div className="rounded-2xl border bg-card px-4 py-3 shadow-sm">
-              <Loader variant="typing" size="sm" />
-            </div>
-          ) : turn.assistantText ? (
+          {/* Assistant text — suppress the full bubble entirely while thinking is active */}
+          {showLoader ? null : turn.assistantText ? (
             isStreaming ? (
               <div className="rounded-2xl border bg-card px-4 py-3 text-sm leading-relaxed shadow-sm">
                 <span className="whitespace-pre-wrap">{turn.assistantText}</span>
-                <Loader variant="typing" size="sm" className="mt-2" />
+                <span className="inline-block w-3 h-3.5 border-l-2 border-primary ml-0.5 align-middle animate-[blink_1s_ease-in-out_infinite]" aria-hidden="true" />
               </div>
             ) : (
               <MessageContent
@@ -89,7 +107,19 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
             )
           ) : null}
 
-          {/* Structured descriptor output rendered as Lipinski card */}
+          {/* Artifact skeleton — shown for 1s after streaming ends, before real artifacts fade in */}
+          {showArtifactSkeleton && (
+            <div className="flex flex-row flex-wrap gap-3 mt-1" aria-label="加载结果中…">
+              {turn.artifacts.map((_, i) => (
+                <Skeleton key={`skel-${i}`} className="h-40 w-40 rounded-xl" />
+              ))}
+              {lipinskiCards.map((_, i) => (
+                <Skeleton key={`lskel-${i}`} className="h-20 w-full rounded-xl" />
+              ))}
+            </div>
+          )}
+
+          {/* Real artifacts — revealed after 1 s delay */}
           {showArtifacts && lipinskiCards.length > 0 && (
             <div className="flex flex-col gap-3 mt-1">
               {lipinskiCards.map((card, i) => (
@@ -97,8 +127,6 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
               ))}
             </div>
           )}
-
-          {/* Artifacts — only revealed once final answer begins streaming */}
           {showArtifacts && (
             <ArtifactDispatcher artifacts={turn.artifacts} />
           )}
