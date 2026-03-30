@@ -68,6 +68,11 @@ function summarizeGroupTitle(step: SSEThinking): string {
   return text.length > 42 ? `${text.slice(0, 42).trimEnd()}…` : text
 }
 
+function stripLeadingTitle(raw: string): string {
+  // Remove a leading **Title** or **Title**\n from content so it doesn't show twice.
+  return raw.replace(/^\*\*[^*]+\*\*\s*\n?/, '').trim()
+}
+
 function groupThinkingSteps(steps: SSEThinking[]): ThinkingGroup[] {
   const timeline: ThinkingGroup[] = []
 
@@ -76,10 +81,11 @@ function groupThinkingSteps(steps: SSEThinking[]): ThinkingGroup[] {
       step.category === 'tool' ? 'tool' : step.category === 'llm' ? 'llm' : 'other'
     const groupId = `${kind}:${step.group_key || step.source || step.category || summarizeGroupTitle(step)}`
     const latestText = summarizeGroupTitle(step)
+    const cleanDetail = step.category === 'llm' ? stripLeadingTitle(step.text.trim()) : step.text.trim()
     const lastGroup = timeline[timeline.length - 1]
 
     if (lastGroup && lastGroup.id === groupId) {
-      lastGroup.detail = step.text.trim() || lastGroup.detail
+      lastGroup.detail = cleanDetail || lastGroup.detail
       lastGroup.title = latestText || lastGroup.title
       lastGroup.caption = step.source === 'llm_reasoning' ? '模型摘要' : lastGroup.caption
       lastGroup.count += 1
@@ -89,7 +95,7 @@ function groupThinkingSteps(steps: SSEThinking[]): ThinkingGroup[] {
 
     timeline.push({
       id: groupId,
-      detail: step.text.trim() || latestText,
+      detail: cleanDetail || latestText,
       title: latestText,
       caption: step.source === 'llm_reasoning' ? '模型摘要' : kind === 'tool' ? '化学操作' : '执行动态',
       count: 1,
