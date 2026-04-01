@@ -96,7 +96,7 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:0ms]" aria-hidden="true" />
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:120ms]" aria-hidden="true" />
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:240ms]" aria-hidden="true" />
-              <span className="ml-1 text-muted-foreground/70">正在思考…</span>
+              <span className="ml-1 text-muted-foreground/70">Thinking…</span>
             </div>
           )}
 
@@ -106,7 +106,7 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:0ms]" aria-hidden="true" />
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:120ms]" aria-hidden="true" />
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:240ms]" aria-hidden="true" />
-              <span className="ml-1 text-muted-foreground/70">正在制定执行计划…</span>
+              <span className="ml-1 text-muted-foreground/70">Planning…</span>
             </div>
           )}
 
@@ -137,7 +137,7 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
 
           {/* Artifact skeleton — shown for 1s after streaming ends, before real artifacts fade in */}
           {showArtifactSkeleton && (
-            <div className="flex flex-row flex-wrap gap-3 mt-1" aria-label="加载结果中…">
+            <div className="flex flex-row flex-wrap gap-3 mt-1" aria-label="Loading results…">
               {otherArtifacts.map((_, i) => (
                 <Skeleton key={`skel-${i}`} className="h-40 w-40 rounded-xl" />
               ))}

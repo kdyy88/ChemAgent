@@ -7,7 +7,7 @@
     "placeholder": "输入化学问题，例如：计算阿司匹林的分子量…",
     "send": "发送",
     "clear": "清空对话",
-    "thinking": "思考中…",
+    "thinking": "thinking...",
     "streaming": "正在生成…",
     "new_conversation": "新对话",
     "empty_state": "向 ChemAgent 提问，开始化学探索之旅"

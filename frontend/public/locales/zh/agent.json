@@ -16,7 +16,7 @@
     "reasoning": "🧠 智能体推理中…"
   },
   "thinking_panel": {
-    "header_streaming": "思考中",
+    "header_streaming": "thinking...",
     "header_done": "思考记录",
     "processing": "处理中",
     "caption_llm_reasoning": "模型摘要",
