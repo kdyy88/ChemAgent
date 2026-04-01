@@ -88,11 +88,7 @@ export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatIn
       )}
 
       <PromptInputTextarea
-        placeholder={
-          activeFunctionId && currentSmiles
-            ? `问关于 ${currentSmiles.slice(0, 20)}… 的问题`
-            : 'Ask about any chemical compound…'
-        }
+        placeholder={'Ask about any chemical compound…'}
         onKeyDown={handleKeyDown}
       />
       <PromptInputActions className="justify-between">
