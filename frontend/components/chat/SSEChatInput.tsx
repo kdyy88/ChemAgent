@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Send, X, Plus, Upload, Globe } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
@@ -19,6 +20,7 @@ import {
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import { useWorkspaceStore } from '@/store/workspaceStore'
+import '@/lib/i18n/client'
 
 interface SSEChatInputProps {
   isStreaming: boolean
@@ -27,9 +29,10 @@ interface SSEChatInputProps {
 }
 
 export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatInputProps) {
+  const { t } = useTranslation('common')
   const [value, setValue] = useState('')
   const [chatSmiles, setChatSmiles] = useState<string | null>(null)
-  const { currentSmiles, activeFunctionId } = useWorkspaceStore()
+  const { currentSmiles } = useWorkspaceStore()
 
   const handleSubmit = async () => {
     const trimmed = value.trim()
@@ -46,14 +49,10 @@ export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatIn
   }
 
   const handleAddSmiles = () => {
-    if (currentSmiles && !chatSmiles) {
-      setChatSmiles(currentSmiles)
-    }
+    if (currentSmiles && !chatSmiles) setChatSmiles(currentSmiles)
   }
 
-  const handleRemoveSmiles = () => {
-    setChatSmiles(null)
-  }
+  const handleRemoveSmiles = () => setChatSmiles(null)
 
   const smilesLabel = chatSmiles ? chatSmiles.slice(0, 22) + (chatSmiles.length > 22 ? '…' : '') : ''
 
@@ -66,7 +65,6 @@ export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatIn
       disabled={isStreaming}
       className="w-full"
     >
-      {/* SMILES Tag Section */}
       {chatSmiles && (
         <div className="flex items-center gap-2 px-2 pt-2 pb-1">
           <Badge
@@ -88,12 +86,11 @@ export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatIn
       )}
 
       <PromptInputTextarea
-        placeholder={'Ask about any chemical compound…'}
+        placeholder={t('chat.placeholder')}
         onKeyDown={handleKeyDown}
       />
       <PromptInputActions className="justify-between">
-        {/* Add SMILES Dropdown Menu */}
-        <PromptInputAction tooltip="添加数据源到聊天框">
+        <PromptInputAction tooltip={t('input.add_datasource')}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -102,7 +99,7 @@ export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatIn
                 variant="ghost"
                 className="h-7 px-2"
                 disabled={isStreaming}
-                aria-label="Add data source"
+                aria-label={t('input.add_datasource')}
               >
                 <Plus className="h-3.5 w-3.5" />
               </Button>
@@ -112,39 +109,40 @@ export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatIn
                 onClick={handleAddSmiles}
                 disabled={!currentSmiles || !!chatSmiles || isStreaming}
               >
-                <span>添加当前 SMILES</span>
+                <span>{t('input.add_smiles')}</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem disabled>
                 <Upload className="h-4 w-4" />
-                <span>上传文件</span>
-                <span className="ml-auto text-xs text-muted-foreground">暂未开放</span>
+                <span>{t('input.upload_file')}</span>
+                <span className="ml-auto text-xs text-muted-foreground">{t('input.coming_soon')}</span>
               </DropdownMenuItem>
               <DropdownMenuItem disabled>
                 <Globe className="h-4 w-4" />
-                <span>指定网站</span>
-                <span className="ml-auto text-xs text-muted-foreground">暂未开放</span>
+                <span>{t('input.specify_website')}</span>
+                <span className="ml-auto text-xs text-muted-foreground">{t('input.coming_soon')}</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </PromptInputAction>
 
-        {/* Send / streaming indicator */}
         {isStreaming ? (
           <div className="flex items-center gap-1.5 px-3 text-sm text-muted-foreground">
-            <Loader variant="typing" size="sm" />
-            <span>Analyzing…</span>
+            <Loader size="sm" />
+            <span>{t('input.streaming')}</span>
           </div>
         ) : (
-          <PromptInputAction tooltip="Send message">
+          <PromptInputAction tooltip="">
             <Button
               type="button"
-              size="default"
-              disabled={!value.trim()}
               onClick={handleSubmit}
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2"
+              disabled={!value.trim()}
+              aria-label={t('input.send')}
             >
-              <Send className="h-4 w-4" />
-              Send
+              <Send className="h-3.5 w-3.5" />
             </Button>
           </PromptInputAction>
         )}

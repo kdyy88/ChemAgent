@@ -25,7 +25,7 @@ export function LanguageSwitcher() {
     if (active !== locale) {
       setLocale(active)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (
@@ -38,9 +38,7 @@ export function LanguageSwitcher() {
           aria-label="Switch language"
         >
           <Languages className="h-4 w-4" aria-hidden="true" />
-          <span className="absolute bottom-0.5 right-0.5 text-[8px] font-bold leading-none uppercase select-none pointer-events-none">
-            {locale}
-          </span>
+
         </Button>
       </DropdownMenuTrigger>
 

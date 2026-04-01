@@ -26,7 +26,7 @@ describe('SSEChatInput', () => {
       />,
     )
 
-    expect(screen.getByPlaceholderText('Ask about any chemical compound…')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('chat.placeholder')).toBeInTheDocument()
   })
 
   it('adds SMILES tag when "添加当前 SMILES" menu item is clicked', async () => {
@@ -48,11 +48,11 @@ describe('SSEChatInput', () => {
     )
 
     // Open dropdown menu
-    const dropdownButton = screen.getByRole('button', { name: 'Add data source' })
+    const dropdownButton = screen.getByRole('button', { name: 'input.add_datasource' })
     await user.click(dropdownButton)
 
     // Click the menu item
-    const menuItem = screen.getByText('添加当前 SMILES')
+    const menuItem = screen.getByText('input.add_smiles')
     await user.click(menuItem)
 
     // The tag should now be visible
@@ -78,9 +78,9 @@ describe('SSEChatInput', () => {
     )
 
     // Add the tag via dropdown
-    const dropdownButton = screen.getByRole('button', { name: 'Add data source' })
+    const dropdownButton = screen.getByRole('button', { name: 'input.add_datasource' })
     await user.click(dropdownButton)
-    const menuItem = screen.getByText('添加当前 SMILES')
+    const menuItem = screen.getByText('input.add_smiles')
     await user.click(menuItem)
 
     expect(screen.getByText('🧪 CCO')).toBeInTheDocument()
@@ -110,9 +110,9 @@ describe('SSEChatInput', () => {
       />,
     )
 
-    const dropdownButton = screen.getByRole('button', { name: 'Add data source' })
+    const dropdownButton = screen.getByRole('button', { name: 'input.add_datasource' })
     await user.click(dropdownButton)
-    const menuItem = screen.getByText('添加当前 SMILES')
+    const menuItem = screen.getByText('input.add_smiles')
     await user.click(menuItem)
 
     // The full SMILES should be in title attribute
@@ -139,13 +139,13 @@ describe('SSEChatInput', () => {
       />,
     )
 
-    let dropdownButton = screen.getByRole('button', { name: 'Add data source' })
+    let dropdownButton = screen.getByRole('button', { name: 'input.add_datasource' })
     await user.click(dropdownButton)
-    const menuItem = screen.getByText('添加当前 SMILES')
+    const menuItem = screen.getByText('input.add_smiles')
     await user.click(menuItem)
 
     // After adding, the dropdown button should still be enabled
-    dropdownButton = screen.getByRole('button', { name: 'Add data source' })
+    dropdownButton = screen.getByRole('button', { name: 'input.add_datasource' })
     expect(dropdownButton).not.toBeDisabled()
   })
 
@@ -166,16 +166,16 @@ describe('SSEChatInput', () => {
       />,
     )
 
-    const dropdownButton = screen.getByRole('button', { name: 'Add data source' })
+    const dropdownButton = screen.getByRole('button', { name: 'input.add_datasource' })
     await user.click(dropdownButton)
-    const menuItem = screen.getByText('添加当前 SMILES')
+    const menuItem = screen.getByText('input.add_smiles')
     await user.click(menuItem)
 
     const textareas = screen.getAllByRole('textbox')
     const textarea = textareas[0]
     await user.type(textarea, 'Tell me about this molecule')
 
-    const sendButton = screen.getByRole('button', { name: 'Send' })
+    const sendButton = screen.getByRole('button', { name: 'input.send' })
     await user.click(sendButton)
 
     expect(mockSendMessage).toHaveBeenCalledWith('Tell me about this molecule', {
@@ -205,7 +205,7 @@ describe('SSEChatInput', () => {
     const textarea = textareas[0]
     await user.type(textarea, 'Tell me about this molecule')
 
-    const sendButton = screen.getByRole('button', { name: 'Send' })
+    const sendButton = screen.getByRole('button', { name: 'input.send' })
     await user.click(sendButton)
 
     // activeSmiles should be null since we didn't manually add it
@@ -231,13 +231,13 @@ describe('SSEChatInput', () => {
       />,
     )
 
-    const dropdownButton = screen.getByRole('button', { name: 'Add data source' })
+    const dropdownButton = screen.getByRole('button', { name: 'input.add_datasource' })
     await user.click(dropdownButton)
 
     // Check that unavailable options exist with "暂未开放" label
-    expect(screen.getByText('上传文件')).toBeInTheDocument()
-    expect(screen.getByText('指定网站')).toBeInTheDocument()
-    const disabledItems = screen.getAllByText('暂未开放')
+    expect(screen.getByText('input.upload_file')).toBeInTheDocument()
+    expect(screen.getByText('input.specify_website')).toBeInTheDocument()
+    const disabledItems = screen.getAllByText('input.coming_soon')
     expect(disabledItems.length).toBe(2)
   })
 })

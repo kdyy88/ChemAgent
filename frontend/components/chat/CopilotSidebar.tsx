@@ -1,5 +1,6 @@
 'use client'
 
+import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
 import { FlaskConical, Trash2 } from 'lucide-react'
 import { useSSEChemAgent } from '@/hooks/useSSEChemAgent'
@@ -9,8 +10,10 @@ import { Button } from '@/components/ui/button'
 import { SSEMessageList } from './SSEMessageList'
 import { SSEChatInput } from './SSEChatInput'
 import { TaskTracker } from './TaskTracker'
+import '@/lib/i18n/client'
 
 export function CopilotSidebar() {
+  const { t } = useTranslation('common')
   const { turns, isStreaming, sendMessage, clearTurns } = useSSEChemAgent()
   const { currentSmiles, currentName } = useWorkspaceStore()
   const latestTasks = turns.at(-1)?.tasks ?? []
@@ -31,7 +34,7 @@ export function CopilotSidebar() {
           {/* Turn counter */}
           {turns.length > 0 && (
             <span className="text-xs text-muted-foreground tabular-nums">
-              {turns.length} 轮
+              {t('copilot.turns', { count: turns.length })}
             </span>
           )}
           {/* Clear button */}
@@ -41,8 +44,8 @@ export function CopilotSidebar() {
             className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
             onClick={clearTurns}
             disabled={isStreaming || turns.length === 0}
-            title="清除对话记录"
-            aria-label="清除对话记录"
+            title={t('copilot.clear_history')}
+            aria-label={t('copilot.clear_history')}
           >
             <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
           </Button>
