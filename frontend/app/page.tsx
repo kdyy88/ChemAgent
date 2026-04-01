@@ -76,17 +76,17 @@ export default function Home() {
       {/* Main Content Resizable Split */}
       <div className="flex-1 overflow-hidden">
         <ResizablePanelGroup orientation={isDesktop ? 'horizontal' : 'vertical'}>
-          <ResizablePanel defaultSize={15} minSize={10}>
+          <ResizablePanel defaultSize={15} minSize="12%">
             <ToolSidebar />
           </ResizablePanel>
           <ResizableHandle withHandle />
-          <ResizablePanel defaultSize={60} minSize={40}>
+          <ResizablePanel defaultSize={60} minSize="40%">
             <div className="h-full w-full mx-auto max-w-4xl ">
               <WorkspaceArea />
             </div>
           </ResizablePanel>
           <ResizableHandle withHandle />
-          <ResizablePanel defaultSize={15} minSize={10}>
+          <ResizablePanel defaultSize={15} minSize="12%">
             <CopilotSidebar />
           </ResizablePanel>
         </ResizablePanelGroup>
