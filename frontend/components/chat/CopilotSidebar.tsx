@@ -27,8 +27,6 @@ export function CopilotSidebar() {
         </div>
         <span className="text-sm font-semibold tracking-tight">ChemAgent</span>
 
-
-
         <div className="ml-auto flex items-center gap-1.5">
           {/* Turn counter */}
           {turns.length > 0 && (
