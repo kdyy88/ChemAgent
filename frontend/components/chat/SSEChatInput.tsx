@@ -1,9 +1,10 @@
 'use client'
 
 import { useState } from 'react'
-import { Send, Trash2 } from 'lucide-react'
+import { Send, X, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
+import { Badge } from '@/components/ui/badge'
 import {
   PromptInput,
   PromptInputTextarea,
@@ -20,13 +21,14 @@ interface SSEChatInputProps {
 
 export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatInputProps) {
   const [value, setValue] = useState('')
+  const [chatSmiles, setChatSmiles] = useState<string | null>(null)
   const { currentSmiles, activeFunctionId } = useWorkspaceStore()
 
   const handleSubmit = async () => {
     const trimmed = value.trim()
     if (!trimmed || isStreaming) return
     setValue('')
-    await sendMessage(trimmed, { activeSmiles: currentSmiles ?? null })
+    await sendMessage(trimmed, { activeSmiles: chatSmiles ?? null })
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -35,6 +37,18 @@ export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatIn
       handleSubmit()
     }
   }
+
+  const handleAddSmiles = () => {
+    if (currentSmiles && !chatSmiles) {
+      setChatSmiles(currentSmiles)
+    }
+  }
+
+  const handleRemoveSmiles = () => {
+    setChatSmiles(null)
+  }
+
+  const smilesLabel = chatSmiles ? chatSmiles.slice(0, 22) + (chatSmiles.length > 22 ? '…' : '') : ''
 
   return (
     <PromptInput
@@ -45,6 +59,27 @@ export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatIn
       disabled={isStreaming}
       className="w-full"
     >
+      {/* SMILES Tag Section */}
+      {chatSmiles && (
+        <div className="flex items-center gap-2 px-2 pt-2 pb-1">
+          <Badge
+            variant="outline"
+            className="text-xs font-mono bg-primary/5 border-primary/30 text-primary"
+            title={chatSmiles}
+          >
+            🧪 {smilesLabel}
+            <button
+              onClick={handleRemoveSmiles}
+              disabled={isStreaming}
+              className="ml-1 inline-flex items-center justify-center rounded-full hover:bg-primary/20 disabled:opacity-50"
+              aria-label="Remove SMILES"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </Badge>
+        </div>
+      )}
+
       <PromptInputTextarea
         placeholder={
           activeFunctionId && currentSmiles
@@ -54,17 +89,18 @@ export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatIn
         onKeyDown={handleKeyDown}
       />
       <PromptInputActions className="justify-between">
-        {/* Clear history */}
-        <PromptInputAction tooltip="清除对话记录">
+        {/* Add current SMILES button */}
+        <PromptInputAction tooltip="将当前SMILES添加到聊天框">
           <Button
             type="button"
             size="sm"
             variant="ghost"
             className="h-7 px-2"
-            onClick={clearTurns}
-            disabled={isStreaming}
+            onClick={handleAddSmiles}
+            disabled={isStreaming || !currentSmiles || !!chatSmiles}
+            aria-label="Add current SMILES"
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Plus className="h-3.5 w-3.5" />
           </Button>
         </PromptInputAction>
 
