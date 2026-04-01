@@ -27,16 +27,7 @@ export function CopilotSidebar() {
         </div>
         <span className="text-sm font-semibold tracking-tight">ChemAgent</span>
 
-        {/* Active molecule pill */}
-        {hasSmiles && (
-          <Badge
-            variant="outline"
-            className="ml-1 max-w-[9rem] truncate text-xs font-mono bg-primary/5 border-primary/30 text-primary"
-            title={currentSmiles}
-          >
-            🧪 {smilesLabel}
-          </Badge>
-        )}
+
 
         <div className="ml-auto flex items-center gap-1.5">
           {/* Turn counter */}
