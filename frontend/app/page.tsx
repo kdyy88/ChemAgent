@@ -1,7 +1,8 @@
 'use client'
 
 import { useSyncExternalStore } from 'react'
-import { PlusCircle, FlaskConical } from 'lucide-react'
+import Link from 'next/link'
+import { PlusCircle, FlaskConical, ScrollText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useSseStore } from '@/store/sseStore'
 import {
@@ -58,6 +59,14 @@ export default function Home() {
             <PlusCircle className="h-4 w-4" aria-hidden="true" />
             <span className="hidden sm:inline text-xs">New Chat</span>
           </Button>
+          <Link
+            href="/changelog"
+            className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+            aria-label="更新日志"
+          >
+            <ScrollText className="h-3.5 w-3.5" aria-hidden="true" />
+            <span className="hidden sm:inline">更新日志</span>
+          </Link>
           <LanguageSwitcher />
           <ThemeToggle />
         </div>
