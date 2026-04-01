@@ -41,18 +41,6 @@ export type Step =
       artifacts?: Artifact[]
       data?: unknown
     }
-  | {
-      kind: 'tool_result'
-      callId?: string
-      tool: string
-      status: 'success' | 'error'
-      summary: string
-      data: Record<string, unknown>
-      retryHint?: string
-      artifacts: Artifact[]
-      sender?: string
-    }
-  | { kind: 'agent_reply'; content: string; sender?: string }
   | { kind: 'error'; content: string }
 
 export type Turn = {
@@ -74,6 +62,7 @@ export type Turn = {
 }
 
 export type ServerEvent =
+  | { type: 'ping' }
   | { type: 'session.started'; session_id: string; tools: ToolMeta[]; resumed: boolean; has_greeting?: boolean; agent_models?: AgentModelConfig }
   | { type: 'run.started'; session_id: string; turn_id: string; run_id: string; prompt: string; is_greeting?: boolean }
   | { type: 'assistant.message'; session_id: string; turn_id: string; run_id: string; message: string; sender?: string }
@@ -126,3 +115,4 @@ export type ClientEvent =
   | { type: 'session.resume'; session_id: string }
   | { type: 'session.clear'; content: ''; agent_models?: AgentModelConfig }
   | { type: 'user.message'; turn_id: string; content: string }
+  | { type: 'pong' }

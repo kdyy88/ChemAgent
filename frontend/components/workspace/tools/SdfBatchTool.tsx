@@ -186,7 +186,7 @@ export function SdfBatchTool() {
             </div>
           )}
 
-          <a href={getSdfSplitDownloadUrl()} download>
+          <a href={getSdfSplitDownloadUrl(splitResult.download_id)} download>
             <Button className="w-full" variant="outline">
               <Download className="mr-2 h-4 w-4" />
               下载 ZIP ({splitResult.molecule_count} 个 SDF)
@@ -217,7 +217,7 @@ export function SdfBatchTool() {
             )}
           </div>
 
-          <a href={getSdfMergeDownloadUrl()} download>
+          <a href={getSdfMergeDownloadUrl(mergeResult.download_id)} download>
             <Button className="w-full" variant="outline">
               <Download className="mr-2 h-4 w-4" />
               下载合并后 SDF

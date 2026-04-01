@@ -8,7 +8,9 @@ from pydantic import BaseModel, Field
 
 SessionControlType = Literal["session.start", "session.resume"]
 UserMessageType = Literal["user.message", "session.clear"]
+HeartbeatClientType = Literal["pong"]
 ServerEventType = Literal[
+    "ping",
     "session.started",
     "run.started",
     "run.finished",
@@ -31,6 +33,10 @@ class UserMessage(BaseModel):
     content: str
     turn_id: str | None = None
     agent_models: dict[str, str] | None = None
+
+
+class HeartbeatMessage(BaseModel):
+    type: HeartbeatClientType
 
 
 class EventEnvelope(BaseModel):

@@ -76,7 +76,12 @@ const INITIAL_COMPONENTS: Partial<Components> = {
       )
     }
     return <a href={href} {...props}>{children}</a>
-  }
+  },
+  img: function ImgComponent({ src, alt, ...props }) {
+    if (!src) return null
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={src} alt={alt ?? ''} {...props} />
+  },
 }
 
 const MemoizedMarkdownBlock = memo(
@@ -91,6 +96,7 @@ const MemoizedMarkdownBlock = memo(
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks]}
         components={components}
+        urlTransform={(url) => url}
       >
         {content}
       </ReactMarkdown>

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -96,11 +96,19 @@ function BabelErrorCard({ error }: { error: string }) {
 
 function FormatConversionCard({ data }: { data: FormatConversionResult }) {
   const [copied, setCopied] = useState(false)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current !== null) clearTimeout(timeoutRef.current)
+    }
+  }, [])
 
   function handleCopy() {
     navigator.clipboard.writeText(data.output)
     setCopied(true)
-    setTimeout(() => setCopied(false), 1800)
+    if (timeoutRef.current !== null) clearTimeout(timeoutRef.current)
+    timeoutRef.current = setTimeout(() => setCopied(false), 1800)
   }
 
   const extension: Record<string, string> = {

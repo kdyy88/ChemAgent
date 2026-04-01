@@ -1,9 +1,8 @@
 """
 RDKit REST endpoints — Phase 1 (standalone API, no agents).
 
-Route handlers delegate entirely to ``app.chem.rdkit_ops`` — no chemistry
-logic lives here.  Route handlers are synchronous ``def`` (not ``async``) so
-FastAPI dispatches RDKit's blocking C++ calls through its thread-pool executor.
+Route handlers delegate heavy work to the dedicated Redis-backed worker so the
+FastAPI process remains lightweight and WebSocket-friendly under load.
 
 Routes (all under the /api prefix added in main.py):
   POST /api/rdkit/analyze      — Legacy Lipinski (backward compat)
@@ -22,15 +21,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from app.chem.rdkit_ops import (
-    compute_descriptors,
-    compute_lipinski,
-    compute_similarity,
-    murcko_scaffold,
-    strip_salts_and_neutralize,
-    substructure_match,
-    validate_smiles,
-)
+from app.core.task_bridge import run_via_worker
 
 router = APIRouter(prefix="/rdkit", tags=["rdkit"])
 
@@ -72,39 +63,56 @@ class ScaffoldRequest(BaseModel):
 # ── Route handlers ────────────────────────────────────────────────────────────
 
 
-def analyze(req: AnalyzeRequest) -> dict:
+async def analyze(req: AnalyzeRequest) -> dict:
     """Legacy Lipinski analysis — kept for backward compatibility."""
-    return compute_lipinski(req.smiles, req.name)
+    return await run_via_worker(
+        "rdkit.compute_lipinski",
+        {"smiles": req.smiles, "name": req.name},
+    )
 
 
-def validate(req: SmilesRequest) -> dict:
+async def validate(req: SmilesRequest) -> dict:
     """T1: Validate a SMILES string and return canonical form + basic stats."""
-    return validate_smiles(req.smiles)
+    return await run_via_worker("rdkit.validate_smiles", {"smiles": req.smiles})
 
 
-def salt_strip(req: SmilesRequest) -> dict:
+async def salt_strip(req: SmilesRequest) -> dict:
     """T9: Strip salt fragments and neutralize charges."""
-    return strip_salts_and_neutralize(req.smiles)
+    return await run_via_worker("rdkit.strip_salts_and_neutralize", {"smiles": req.smiles})
 
 
-def descriptors(req: DescriptorsRequest) -> dict:
+async def descriptors(req: DescriptorsRequest) -> dict:
     """T3: Comprehensive molecular descriptors (replaces Lipinski)."""
-    return compute_descriptors(req.smiles, req.name)
+    return await run_via_worker(
+        "rdkit.compute_descriptors",
+        {"smiles": req.smiles, "name": req.name},
+    )
 
 
-def similarity(req: SimilarityRequest) -> dict:
+async def similarity(req: SimilarityRequest) -> dict:
     """T4: Compute Tanimoto similarity between two molecules."""
-    return compute_similarity(req.smiles1, req.smiles2, req.radius, req.n_bits)
+    return await run_via_worker(
+        "rdkit.compute_similarity",
+        {
+            "smiles1": req.smiles1,
+            "smiles2": req.smiles2,
+            "radius": req.radius,
+            "n_bits": req.n_bits,
+        },
+    )
 
 
-def substructure(req: SubstructureRequest) -> dict:
+async def substructure(req: SubstructureRequest) -> dict:
     """T5: Check SMARTS substructure match and PAINS screening."""
-    return substructure_match(req.smiles, req.smarts_pattern)
+    return await run_via_worker(
+        "rdkit.substructure_match",
+        {"smiles": req.smiles, "smarts_pattern": req.smarts_pattern},
+    )
 
 
-def scaffold(req: ScaffoldRequest) -> dict:
+async def scaffold(req: ScaffoldRequest) -> dict:
     """T6: Extract Bemis-Murcko scaffold and generic scaffold."""
-    return murcko_scaffold(req.smiles)
+    return await run_via_worker("rdkit.murcko_scaffold", {"smiles": req.smiles})
 
 
 # Register routes after function definitions so docstrings are preserved.

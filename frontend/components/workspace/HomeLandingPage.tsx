@@ -1,8 +1,7 @@
 'use client'
 
 import { motion, type Variants } from 'framer-motion'
-import { Beaker, BrainCircuit, Network, Zap } from 'lucide-react'
-import { ParticleBackground } from './ParticleBackground'
+import { Beaker, BrainCircuit, Network } from 'lucide-react'
 
 export function HomeLandingPage() {
   const containerVariants: Variants = {
@@ -22,9 +21,12 @@ export function HomeLandingPage() {
   }
 
   return (
-    <div className="relative w-full h-full overflow-hidden flex flex-col items-center justify-center bg-zinc-50/50 dark:bg-zinc-950/50">
-      {/* Dynamic Background */}
-      {/* <ParticleBackground /> */}
+    <div className="relative w-full h-full overflow-hidden flex flex-col items-center justify-center bg-background/50">
+      {/* Radial teal glow — background atmosphere */}
+      <div className="pointer-events-none absolute inset-0 -z-10">
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[500px] w-[500px] rounded-full bg-primary/8 blur-[80px]" />
+        <div className="absolute top-1/4 right-1/4 h-[250px] w-[250px] rounded-full bg-primary/5 blur-[60px]" />
+      </div>
 
       {/* Main Content */}
       <div className="z-10 flex flex-col items-center max-w-4xl px-6 text-center">
@@ -36,27 +38,57 @@ export function HomeLandingPage() {
         >
           {/* Badge */}
           <motion.div variants={itemVariants} className="mb-6">
-            <span className="inline-flex items-center rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-xs font-medium text-primary shadow-sm backdrop-blur-sm">
+            {/* Decorative molecular hex ring */}
+            <svg
+              className="mx-auto mb-4 w-16 h-16 text-primary/30"
+              viewBox="0 0 64 64"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1"
+              aria-hidden="true"
+            >
+              <polygon points="32,4 58,18 58,46 32,60 6,46 6,18" strokeLinejoin="round" />
+              <polygon points="32,14 50,24 50,44 32,54 14,44 14,24" strokeLinejoin="round" opacity="0.5" />
+              <circle cx="32" cy="32" r="5" fill="currentColor" opacity="0.4" />
+              {[0,1,2,3,4,5].map(i => {
+                const angle = (i * 60 - 90) * Math.PI / 180
+                const x = 32 + 19 * Math.cos(angle)
+                const y = 32 + 19 * Math.sin(angle)
+                return <circle key={i} cx={x} cy={y} r="2.5" fill="currentColor" opacity="0.5" />
+              })}
+            </svg>
+            <span className="inline-flex items-center rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary tracking-wide shadow-sm shadow-primary/10 backdrop-blur-sm">
               <SparklesIcon className="mr-1.5 h-3.5 w-3.5" />
-              v2.0 Workspace Engine
+              v2.0 · Molecular Workspace Engine
             </span>
           </motion.div>
 
           {/* Title */}
-          <motion.h1 
-            variants={itemVariants} 
-            className="text-5xl md:text-6xl font-light tracking-tight text-foreground mb-6"
-            style={{ fontFamily: 'Inter, sans-serif' }}
+          <motion.h1
+            variants={itemVariants}
+            className="font-display text-5xl md:text-6xl font-bold tracking-tight mb-6 text-balance"
           >
-            ChemAgent <span className="font-semibold text-primary">Workspace</span>
+            <span className="bg-gradient-to-r from-foreground via-foreground to-foreground/60 bg-clip-text text-transparent">
+              Chem
+            </span>
+            <span className="bg-gradient-to-r from-primary via-primary to-primary/70 bg-clip-text text-transparent">
+              Agent
+            </span>{" "}
+            <span className="bg-gradient-to-br from-foreground/80 to-foreground/40 bg-clip-text text-transparent font-light">
+              Workspace
+            </span>
           </motion.h1>
 
           {/* Subtitle */}
-          <motion.p 
+          <motion.p
             variants={itemVariants}
-            className="text-lg md:text-xl text-muted-foreground font-light max-w-2xl mb-16 leading-relaxed"
+            className="text-base md:text-lg text-muted-foreground font-light max-w-xl mb-12 leading-relaxed text-pretty"
           >
-            新一代高通量计算与多智能体化学工作台。在左侧选择专业计算工具，右侧召唤 AI Copilot，开启您的分子探索之旅。
+            权威检索 · 结构化工具调用 · 可解释流式过程展示
+            <br />
+            <span className="text-xs tracking-widest font-mono text-muted-foreground/60 uppercase mt-1 block">
+              Authoritative · Structured · Explainable
+            </span>
           </motion.p>
 
           {/* Feature Cards */}
@@ -84,29 +116,29 @@ export function HomeLandingPage() {
       </div>
 
       {/* Aesthetic gradients */}
-      <div className="pointer-events-none absolute inset-0 -z-10 flex items-center justify-center">
-        <div className="absolute top-1/2 left-1/2 -mt-[300px] -ml-[300px] h-[600px] w-[600px] rounded-full bg-primary/5 blur-3xl" />
-        <div className="absolute top-1/2 left-1/2 mt-[100px] -ml-[400px] h-[400px] w-[400px] rounded-full bg-blue-500/5 blur-3xl" />
-      </div>
+      
     </div>
   )
 }
 
 function FeatureCard({ icon, title, description }: { icon: React.ReactNode, title: string, description: string }) {
   return (
-    <motion.div 
+    <motion.div
       variants={{
         hidden: { opacity: 0, y: 20 },
         visible: { opacity: 1, y: 0 }
       }}
-      whileHover={{ y: -5, scale: 1.02 }}
-      className="flex flex-col items-center text-center p-6 rounded-2xl bg-background/60 backdrop-blur-md border border-border/50 shadow-xl shadow-black/5 dark:shadow-black/20"
+      whileHover={{ y: -4 }}
+      className="group relative flex flex-col p-5 rounded-xl bg-card/60 backdrop-blur-md border border-border hover:border-primary/40 shadow-sm hover:shadow-primary/10 hover:shadow-lg transition-all duration-300 overflow-hidden text-left"
     >
-      <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+      {/* Teal left-border accent */}
+      <div className="absolute left-0 top-4 bottom-4 w-[2px] rounded-r bg-primary/40 group-hover:bg-primary transition-colors duration-300" />
+
+      <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary group-hover:bg-primary/15 transition-colors duration-300 ml-2">
         {icon}
       </div>
-      <h3 className="mb-2 text-base font-medium">{title}</h3>
-      <p className="text-sm text-muted-foreground font-light leading-relaxed">
+      <h3 className="mb-1.5 text-sm font-semibold ml-2">{title}</h3>
+      <p className="text-xs text-muted-foreground leading-relaxed ml-2">
         {description}
       </p>
     </motion.div>

@@ -119,9 +119,7 @@ def _mol_to_highlighted_png_b64(
     size: tuple[int, int] = (400, 400),
 ) -> str:
     """Render a mol with specific atoms highlighted in red."""
-    from rdkit.Chem import Draw as ChemDraw
-
-    drawer = ChemDraw.rdMolDraw2D.MolDraw2DCairo(*size)
+    drawer = Draw.rdMolDraw2D.MolDraw2DCairo(*size)
     drawer.drawOptions().highlightColour = (1.0, 0.4, 0.4, 0.5)
     drawer.DrawMolecule(
         mol,
@@ -176,7 +174,7 @@ def strip_salts_and_neutralize(smiles: str) -> dict:
     # Step 1: Split into fragments, keep the largest (parent molecule)
     try:
         stripped = _SALT_REMOVER.StripMol(mol, dontRemoveEverything=True)
-    except Exception:
+    except (ValueError, RuntimeError, AttributeError):
         stripped = mol
 
     # Step 2: If multi-fragment, pick the heaviest fragment as parent

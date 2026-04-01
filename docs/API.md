@@ -1,6 +1,8 @@
-# ChemAgent REST API 参考
+# ChemAgent API 参考
 
-本文档覆盖所有 HTTP REST 端点。WebSocket 协议（`/api/chat/ws`）见 `ARCHITECTURE.md` 第 4 节。
+本文档覆盖所有 HTTP 端点，包括 SSE 流式对话端点和 REST 化学计算端点。
+
+配套文档：[ARCHITECTURE.md](ARCHITECTURE.md) — 完整系统架构
 
 ---
 
@@ -8,7 +10,71 @@
 
 | 项目 | 说明 |
 |------|------|
-| 基础 URL | `http://localhost:8000` |
+| 基础 URL | 开发环境：`http://localhost:8000`；Compose：`http://localhost:3030` 或同域 `/api/*` |
+
+---
+
+## 0. SSE 流式对话端点（核心聊天接口）
+
+### `POST /api/chat/stream`
+
+**功能**：接收用户消息，通过 LangGraph 图推理，以 Server-Sent Events 实时返回结构化事件流。
+
+#### 请求体
+
+```json
+{
+  "message":       "计算布洛芬的 Lipinski 性质",
+  "session_id":    "optional-uuid",
+  "turn_id":       "client-generated-uuid",
+  "active_smiles": "CC(C)Cc1ccc(cc1)C(C)C(=O)O"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `message` | string (required) | 用户自然语言输入 |
+| `session_id` | string | 可选；不提供则自动生成 |
+| `turn_id` | string | 可选；不提供则自动生成；用于客户端事件关联 |
+| `active_smiles` | string \| null | 当前画布上已激活的 SMILES（可选） |
+
+#### 响应：`text/event-stream`
+
+每个事件格式：`data: {JSON}\n\n`
+
+| `type` 字段 | 说明 | 额外字段 |
+|------------|------|---------|
+| `run_started` | 流建立立即发送 | `message` |
+| `node_start` | LangGraph 节点开始 | `node` (supervisor/visualizer/analyst/prep/shadow_lab) |
+| `token` | LLM 流式文本片段 | `node`, `content` |
+| `tool_start` | `@tool` 开始执行 | `tool`, `input` |
+| `tool_end` | `@tool` 执行完成 | `tool`, `output` |
+| `artifact` | 产物就绪（图像/文件/JSON） | `kind`, `data`, `title`, `mime_type`, `meta` |
+| `shadow_error` | Shadow Lab SMILES 校验失败 | `smiles`, `error` |
+| `node_end` | 节点执行完毕 | `node` |
+| `done` | 图运行完毕 | — |
+| `error` | 未处理异常 | `error`, `traceback` |
+
+#### Artifact kind 枚举
+
+| `kind` | `mime_type` | 说明 |
+|--------|-------------|------|
+| `molecule_image` | `image/png` | 2D 结构图，base64 |
+| `descriptors` | `application/json` | Lipinski/QED/TPSA 描述符 JSON |
+| `conformer_3d` | `chemical/x-mdl-sdfile` | MMFF94/UFF 优化 SDF |
+| `pdbqt` | `chemical/x-pdbqt` | AutoDock 对接配体 PDBQT |
+| `format_conversion` | `text/plain` | 格式转换输出（InChI、MOL2 等） |
+
+#### 示例（curl）
+
+```bash
+curl -N -X POST http://localhost:8000/api/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"message":"计算阿司匹林的 Lipinski 性质","active_smiles":"CC(=O)Oc1ccccc1C(=O)O"}'
+```
+
+---
+
 | Content-Type | `application/json` |
 | 成功响应 | `200 OK`，body 含 `"is_valid": true` |
 | 失败响应 | `200 OK`（业务错误）或 `422`（请求体校验失败），body 含 `"is_valid": false` + `"error": "<原因>"` |
@@ -321,5 +387,10 @@ curl -s -X POST http://localhost:8000/api/babel/pdbqt \
 
 ### `POST /api/babel/sdf-split` 与 `POST /api/babel/sdf-merge`
 **功能**：SDF 文件高通量批量处理。支持 `multipart/form-data` 上传，单/多文件分割合并。
-**响应**：成功解析后返回内存处理的 `.zip` 打包下载包或 `sdf` 流文本。
+
+**响应**：成功后返回 JSON 摘要 + `download_id`，随后通过下载端点获取真实文件内容：
+- `GET /api/babel/sdf-split-download?result_id=<download_id>`
+- `GET /api/babel/sdf-merge-download?result_id=<download_id>`
+
+`download_id` 对应的 Redis 缓存默认保留 5 分钟，过期后需重新执行任务。
 
