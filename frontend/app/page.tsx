@@ -1,10 +1,8 @@
 'use client'
 
 import { useSyncExternalStore } from 'react'
-import Link from 'next/link'
-import { PlusCircle, FlaskConical, LayoutTemplate } from 'lucide-react'
+import { PlusCircle, FlaskConical } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useSseStore } from '@/store/sseStore'
 import {
   ResizableHandle,
@@ -17,6 +15,7 @@ import { WorkspaceArea } from '@/components/workspace/WorkspaceArea'
 import { CopilotSidebar } from '@/components/chat/CopilotSidebar'
 import GlobalLoading from './loading'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
+import { LanguageSwitcher } from '@/components/ui/LanguageSwitcher'
 
 function useHasMounted() {
   return useSyncExternalStore(
@@ -59,16 +58,7 @@ export default function Home() {
             <PlusCircle className="h-4 w-4" aria-hidden="true" />
             <span className="hidden sm:inline text-xs">New Chat</span>
           </Button>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground" aria-label="Workflow Editor" asChild>
-                <Link href="/workflow">
-                  <LayoutTemplate className="h-4 w-4" aria-hidden="true" />
-                </Link>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Workflow Editor</TooltipContent>
-          </Tooltip>
+          <LanguageSwitcher />
           <ThemeToggle />
         </div>
       </header>
