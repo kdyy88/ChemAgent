@@ -122,7 +122,7 @@ describe('SSEChatInput', () => {
     expect(element.textContent).toMatch(/🧪.*…/)
   })
 
-  it('disables dropdown button when SMILES is already added', async () => {
+  it('dropdown button remains enabled when SMILES is already added', async () => {
     const user = userEvent.setup()
     useWorkspaceStore.setState({
       currentSmiles: 'CCO',
@@ -144,9 +144,9 @@ describe('SSEChatInput', () => {
     const menuItem = screen.getByText('添加当前 SMILES')
     await user.click(menuItem)
 
-    // After adding, the dropdown button should be disabled
+    // After adding, the dropdown button should still be enabled
     dropdownButton = screen.getByRole('button', { name: 'Add data source' })
-    expect(dropdownButton).toBeDisabled()
+    expect(dropdownButton).not.toBeDisabled()
   })
 
   it('sends message with chat SMILES separate from workspace SMILES', async () => {

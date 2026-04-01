@@ -105,13 +105,13 @@ export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatIn
                 size="sm"
                 variant="ghost"
                 className="h-7 px-2"
-                disabled={isStreaming || !!chatSmiles}
+                disabled={isStreaming}
                 aria-label="Add data source"
               >
                 <Plus className="h-3.5 w-3.5" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" side="top">
+            <DropdownMenuContent align="start" side="top" className="w-48">
               <DropdownMenuItem
                 onClick={handleAddSmiles}
                 disabled={!currentSmiles || !!chatSmiles || isStreaming}
