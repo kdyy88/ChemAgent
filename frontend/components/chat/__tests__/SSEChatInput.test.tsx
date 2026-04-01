@@ -29,7 +29,7 @@ describe('SSEChatInput', () => {
     expect(screen.getByPlaceholderText('Ask about any chemical compound…')).toBeInTheDocument()
   })
 
-  it('adds SMILES tag when "Add current SMILES" button is clicked', async () => {
+  it('adds SMILES tag when "添加当前 SMILES" menu item is clicked', async () => {
     const user = userEvent.setup()
     useWorkspaceStore.setState({
       currentSmiles: 'CCO',
@@ -47,8 +47,13 @@ describe('SSEChatInput', () => {
       />,
     )
 
-    const addButton = screen.getByRole('button', { name: 'Add current SMILES' })
-    await user.click(addButton)
+    // Open dropdown menu
+    const dropdownButton = screen.getByRole('button', { name: 'Add data source' })
+    await user.click(dropdownButton)
+
+    // Click the menu item
+    const menuItem = screen.getByText('添加当前 SMILES')
+    await user.click(menuItem)
 
     // The tag should now be visible
     expect(screen.getByTitle('CCO')).toBeInTheDocument()
@@ -72,9 +77,11 @@ describe('SSEChatInput', () => {
       />,
     )
 
-    // Add the tag
-    const addButton = screen.getByRole('button', { name: 'Add current SMILES' })
-    await user.click(addButton)
+    // Add the tag via dropdown
+    const dropdownButton = screen.getByRole('button', { name: 'Add data source' })
+    await user.click(dropdownButton)
+    const menuItem = screen.getByText('添加当前 SMILES')
+    await user.click(menuItem)
 
     expect(screen.getByText('🧪 CCO')).toBeInTheDocument()
 
@@ -103,8 +110,10 @@ describe('SSEChatInput', () => {
       />,
     )
 
-    const addButton = screen.getByRole('button', { name: 'Add current SMILES' })
-    await user.click(addButton)
+    const dropdownButton = screen.getByRole('button', { name: 'Add data source' })
+    await user.click(dropdownButton)
+    const menuItem = screen.getByText('添加当前 SMILES')
+    await user.click(menuItem)
 
     // The full SMILES should be in title attribute
     expect(screen.getByTitle(longSmiles)).toBeInTheDocument()
@@ -113,7 +122,7 @@ describe('SSEChatInput', () => {
     expect(element.textContent).toMatch(/🧪.*…/)
   })
 
-  it('disables "Add SMILES" button when SMILES is already added', async () => {
+  it('disables dropdown button when SMILES is already added', async () => {
     const user = userEvent.setup()
     useWorkspaceStore.setState({
       currentSmiles: 'CCO',
@@ -130,12 +139,14 @@ describe('SSEChatInput', () => {
       />,
     )
 
-    let addButton = screen.getByRole('button', { name: 'Add current SMILES' })
-    await user.click(addButton)
+    let dropdownButton = screen.getByRole('button', { name: 'Add data source' })
+    await user.click(dropdownButton)
+    const menuItem = screen.getByText('添加当前 SMILES')
+    await user.click(menuItem)
 
-    // After adding, button should be disabled - get fresh reference
-    addButton = screen.getByRole('button', { name: 'Add current SMILES' })
-    expect(addButton).toBeDisabled()
+    // After adding, the dropdown button should be disabled
+    dropdownButton = screen.getByRole('button', { name: 'Add data source' })
+    expect(dropdownButton).toBeDisabled()
   })
 
   it('sends message with chat SMILES separate from workspace SMILES', async () => {
@@ -155,8 +166,10 @@ describe('SSEChatInput', () => {
       />,
     )
 
-    const addButton = screen.getByRole('button', { name: 'Add current SMILES' })
-    await user.click(addButton)
+    const dropdownButton = screen.getByRole('button', { name: 'Add data source' })
+    await user.click(dropdownButton)
+    const menuItem = screen.getByText('添加当前 SMILES')
+    await user.click(menuItem)
 
     const textareas = screen.getAllByRole('textbox')
     const textarea = textareas[0]
@@ -199,6 +212,33 @@ describe('SSEChatInput', () => {
     expect(mockSendMessage).toHaveBeenCalledWith('Tell me about this molecule', {
       activeSmiles: null,
     })
+  })
+
+  it('shows disabled menu items for upload file and specify website', async () => {
+    const user = userEvent.setup()
+    useWorkspaceStore.setState({
+      currentSmiles: 'CCO',
+    })
+
+    const mockSendMessage = vi.fn()
+    const mockClearTurns = vi.fn()
+
+    render(
+      <SSEChatInput
+        isStreaming={false}
+        sendMessage={mockSendMessage}
+        clearTurns={mockClearTurns}
+      />,
+    )
+
+    const dropdownButton = screen.getByRole('button', { name: 'Add data source' })
+    await user.click(dropdownButton)
+
+    // Check that unavailable options exist with "暂未开放" label
+    expect(screen.getByText('上传文件')).toBeInTheDocument()
+    expect(screen.getByText('指定网站')).toBeInTheDocument()
+    const disabledItems = screen.getAllByText('暂未开放')
+    expect(disabledItems.length).toBe(2)
   })
 })
 

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Send, X, Plus } from 'lucide-react'
+import { Send, X, Plus, Upload, Globe } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { Badge } from '@/components/ui/badge'
@@ -11,6 +11,13 @@ import {
   PromptInputActions,
   PromptInputAction,
 } from '@/components/ui/prompt-input'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu'
 import { useWorkspaceStore } from '@/store/workspaceStore'
 
 interface SSEChatInputProps {
@@ -89,19 +96,41 @@ export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatIn
         onKeyDown={handleKeyDown}
       />
       <PromptInputActions className="justify-between">
-        {/* Add current SMILES button */}
-        <PromptInputAction tooltip="将当前SMILES添加到聊天框">
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="h-7 px-2"
-            onClick={handleAddSmiles}
-            disabled={isStreaming || !currentSmiles || !!chatSmiles}
-            aria-label="Add current SMILES"
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </Button>
+        {/* Add SMILES Dropdown Menu */}
+        <PromptInputAction tooltip="添加数据源到聊天框">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2"
+                disabled={isStreaming || !!chatSmiles}
+                aria-label="Add data source"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" side="top">
+              <DropdownMenuItem
+                onClick={handleAddSmiles}
+                disabled={!currentSmiles || !!chatSmiles || isStreaming}
+              >
+                <span>添加当前 SMILES</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem disabled>
+                <Upload className="h-4 w-4" />
+                <span>上传文件</span>
+                <span className="ml-auto text-xs text-muted-foreground">暂未开放</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled>
+                <Globe className="h-4 w-4" />
+                <span>指定网站</span>
+                <span className="ml-auto text-xs text-muted-foreground">暂未开放</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </PromptInputAction>
 
         {/* Send / streaming indicator */}
