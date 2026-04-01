@@ -46,26 +46,20 @@ export const useI18nStore = create<I18nState>()(
 
         set({ locale: nextLocale })
 
-        // Sync i18next imperatively (safe to call on the client only)
         if (typeof window !== 'undefined') {
-          // Dynamic import avoids loading the singleton during SSR
-          import('@/lib/i18n/client').then(({ default: i18n }) => {
-            if (i18n.language !== nextLocale) {
-              i18n.changeLanguage(nextLocale)
-            }
-          })
-
-          // Navigate to the locale-prefixed version of the current path.
-          // e.g. /zh/workflow  →  /en/workflow
+          // Build the new locale-prefixed path
           const currentPath = window.location.pathname
           const segments = currentPath.split('/')
-          // segments[1] is the current locale segment (set by middleware)
-          const localeIndex = SUPPORTED_LOCALES.find((l) => l === segments[1]) ? 1 : null
-          const pathWithoutLocale =
-            localeIndex !== null ? '/' + segments.slice(2).join('/') : currentPath
+          const hasLocalePrefix = SUPPORTED_LOCALES.find((l) => l === segments[1])
+          const pathWithoutLocale = hasLocalePrefix
+            ? '/' + segments.slice(2).join('/')
+            : currentPath
 
           const newPath = `/${nextLocale}${pathWithoutLocale || ''}${window.location.search}`
-          window.history.pushState({}, '', newPath)
+
+          // Full navigation — required so Next.js Server Components re-render
+          // with the new locale and the middleware updates the NEXT_LOCALE cookie.
+          window.location.href = newPath
         }
       },
     }),
