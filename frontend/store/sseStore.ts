@@ -187,6 +187,9 @@ export const useSseStore = create<SseState>((set, get) => {
     clearTurns: () => {
       sseClient.clearConversation()
       set({ turns: [], isStreaming: false })
+      const workspace = useWorkspaceStore.getState()
+      workspace.setSmiles('')
+      workspace.setName('')
     },
 
     sendMessage: async (message, options = {}) => {

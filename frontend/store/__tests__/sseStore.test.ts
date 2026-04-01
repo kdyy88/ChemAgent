@@ -15,7 +15,11 @@ import { useWorkspaceStore } from '../workspaceStore'
 describe('sseStore', () => {
   beforeEach(() => {
     fetchEventSourceMock.mockReset()
-    useSseStore.getState().clearTurns()
+    // Reset state directly without calling clearTurns to avoid side effects in tests
+    useSseStore.setState({
+      turns: [],
+      isStreaming: false,
+    })
     useWorkspaceStore.setState({
       navMode: 'business',
       activeFunctionId: null,
@@ -258,5 +262,36 @@ describe('sseStore', () => {
     await expect(useSseStore.getState().sendMessage('premature close')).rejects.toThrow(
       'SSE stream closed before a terminal event was received',
     )
+  })
+
+  it('clears workspace state (currentSmiles and currentName) when clearTurns is called', async () => {
+    fetchEventSourceMock.mockImplementation(async (_url: string, options?: { onmessage?: (msg: { data: string }) => void }) => {
+      const emit = (event: SSEEvent) => {
+        options?.onmessage?.({ data: JSON.stringify(event) })
+      }
+
+      emit({ type: 'run_started', session_id: 'session-1', turn_id: 'turn-1', message: 'test molecule' })
+      emit({ type: 'tool_start', tool: 'tool_validate_smiles', input: { smiles: 'CCO' }, session_id: 'session-1', turn_id: 'turn-1' })
+      emit({
+        type: 'tool_end',
+        tool: 'tool_validate_smiles',
+        output: { canonical_smiles: 'CCO', name: 'Ethanol', is_valid: true },
+        session_id: 'session-1',
+        turn_id: 'turn-1',
+      })
+      emit({ type: 'done', session_id: 'session-1', turn_id: 'turn-1' })
+    })
+
+    await useSseStore.getState().sendMessage('test molecule')
+
+    expect(useWorkspaceStore.getState().currentSmiles).toBe('CCO')
+    expect(useWorkspaceStore.getState().currentName).toBe('Ethanol')
+    expect(useSseStore.getState().turns).toHaveLength(1)
+
+    useSseStore.getState().clearTurns()
+
+    expect(useSseStore.getState().turns).toHaveLength(0)
+    expect(useWorkspaceStore.getState().currentSmiles).toBe('')
+    expect(useWorkspaceStore.getState().currentName).toBe('')
   })
 })
