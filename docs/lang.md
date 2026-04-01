@@ -47,4 +47,16 @@ translateReasoningText('复杂度判断完成。') // en: "Complexity assessment
 - 所有硬编码中文字符串（`'🛠️ 工具执行中…'`、`'❌ 连接中断:'` 等）替换为拦截器调用
 - 后端推回的 `_NODE_REASONING_MESSAGES` 字符串通过 `ZH_REASONING_MAP` 映射到目标语言
 
+
+**是的，语言切换功能与业务逻辑完全解耦，随时可以弃用。** 具体来说：
+
+| 组件 | 作用 | 弃用方式 |
+|---|---|---|
+| `components/ui/LanguageSwitcher.tsx` | UI 下拉菜单 | 从 `app/page.tsx` 删除 `<LanguageSwitcher />` |
+| `store/i18nStore.ts` | 语言偏好持久化 | 不影响其他 store，可直接删除 |
+| `middleware.ts` | URL 路由重定向 | 删除整个文件，或将 `app/[lang]/` 改回 `app/` |
+| `lib/i18n/` | 翻译配置与 SSE 拦截器 | `sse-interceptor.ts` 依赖 i18next，但其余业务组件不依赖它 |
+
+最简弃用方式：删除 `<LanguageSwitcher />`，将 `DEFAULT_LOCALE` 固定为 `'zh'`，删除 `middleware.ts`，`app/[lang]/` 目录改回 `app/`。所有业务逻辑（SSE、Zustand stores、API 调用）**不依赖** i18n 基础设施。
+
 Made changes.

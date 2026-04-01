@@ -15,6 +15,24 @@
     "awaiting_reply": "🙋 等待您的回复…",
     "reasoning": "🧠 智能体推理中…"
   },
+  "thinking_panel": {
+    "header_streaming": "思考中",
+    "header_done": "思考记录",
+    "processing": "处理中",
+    "caption_llm_reasoning": "模型摘要",
+    "caption_tool": "使用工具",
+    "caption_other": "执行动态",
+    "status_running": "状态：进行中",
+    "outputting": "输出中",
+    "subtitle_streaming": "思考内容正在实时输出",
+    "subtitle_done": "展开可查看完整思考与工具步骤",
+    "stages": "{{count}} 个阶段",
+    "tool_call_fallback": "工具调用",
+    "steps": "{{count}} 步",
+    "merged_short": "合并 {{count}} 条",
+    "merged_updates": "已合并 {{count}} 条同类更新",
+    "running": "进行中"
+  },
   "thinking": {
     "structure_issue": "检测到结构问题：{{error}}",
     "needs_clarification": "需要用户澄清：{{question}}",

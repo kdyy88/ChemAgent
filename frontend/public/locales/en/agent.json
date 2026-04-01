@@ -15,6 +15,24 @@
     "awaiting_reply": "🙋 Awaiting your reply…",
     "reasoning": "🧠 Agent reasoning…"
   },
+  "thinking_panel": {
+    "header_streaming": "Thinking",
+    "header_done": "Thinking log",
+    "processing": "Processing",
+    "caption_llm_reasoning": "Model summary",
+    "caption_tool": "Tool used",
+    "caption_other": "Action",
+    "status_running": "Status: running",
+    "outputting": "Outputting",
+    "subtitle_streaming": "Thinking in real time",
+    "subtitle_done": "Expand to view full reasoning and tool steps",
+    "stages": "{{count}} stages",
+    "tool_call_fallback": "Tool call",
+    "steps": "{{count}} steps",
+    "merged_short": "Merged {{count}}",
+    "merged_updates": "Merged {{count}} similar updates",
+    "running": "Running"
+  },
   "thinking": {
     "structure_issue": "Structure issue detected: {{error}}",
     "needs_clarification": "Needs user clarification: {{question}}",
