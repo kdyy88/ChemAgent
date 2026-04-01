@@ -188,7 +188,7 @@ export function ToolSidebar() {
                               className={`flex items-center w-full pl-6 pr-2 py-1.5 text-xs rounded-md transition-colors ${activeFunctionId === item.id ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:bg-muted text-foreground'}`}
                             >
                               <span className="truncate flex-1 text-left">
-                               // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                               {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                                 {t(item.labelKey as any) as string}
                               </span>
                             </button>
