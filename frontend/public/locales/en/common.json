@@ -1,0 +1,47 @@
+{
+  "app": {
+    "title": "ChemAgent",
+    "description": "AI Chemistry Expert"
+  },
+  "chat": {
+    "placeholder": "Ask a chemistry question, e.g. Calculate the molecular weight of aspirin…",
+    "send": "Send",
+    "clear": "Clear conversation",
+    "thinking": "Thinking…",
+    "streaming": "Generating…",
+    "new_conversation": "New conversation",
+    "empty_state": "Ask ChemAgent a question to start exploring chemistry"
+  },
+  "nav": {
+    "chat": "Chat",
+    "workflow": "Workflow",
+    "software": "Software view",
+    "business": "Business view"
+  },
+  "workspace": {
+    "molecule_viewer": "Molecule viewer",
+    "no_molecule": "No molecule loaded",
+    "smiles_label": "SMILES",
+    "copy_smiles": "Copy SMILES"
+  },
+  "interrupt": {
+    "clarification_needed": "Clarification needed",
+    "submit_reply": "Submit reply",
+    "quick_replies": "Quick replies"
+  },
+  "errors": {
+    "connection_lost": "Connection lost",
+    "http_error": "HTTP error {{status}}",
+    "generic": "An unknown error occurred"
+  },
+  "theme": {
+    "toggle": "Toggle theme",
+    "light": "Light",
+    "dark": "Dark"
+  },
+  "language": {
+    "toggle": "Switch language",
+    "zh": "中文",
+    "en": "English"
+  }
+}

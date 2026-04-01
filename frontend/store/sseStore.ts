@@ -18,6 +18,13 @@ import type {
 } from '@/lib/sse-types'
 import { sseClient } from '@/services/sse-client'
 import { useWorkspaceStore } from '@/store/workspaceStore'
+import {
+  translateNodeLabel,
+  translateStatusLabel,
+  translateConnectionError,
+  isLowValueReasoningText,
+  translateReasoningText,
+} from '@/lib/i18n/sse-interceptor'
 
 const WORKSPACE_SMILES_KEYS = [
   'cleaned_smiles',
@@ -25,24 +32,6 @@ const WORKSPACE_SMILES_KEYS = [
   'scaffold_smiles',
   'smiles',
 ] as const
-
-const NODE_LABELS: Record<string, string> = {
-  task_router: '🧭 正在判断任务复杂度…',
-  planner_node: '🗂️ 正在生成任务清单…',
-  chem_agent: '🧠 智能体推理中…',
-  tools_executor: '🛠️ 工具执行中…',
-}
-
-const IGNORED_LOW_VALUE_THINKING = new Set([
-  '正在快速判断这次请求是否需要显式任务规划...',
-  '复杂度判断完成。',
-  '检测到复杂任务，正在生成可执行任务清单...',
-  '任务清单已生成，准备进入执行阶段。',
-  '进入智能体大脑，正在评估当前信息并规划下一步行动...',
-  '智能体本轮思考完毕。',
-  '准备转入工具执行流水线...',
-  '工具调用链执行完毕，正在将实验数据交回给智能体大脑。',
-])
 
 function normalizeThinkingText(text: string): string {
   return text
@@ -54,8 +43,9 @@ function normalizeThinkingText(text: string): string {
 function shouldIgnoreThinking(entry: SSEThinking, text: string): boolean {
   if (!text) return true
   if (entry.importance === 'low') return true
-  if (IGNORED_LOW_VALUE_THINKING.has(text.trim())) return true
+  if (isLowValueReasoningText(text)) return true
   if (text.includes('本轮未收到可展示的模型 reasoning 摘要')) return true
+  if (text.includes('No model reasoning summary received')) return true
   return false
 }
 
@@ -69,7 +59,8 @@ function updateWorkspaceFromPayload(payload: Record<string, unknown>) {
 }
 
 function appendThinkingStep(steps: SSEThinking[], entry: SSEThinking): SSEThinking[] {
-  const text = normalizeThinkingText(entry.text)
+  // Translate any known backend reasoning strings to the user's active locale
+  const text = normalizeThinkingText(translateReasoningText(entry.text))
   if (shouldIgnoreThinking(entry, text)) return steps
 
   const next = [...steps]
@@ -127,7 +118,7 @@ function createTurn(turnId: string, message: string, tasks: SSETaskItem[]): SSET
     artifacts: [],
     tasks,
     shadowErrors: [],
-    statusLabel: '🧠 智能体推理中…',
+    statusLabel: translateStatusLabel('reasoning'),
     pendingInterrupt: undefined,
     thinkingSteps: [],
   }
@@ -156,7 +147,7 @@ export interface SseState {
 }
 
 export function nodeLabel(node: string): string {
-  return NODE_LABELS[node] ?? `${node} 执行中…`
+  return translateNodeLabel(node)
 }
 
 export const useSseStore = create<SseState>((set, get) => {
@@ -290,14 +281,15 @@ export const useSseStore = create<SseState>((set, get) => {
       const index = get().turns.at(-1)?.toolCalls.length ?? 0
       updateLastTurn((turn) => ({
         toolCalls: [...turn.toolCalls, { tool, input, output: undefined, done: false }],
-        statusLabel: '🛠️ 工具执行中…',
+        statusLabel: translateStatusLabel('tool_running'),
       }))
       return index
     },
 
     completeToolCall: (index, output) => {
       updateLastTurn((turn) => {
-        if (index < 0 || index >= turn.toolCalls.length) return { statusLabel: '🧠 正在整合工具结果…' }
+        if (index < 0 || index >= turn.toolCalls.length)
+          return { statusLabel: translateStatusLabel('integrating_results') }
 
         const toolCalls = [...turn.toolCalls]
         toolCalls[index] = {
@@ -308,7 +300,7 @@ export const useSseStore = create<SseState>((set, get) => {
 
         return {
           toolCalls,
-          statusLabel: '🧠 正在整合工具结果…',
+          statusLabel: translateStatusLabel('integrating_results'),
         }
       })
     },
@@ -323,24 +315,26 @@ export const useSseStore = create<SseState>((set, get) => {
       const activeTask = tasks.find((task) => task.status === 'in_progress')
       updateLastTurn(() => ({
         tasks,
-        statusLabel: activeTask ? `📋 正在执行任务 ${activeTask.id}` : '📋 任务清单已更新',
+        statusLabel: activeTask
+          ? translateStatusLabel('task_running', { id: activeTask.id })
+          : translateStatusLabel('task_list_updated'),
       }))
     },
 
     addShadowError: (error) => {
       updateLastTurn((turn) => ({
         shadowErrors: [...turn.shadowErrors, error],
-        statusLabel: '⚠️ 正在修正结构问题…',
+        statusLabel: translateStatusLabel('shadow_error'),
       }))
     },
 
     setPendingInterrupt: (interrupt) => {
       stopStreamingTurn((turn) => ({
-        statusLabel: '🙋 等待您的回复…',
+        statusLabel: translateStatusLabel('awaiting_reply'),
         pendingInterrupt: interrupt,
         thinkingSteps: appendThinkingStep(turn.thinkingSteps, {
           type: 'thinking',
-          text: `需要用户澄清：${interrupt.question}`,
+          text: `${translateStatusLabel('awaiting_reply').replace(/^🙋 /, '')} ${interrupt.question}`,
           iteration: 0,
           done: true,
           source: 'chem_agent',
@@ -368,7 +362,7 @@ export const useSseStore = create<SseState>((set, get) => {
 
     handleConnectionError: (message) => {
       stopStreamingTurn(() => ({
-        assistantText: `❌ 连接中断: ${message}`,
+        assistantText: translateConnectionError(message),
       }))
     },
   }

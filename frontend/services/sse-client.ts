@@ -11,6 +11,7 @@ import type {
   SSETaskUpdate,
   SSEThinking,
 } from '@/lib/sse-types'
+import { translateStreamError } from '@/lib/i18n/sse-interceptor'
 
 const API_BASE =
   (typeof process !== 'undefined' &&
@@ -191,9 +192,10 @@ export class SSEClient {
       case 'shadow_error': {
         const error = ev as SSEShadowError
         handlers.addShadowError(error)
+        // translateStreamError produces the localized "Structure issue detected: …" string
         handlers.appendThinking({
           type: 'thinking',
-          text: `检测到结构问题：${error.error}`,
+          text: translateStreamError(error.error).replace(/\n\n> ❌ \*\*.*?\*\*: /, '⚠️ '),
           iteration: 0,
           done: true,
           source: 'tools_executor',
@@ -228,7 +230,7 @@ export class SSEClient {
         return
 
       case 'error':
-        handlers.failTurn(`\n\n> ❌ **错误**: ${(ev as SSEError).error}`)
+        handlers.failTurn(translateStreamError((ev as SSEError).error))
         this.finishStream()
         return
     }

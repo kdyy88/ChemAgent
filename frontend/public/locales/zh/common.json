@@ -1,0 +1,47 @@
+{
+  "app": {
+    "title": "ChemAgent",
+    "description": "AI 化学专家"
+  },
+  "chat": {
+    "placeholder": "输入化学问题，例如：计算阿司匹林的分子量…",
+    "send": "发送",
+    "clear": "清空对话",
+    "thinking": "思考中…",
+    "streaming": "正在生成…",
+    "new_conversation": "新对话",
+    "empty_state": "向 ChemAgent 提问，开始化学探索之旅"
+  },
+  "nav": {
+    "chat": "对话",
+    "workflow": "工作流",
+    "software": "软件视图",
+    "business": "业务视图"
+  },
+  "workspace": {
+    "molecule_viewer": "分子查看器",
+    "no_molecule": "暂无分子",
+    "smiles_label": "SMILES",
+    "copy_smiles": "复制 SMILES"
+  },
+  "interrupt": {
+    "clarification_needed": "需要澄清",
+    "submit_reply": "提交回复",
+    "quick_replies": "快速回复"
+  },
+  "errors": {
+    "connection_lost": "连接中断",
+    "http_error": "HTTP 错误 {{status}}",
+    "generic": "发生未知错误"
+  },
+  "theme": {
+    "toggle": "切换主题",
+    "light": "浅色",
+    "dark": "深色"
+  },
+  "language": {
+    "toggle": "切换语言",
+    "zh": "中文",
+    "en": "English"
+  }
+}
