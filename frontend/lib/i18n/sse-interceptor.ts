@@ -26,6 +26,10 @@
 import i18next from '@/lib/i18n/client'
 import type {} from '@/lib/i18n/types'
 
+// Pre-load namespaces needed by Zustand/SSE handlers so t() works before
+// any React component mounts and triggers useTranslation().
+i18next.loadNamespaces(['agent'])
+
 // ── Node label translation ────────────────────────────────────────────────────
 
 /**
@@ -92,7 +96,13 @@ export function translateStatusLabel(key: StatusKey, vars?: Record<string, unkno
  *   // zh: "\n\n> ❌ **错误**: RDKit error: invalid SMILES"
  */
 export function translateStreamError(error: string): string {
-  return i18next.t('agent:error.stream_error', { error })
+  const key = 'agent:error.stream_error'
+  const result = i18next.t(key, { error })
+  // If namespace not yet loaded, i18next returns the key — use inline fallback
+  if (result === key || result.includes('error.stream_error')) {
+    return `\n\n> ❌ **错误**: ${error}`
+  }
+  return result
 }
 
 /**
@@ -103,7 +113,13 @@ export function translateStreamError(error: string): string {
  *   // zh: "❌ 连接中断: network timeout"
  */
 export function translateConnectionError(message: string): string {
-  return i18next.t('agent:error.connection_lost', { message })
+  const key = 'agent:error.connection_lost'
+  const result = i18next.t(key, { message })
+  // If namespace not yet loaded, i18next returns the key — use inline fallback
+  if (result === key || result.includes('error.connection_lost')) {
+    return `❌ 连接中断: ${message}`
+  }
+  return result
 }
 
 // ── Thinking text translation ────────────────────────────────────────────────
