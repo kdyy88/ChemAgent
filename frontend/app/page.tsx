@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { PlusCircle, FlaskConical, ScrollText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useSseStore } from '@/store/sseStore'
+import { useUIStore } from '@/store/uiStore'
 import {
   ResizableHandle,
   ResizablePanel,
@@ -14,6 +15,7 @@ import { useMediaQuery } from '@/hooks/use-media-query'
 import { ToolSidebar } from '@/components/workspace/ToolSidebar'
 import { WorkspaceArea } from '@/components/workspace/WorkspaceArea'
 import { CopilotSidebar } from '@/components/chat/CopilotSidebar'
+import { AgentLayout } from '@/components/agent/AgentLayout'
 import GlobalLoading from './loading'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
 import { LanguageSwitcher } from '@/components/ui/LanguageSwitcher'
@@ -30,6 +32,7 @@ export default function Home() {
   const clearTurns = useSseStore((s) => s.clearTurns)
   const isDesktop = useMediaQuery('(min-width: 768px)')
   const isMounted = useHasMounted()
+  const { appMode } = useUIStore()
 
   if (!isMounted) {
     return <GlobalLoading />
@@ -72,23 +75,27 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Main Content Resizable Split */}
+      {/* ── Main content: mode-driven layout ── */}
       <div className="flex-1 overflow-hidden">
-        <ResizablePanelGroup orientation={isDesktop ? 'horizontal' : 'vertical'}>
-          <ResizablePanel defaultSize={15} minSize="12%">
-            <ToolSidebar />
-          </ResizablePanel>
-          <ResizableHandle withHandle />
-          <ResizablePanel defaultSize={60} minSize="40%">
-            <div className="h-full w-full mx-auto max-w-4xl ">
-              <WorkspaceArea />
-            </div>
-          </ResizablePanel>
-          <ResizableHandle withHandle />
-          <ResizablePanel defaultSize={15} minSize="12%">
-            <CopilotSidebar />
-          </ResizablePanel>
-        </ResizablePanelGroup>
+        {appMode === 'agent' ? (
+          <AgentLayout />
+        ) : (
+          <ResizablePanelGroup orientation={isDesktop ? 'horizontal' : 'vertical'}>
+            <ResizablePanel defaultSize={15} minSize="12%">
+              <ToolSidebar />
+            </ResizablePanel>
+            <ResizableHandle withHandle />
+            <ResizablePanel defaultSize={60} minSize="40%">
+              <div className="h-full w-full mx-auto max-w-4xl ">
+                <WorkspaceArea />
+              </div>
+            </ResizablePanel>
+            <ResizableHandle withHandle />
+            <ResizablePanel defaultSize={15} minSize="12%">
+              <CopilotSidebar />
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        )}
       </div>
 
       {/* Footer */}

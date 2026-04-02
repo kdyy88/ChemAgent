@@ -10,6 +10,7 @@ import { ArtifactDispatcher } from './bubbles/ArtifactDispatcher'
 import { ResearchThinking } from './bubbles/ResearchThinking'
 import { WebSourcesArtifact } from './bubbles/WebSourcesArtifact'
 import { parseLipinskiToolCalls } from '@/lib/chem-parsers'
+import { useUIStore } from '@/store/uiStore'
 import type { SSETurn, WebSearchSourcesArtifact } from '@/lib/sse-types'
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -20,6 +21,8 @@ interface SSEMessageBubbleProps {
 
 export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMessageBubbleProps) {
   const isStreaming = turn.isStreaming
+  const { appMode } = useUIStore()
+  const isAgentMode = appMode === 'agent'
   const lipinskiCards = parseLipinskiToolCalls(turn.toolCalls)
 
   // Split artifacts: web sources show immediately; the rest are delayed
@@ -49,8 +52,8 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
     if (isStreaming) setArtifactsReady(false)
   }, [isStreaming, hasOtherArtifacts])
 
-  const showArtifactSkeleton = !isStreaming && hasOtherArtifacts && !artifactsReady
-  const showArtifacts = artifactsReady
+  const showArtifactSkeleton = !isStreaming && hasOtherArtifacts && !artifactsReady && !isAgentMode
+  const showArtifacts = artifactsReady && !isAgentMode
   // Web sources show immediately as soon as they arrive (no delay)
   const showWebSources = webSources.length > 0
 

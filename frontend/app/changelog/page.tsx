@@ -27,6 +27,32 @@ interface ChangelogVersion {
 
 const CHANGELOG: ChangelogVersion[] = [
   {
+    version: 'v1.3.0',
+    date: '2026-04-03',
+    highlight: '双层引擎架构 & 3D 分子可视化',
+    sections: [
+      { type: 'Feature', content: '双层生成器引擎架构 (ChemSessionEngine)：外层负责生命周期与拦截器，内层封装 LangGraph astream_events(v2)，实现控制面/数据面隔离' },
+      { type: 'Feature', content: 'Artifact Pointer 拦截器：sdf_content / pdbqt_content 等大字段自动剥离至 Redis 数据面，前端仅接收轻量级 art_* ID 指针' },
+      { type: 'Feature', content: 'Error Withholding 错误扣留：valence / invalid SMILES / kekulize 等可自愈化学错误自动注入修正提示并重试（最多 3 次），不暴露给用户' },
+      { type: 'Feature', content: 'GET /api/chat/artifacts/{id} 端点：Redis TTL 1 小时，支持跨请求 artifact 取用，Redis 不可用时自动降级至进程内 FIFO 缓存（256 条上限）' },
+      { type: 'Feature', content: '全局双模切换 (Copilot / Agent)：uiStore 持久化模式偏好，刷新后保持；Agent 模式暂未开放，置灰显示' },
+      { type: 'Feature', content: 'Agent 模式全屏沉浸式布局：左侧 30% 对话面板 + 右侧 70% Artifact 画布，原生 pointer events 实现可拖拽分割线' },
+      { type: 'Feature', content: 'ArtifactCanvas：从 SSE turns 中实时收集 artifact 事件，masonry 瀑布流布局展示 MoleculeImageRenderer / SdfRenderer / PdbqtRenderer 等卡片' },
+      { type: 'Feature', content: '3D 交互式分子可视化 (3Dmol.js WebGL)：支持 SDF / PDBQT 格式，球棍模型 + rasmol 配色，next/dynamic 懒加载不影响首屏' },
+      { type: 'Feature', content: 'Mol3DViewerGuard：IntersectionObserver + 条件卸载（非 clear()），视口外分子卡片真正释放 GPU 显存，支持 20+ 卡片并发不崩溃' },
+      { type: 'Feature', content: '分子卡片放大预览弹窗 (1024×768px)：弹窗打开时自动挂起小窗 WebGL context，关闭后重新初始化，始终只持有 1 个活跃 context' },
+      { type: 'Feature', content: 'SDF 格式自愈 (normalizeSdf)：自动修复因 .trim() 导致 V2000 header 行偏移问题，防御性处理后端传来的所有 SDF' },
+      { type: 'Refactor', content: 'sse_chat.py 从 748 行精简至 ~110 行，路由层只剩请求模型与 StreamingResponse，全部业务逻辑下沉至 ChemSessionEngine' },
+      { type: 'Improvement', content: 'Agent 模式下聊天气泡不再渲染 Artifact（SDF/图片/Lipinski），全部路由至右侧 ArtifactCanvas，彻底解耦控制流与数据展示' },
+      { type: 'Improvement', content: 'ModeToggle 从全局 Header 收归至 CopilotSidebar 标题栏，排版更紧凑；Copilot/Agent 模式切换保留 framer-motion 弹簧滑块动画' },
+      { type: 'Improvement', content: 'React.memo 自定义比较器封锁 Molecule3DViewer，SSE 流式输出期间的高频 re-render 不再触发 WebGL 重建' },
+      { type: 'Improvement', content: '3Dmol antialias: false + quality: "low"：禁用 MSAA 并降低几何体精度，多卡片场景帧率显著提升，集成显卡友好' },
+      { type: 'Fix', content: 'SDF atom count: 0 根治：V2000 Counts Line 必须在第 4 行，normalizeSdf 自动检测偏移并补齐空行' },
+      { type: 'Fix', content: '3Dmol backgroundColor 不接受 oklch/lab CSS 函数，改为检测 dark class 直接返回安全 hex 值' },
+      { type: 'Fix', content: '_local_fallback dict 无上限增长问题修复：改用 FIFO 队列，Redis 降级期间最多缓存 256 条 artifact' },
+    ],
+  },
+  {
     version: 'v1.2.0',
     date: '2026-04-01',
     highlight: '全栈国际化 & UI 焕新',

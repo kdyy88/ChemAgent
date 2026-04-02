@@ -7,6 +7,7 @@ import { useSSEChemAgent } from '@/hooks/useSSEChemAgent'
 import { useWorkspaceStore } from '@/store/workspaceStore'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ModeToggle } from '@/components/ui/ModeToggle'
 import { SSEMessageList } from './SSEMessageList'
 import { SSEChatInput } from './SSEChatInput'
 import { TaskTracker } from './TaskTracker'
@@ -28,7 +29,8 @@ export function CopilotSidebar() {
         <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10">
           <FlaskConical className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
         </div>
-        <span className="text-sm font-semibold tracking-tight">ChemAgent</span>
+        <span className="text-sm font-semibold tracking-tight">Chem</span>
+        <ModeToggle disabledModes={['agent']} />
 
         <div className="ml-auto flex items-center gap-1.5">
           {/* Turn counter */}
