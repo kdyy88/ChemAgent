@@ -21,6 +21,7 @@ import {
   DropdownMenuLabel,
 } from '@/components/ui/dropdown-menu'
 import { useWorkspaceStore } from '@/store/workspaceStore'
+import { useSseStore } from '@/store/sseStore'
 import '@/lib/i18n/client'
 
 interface SSEChatInputProps {
@@ -34,10 +35,14 @@ export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatIn
   const [value, setValue] = useState('')
   const [chatSmiles, setChatSmiles] = useState<string | null>(null)
   const { currentSmiles } = useWorkspaceStore()
+  const turns = useSseStore((s) => s.turns)
+  const pendingApproval = turns.at(-1)?.pendingApproval
+  const isApprovalPending = !!pendingApproval
+  const isFullyDisabled = isStreaming || isApprovalPending
 
   const handleSubmit = async () => {
     const trimmed = value.trim()
-    if (!trimmed || isStreaming) return
+    if (!trimmed || isFullyDisabled) return
     setValue('')
     await sendMessage(trimmed, { activeSmiles: chatSmiles ?? null })
   }
@@ -63,9 +68,15 @@ export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatIn
       onValueChange={setValue}
       isLoading={isStreaming}
       onSubmit={handleSubmit}
-      disabled={isStreaming}
+      disabled={isFullyDisabled}
       className="w-full"
     >
+      {isApprovalPending && (
+        <div className="flex items-center gap-1.5 px-3 pt-2 text-xs text-orange-600 dark:text-orange-400">
+          <span>⏸️</span>
+          <span>请先处理上方的审批请求，再发送新消息</span>
+        </div>
+      )}
       {chatSmiles && (
         <div className="flex items-center gap-2 px-2 pt-2 pb-1">
           <Badge
@@ -76,7 +87,7 @@ export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatIn
             🧪 {smilesLabel}
             <button
               onClick={handleRemoveSmiles}
-              disabled={isStreaming}
+              disabled={isFullyDisabled}
               className="ml-1 inline-flex items-center justify-center rounded-full hover:bg-primary/20 disabled:opacity-50"
               aria-label="Remove SMILES"
             >
@@ -99,7 +110,7 @@ export function SSEChatInput({ isStreaming, sendMessage, clearTurns }: SSEChatIn
                 size="sm"
                 variant="ghost"
                 className="h-7 w-7 rounded-lg text-muted-foreground hover:text-foreground hover:bg-primary/8 transition-colors"
-                disabled={isStreaming}
+                disabled={isFullyDisabled}
                 aria-label={t('input.add_datasource')}
               >
                 <Plus className="h-3.5 w-3.5" />

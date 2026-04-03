@@ -5,6 +5,7 @@ import { FlaskConical, AlertTriangle } from 'lucide-react'
 import { Message, MessageContent } from '@/components/ui/message'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ClarificationCard } from './ClarificationCard'
+import { ApprovalCard } from './ApprovalCard'
 import { LipinskiCard } from './LipinskiCard'
 import { ArtifactDispatcher } from './bubbles/ArtifactDispatcher'
 import { ResearchThinking } from './bubbles/ResearchThinking'
@@ -119,6 +120,11 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
               interrupt={turn.pendingInterrupt}
               researchTopic={turn.userMessage}
             />
+          )}
+
+          {/* Hard-breakpoint approval card — shown before executing HEAVY_TOOLS */}
+          {turn.pendingApproval && (
+            <ApprovalCard approval={turn.pendingApproval} />
           )}
 
           {/* Assistant text */}

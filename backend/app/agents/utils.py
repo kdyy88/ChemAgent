@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 
 from langchain_core.callbacks.manager import adispatch_custom_event
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 
@@ -156,6 +157,70 @@ def update_tasks(tasks: list[Task], task_id: str, status: TaskStatus) -> tuple[l
         updated.append(next_task)
 
     return updated, matched_task
+
+
+def normalize_messages_for_api(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+    """JIT in-memory sanitizer: produce a legally-sequenced message list for the
+    LLM API without triggering any DB writes.
+
+    Handles four failure modes:
+    1. Virtual SystemMessages injected by the frontend.
+    2. Orphan ToolMessages whose AI request was never recorded.
+    3. Dangling tool_calls whose ToolMessage was lost due to user interruption.
+    4. Consecutive same-type messages that some models reject.
+    """
+    if not messages:
+        return []
+
+    # 1. Drop virtual frontend SystemMessages.
+    filtered = [
+        m for m in messages
+        if not (isinstance(m, SystemMessage) and m.additional_kwargs.get("is_virtual"))
+    ]
+
+    final_messages: list[BaseMessage] = []
+    pending_tool_calls: dict[str, Any] = {}
+
+    # 2. Tool-call pairing validation.
+    for msg in filtered:
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            for tc in msg.tool_calls:
+                pending_tool_calls[tc["id"]] = tc
+            final_messages.append(msg)
+        elif isinstance(msg, ToolMessage):
+            if msg.tool_call_id in pending_tool_calls:
+                del pending_tool_calls[msg.tool_call_id]
+                final_messages.append(msg)
+            # Drop orphan ToolMessages that have no matching AIMessage.
+        else:
+            final_messages.append(msg)
+
+    # 3. Close dangling tool_calls caused by mid-flight interruptions.
+    for tool_id, tc in pending_tool_calls.items():
+        final_messages.append(
+            ToolMessage(
+                content="[System] Tool execution interrupted by user.",
+                tool_call_id=tool_id,
+                name=tc["name"],
+            )
+        )
+
+    # 4. Merge consecutive same-type messages.
+    #    AIMessages carrying tool_calls are exempt: collapsing them would destroy
+    #    the tool-call structure required by the API.
+    merged: list[BaseMessage] = []
+    for msg in final_messages:
+        if (
+            merged
+            and type(msg) is type(merged[-1])
+            and not (isinstance(msg, AIMessage) and msg.tool_calls)
+            and not (isinstance(merged[-1], AIMessage) and merged[-1].tool_calls)
+        ):
+            merged[-1].content += f"\n\n{msg.content}"
+        else:
+            merged.append(msg)
+
+    return merged
 
 
 async def dispatch_task_update(tasks: list[Task], config: RunnableConfig, source: str) -> None:

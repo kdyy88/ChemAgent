@@ -537,19 +537,78 @@ class ChemSessionEngine:
             pending_value = (
                 pending.value if isinstance(pending.value, dict) else {}
             )
-            yield self._event_payload(
-                "interrupt",
-                question=str(pending_value.get("question", "")),
-                options=list(pending_value.get("options", [])),
-                called_tools=list(pending_value.get("called_tools", [])),
-                known_smiles=pending_value.get("known_smiles"),
-                interrupt_id=pending.id,
-            )
+            if pending_value.get("type") == "approval_required":
+                yield self._event_payload(
+                    "approval_required",
+                    tool_name=str(pending_value.get("tool_name", "")),
+                    args=pending_value.get("args", {}),
+                    tool_call_id=str(pending_value.get("tool_call_id", "")),
+                    interrupt_id=pending.id,
+                )
+            else:
+                yield self._event_payload(
+                    "interrupt",
+                    question=str(pending_value.get("question", "")),
+                    options=list(pending_value.get("options", [])),
+                    called_tools=list(pending_value.get("called_tools", [])),
+                    known_smiles=pending_value.get("known_smiles"),
+                    interrupt_id=pending.id,
+                )
         else:
             checkpoint_id = (
                 snapshot.config.get("configurable", {}).get("checkpoint_id")
             )
             yield self._event_payload("done", checkpoint_id=checkpoint_id)
+
+    # ── Approval resume generator ──────────────────────────────────────────────
+
+    async def resume_approval(
+        self,
+        *,
+        action: str,
+        args: dict | None,
+    ) -> AsyncGenerator[str, None]:
+        """【审批恢复生成器】处理前端的 approve / reject / modify 决策。
+
+        向 LangGraph Checkpointer 发送 ``Command(resume=...)``，唤醒因 HEAVY_TOOLS
+        审批而挂起的图，并将后续执行结果以 SSE 流的形式返回。
+        不进行额外的 DB 写入——恢复操作复用 LangGraph 原生 Checkpointer 路径。
+        """
+        graph_config = {
+            "configurable": {
+                "thread_id": self.session_id,
+                "session_id": self.session_id,
+                "turn_id": self.turn_id,
+            },
+            "recursion_limit": _graph_recursion_limit(),
+        }
+
+        resume_payload = Command(
+            resume={"action": action, "args": args or {}}
+        )
+
+        yield self._sse(self._event_payload("run_started", message=f"[approval:{action}]"))
+
+        try:
+            async for event_dict in self._graph_query_loop(resume_payload, graph_config):
+                if event_dict.get("type") == "tool_end":
+                    event_dict = await self._intercept_and_collapse_artifact(event_dict)
+
+                withheld = self._withheld_error_message(event_dict)
+                if withheld is not None:
+                    logger.warning("resume_approval 触发错误扣留: %s", withheld)
+                    # For the approval resume path we surface the error directly
+                    # rather than retrying (the user already made a decision).
+                    yield self._sse(
+                        self._event_payload("error", error=withheld)
+                    )
+                    return
+
+                yield self._sse(event_dict)
+
+        except Exception as exc:
+            tb = traceback.format_exc()
+            yield self._sse(self._event_payload("error", error=str(exc), traceback=tb))
 
     # ── LangGraph event parser ─────────────────────────────────────────────────
 

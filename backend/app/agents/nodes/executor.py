@@ -19,6 +19,10 @@ from app.agents.utils import (
 
 _TOOL_LOOKUP = {tool.name: tool for tool in ALL_CHEM_TOOLS}
 
+# Tools that require explicit user approval before execution (Hard Breakpoint tier).
+# Add tool names here to gate them behind the ApprovalCard UI.
+HEAVY_TOOLS: frozenset[str] = frozenset()
+
 
 async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
     last_message = state["messages"][-1]
@@ -27,6 +31,47 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
     artifacts: list[dict] = []
     tool_messages: list[ToolMessage] = []
     tool_calls = list(getattr(last_message, "tool_calls", []))
+
+    # ── Heavy-tool approval gate (Hard Breakpoint) ─────────────────────────
+    # If any pending tool_call is registered in HEAVY_TOOLS, pause the graph
+    # and wait for an explicit user decision before proceeding.
+    heavy_call = next(
+        (tc for tc in tool_calls if tc["name"] in HEAVY_TOOLS), None
+    )
+    if heavy_call is not None:
+        resume_value = interrupt({
+            "type": "approval_required",
+            "tool_call_id": heavy_call["id"],
+            "tool_name": heavy_call["name"],
+            "args": heavy_call.get("args", {}),
+        })
+
+        action = (resume_value or {}).get("action", "approve") if isinstance(resume_value, dict) else "approve"
+
+        if action == "reject":
+            return {
+                "messages": [
+                    ToolMessage(
+                        content=json.dumps(
+                            {"status": "rejected", "message": "User rejected the execution of this tool. Please ask for new instructions or propose an alternative."},
+                            ensure_ascii=False,
+                        ),
+                        tool_call_id=heavy_call["id"],
+                        name=heavy_call["name"],
+                    )
+                ],
+                "active_smiles": new_active_smiles,
+                "artifacts": [],
+                "tasks": new_tasks,
+            }
+        elif action == "modify":
+            # Patch the tool_call args in-place before falling through to execution.
+            patched_args = (resume_value or {}).get("args", heavy_call.get("args", {}))
+            for tc in tool_calls:
+                if tc["id"] == heavy_call["id"]:
+                    tc["args"] = patched_args
+                    break
+        # action == "approve" → fall through unchanged
 
     ask_human_call = next((tool_call for tool_call in tool_calls if tool_call["name"] == "tool_ask_human"), None)
     if ask_human_call is not None:

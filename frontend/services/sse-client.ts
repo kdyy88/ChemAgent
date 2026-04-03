@@ -1,9 +1,11 @@
 import { fetchEventSource } from '@microsoft/fetch-event-source'
 import type {
+  SSEApprovalRequired,
   SSEArtifactEvent,
   SSEError,
   SSEEvent,
   SSEInterrupt,
+  SSEPendingApproval,
   SSEPendingInterrupt,
   SSESendMessageOptions,
   SSEShadowError,
@@ -20,6 +22,7 @@ const API_BASE =
   'http://localhost:8000'
 
 const STREAM_URL = `${API_BASE}/api/chat/stream`
+const APPROVE_URL = `${API_BASE}/api/chat/approve`
 const SILENT_TOOLS = new Set(['tool_update_task_status'])
 
 type ToolOutput = Record<string, unknown>
@@ -36,6 +39,7 @@ interface SSEClientHandlers {
   addShadowError: (error: SSEShadowError) => void
   appendThinking: (thinking: SSEThinking) => void
   setPendingInterrupt: (interrupt: SSEPendingInterrupt) => void
+  setPendingApproval: (approval: SSEPendingApproval) => void
   completeTurn: () => void
   failTurn: (message: string) => void
   handleHttpError: (status: number, text: string) => void
@@ -55,9 +59,19 @@ function generateId(): string {
     : Math.random().toString(36).slice(2) + Date.now().toString(36)
 }
 
+interface SendApprovalArgs {
+  sessionId: string
+  turnId: string
+  approvalLabel: string
+  action: 'approve' | 'reject' | 'modify'
+  args?: Record<string, unknown>
+  handlers: Omit<SSEClientHandlers, 'startTurn'>
+}
+
 export class SSEClient {
   private abortCtrl: AbortController | null = null
-  private sessionId: string | null = null
+  /** Exposed read-only so the store can pass it to sendApproval. */
+  sessionId: string | null = null
   private nodeDepth: Record<string, number> = {}
   private unfinishedToolCallIndexes: Record<string, Record<string, number[]>> = {}
   private latestToolOutputs: Record<string, Record<string, ToolOutput>> = {}
@@ -98,7 +112,7 @@ export class SSEClient {
 
           try {
             const event = JSON.parse(msg.data) as SSEEvent
-            if (event.type === 'done' || event.type === 'error' || event.type === 'interrupt') {
+            if (event.type === 'done' || event.type === 'error' || event.type === 'interrupt' || event.type === 'approval_required') {
               terminalEventSeen = true
             }
             this.handleEvent(event, turnId, handlers)
@@ -220,6 +234,18 @@ export class SSEClient {
         return
       }
 
+      case 'approval_required': {
+        const approvalEvent = ev as SSEApprovalRequired
+        handlers.setPendingApproval({
+          tool_name: approvalEvent.tool_name,
+          args: approvalEvent.args,
+          tool_call_id: approvalEvent.tool_call_id,
+          interrupt_id: approvalEvent.interrupt_id,
+        })
+        this.finishStream()
+        return
+      }
+
       case 'thinking':
         handlers.appendThinking(ev as SSEThinking)
         return
@@ -274,6 +300,71 @@ export class SSEClient {
 
   private readLatestToolOutput(turnId: string, tool: string): ToolOutput | undefined {
     return this.latestToolOutputs[turnId]?.[tool]
+  }
+
+  /**
+   * Resume a heavy-tool Hard Breakpoint after the user makes a decision.
+   * POSTs to /api/chat/approve and streams the continuation exactly like
+   * sendMessage does, reusing the same handlers.
+   */
+  async sendApproval({ sessionId, turnId, approvalLabel, action, args = {}, handlers }: SendApprovalArgs) {
+    this.abortActiveStream()
+    const ctrl = new AbortController()
+    this.abortCtrl = ctrl
+
+    let terminalEventSeen = false
+
+    // Create a fake startTurn-compatible invocation so the store can open a new turn.
+    // We supply a human-readable label so the user sees what they approved.
+    ;(handlers as SSEClientHandlers).startTurn?.(turnId, approvalLabel, [])
+
+    try {
+      await fetchEventSource(APPROVE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, turn_id: turnId, action, args }),
+        signal: ctrl.signal,
+        openWhenHidden: true,
+
+        onmessage: (msg) => {
+          if (!msg.data) return
+          try {
+            const event = JSON.parse(msg.data) as SSEEvent
+            if (event.type === 'done' || event.type === 'error' || event.type === 'interrupt' || event.type === 'approval_required') {
+              terminalEventSeen = true
+            }
+            this.handleEvent(event, turnId, handlers as SSEClientHandlers)
+          } catch {
+            // Silently ignore malformed JSON payloads.
+          }
+        },
+
+        onclose: () => {
+          if (!terminalEventSeen && !ctrl.signal.aborted) {
+            throw new Error('SSE stream closed before a terminal event was received')
+          }
+        },
+
+        onopen: async (response) => {
+          if (!response.ok) {
+            const text = await response.text()
+            handlers.handleHttpError(response.status, text)
+            this.finishStream()
+            throw new Error(`HTTP ${response.status}`)
+          }
+        },
+
+        onerror: (err) => {
+          if ((err as Error)?.name !== 'AbortError') {
+            handlers.handleConnectionError((err as Error)?.message ?? String(err))
+            this.finishStream()
+          }
+          throw err
+        },
+      })
+    } catch (err) {
+      if ((err as Error)?.name !== 'AbortError') throw err
+    }
   }
 }
 

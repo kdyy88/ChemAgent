@@ -82,6 +82,18 @@ class StreamChatRequest(BaseModel):
     )
 
 
+class ApproveToolRequest(BaseModel):
+    """Payload sent by the frontend ApprovalCard after the user makes a decision."""
+
+    session_id: str = Field(..., description="会话 ID，用于定位挂起的图检查点")
+    turn_id: str = Field(default_factory=lambda: uuid4().hex)
+    action: str = Field(..., description='"approve" | "reject" | "modify"')
+    args: dict | None = Field(
+        default=None,
+        description="修改后的工具参数（仅在 action=modify 时有效）",
+    )
+
+
 # ── FastAPI route ──────────────────────────────────────────────────────────────
 
 
@@ -102,6 +114,32 @@ async def stream_chat(req: StreamChatRequest) -> StreamingResponse:
             active_smiles=req.active_smiles,
             interrupt_context=req.interrupt_context,
         ),
+        media_type="text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@router.post("/approve")
+async def approve_tool(req: ApproveToolRequest) -> StreamingResponse:
+    """Resume a heavy-tool Hard-Breakpoint after the user approves/rejects/modifies.
+
+    The frontend ApprovalCard POSTs here with ``action`` + optional ``args``.
+    The engine resumes the frozen LangGraph checkpoint via
+    ``Command(resume={action, args})`` and returns the continuation as an
+    SSE stream identical in shape to ``/stream``.
+    """
+    if req.action not in {"approve", "reject", "modify"}:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid action '{req.action}'. Must be one of: approve, reject, modify.",
+        )
+    engine = ChemSessionEngine(session_id=req.session_id, turn_id=req.turn_id)
+    return StreamingResponse(
+        engine.resume_approval(action=req.action, args=req.args),
         media_type="text/event-stream",
         headers={
             "X-Accel-Buffering": "no",

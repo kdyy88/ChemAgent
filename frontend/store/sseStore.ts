@@ -9,6 +9,7 @@
 import { create } from 'zustand'
 import type {
   SSEArtifactEvent,
+  SSEPendingApproval,
   SSEPendingInterrupt,
   SSESendMessageOptions,
   SSEShadowError,
@@ -120,6 +121,7 @@ function createTurn(turnId: string, message: string, tasks: SSETaskItem[]): SSET
     shadowErrors: [],
     statusLabel: translateStatusLabel('reasoning'),
     pendingInterrupt: undefined,
+    pendingApproval: undefined,
     thinkingSteps: [],
   }
 }
@@ -140,6 +142,8 @@ export interface SseState {
   updateTasks: (tasks: SSETaskItem[]) => void
   addShadowError: (error: SSEShadowError) => void
   setPendingInterrupt: (interrupt: SSEPendingInterrupt) => void
+  setPendingApproval: (approval: SSEPendingApproval) => void
+  approveToolCall: (action: 'approve' | 'reject' | 'modify', args?: Record<string, unknown>) => Promise<void>
   appendThinking: (thinking: SSEThinking) => void
   completeStream: () => void
   failStream: (message: string) => void
@@ -227,6 +231,9 @@ export const useSseStore = create<SseState>((set, get) => {
           },
           setPendingInterrupt: (interrupt) => {
             get().setPendingInterrupt(interrupt)
+          },
+          setPendingApproval: (approval) => {
+            get().setPendingApproval(approval)
           },
           completeTurn: () => {
             get().completeStream()
@@ -342,6 +349,64 @@ export const useSseStore = create<SseState>((set, get) => {
           turn_id: turn.turnId,
         }),
       }))
+    },
+
+    setPendingApproval: (approval) => {
+      stopStreamingTurn(() => ({
+        statusLabel: '⏸️ 等待审批',
+        pendingApproval: approval,
+      }))
+    },
+
+    approveToolCall: async (action, args) => {
+      if (get().isStreaming) return
+      const sessionId = sseClient.sessionId
+      if (!sessionId) return
+
+      const turnId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2) + Date.now().toString(36)
+
+      const pendingApproval = get().turns.at(-1)?.pendingApproval
+      const toolNameLabel = pendingApproval?.tool_name?.replace('tool_', '') ?? ''
+      const actionLabel = action === 'approve' ? '✅ 批准' : action === 'reject' ? '❌ 拒绝' : '✏️ 修改并批准'
+      const approvalLabel = `${actionLabel}: ${toolNameLabel}`
+
+      // Clear the pendingApproval badge on the last turn before starting the new one
+      updateLastTurn(() => ({ pendingApproval: undefined }))
+
+      const handlers = {
+        startTurn: (tId: string, message: string, tasks: SSETaskItem[]) => {
+          get().startTurn(tId, message, tasks)
+        },
+        activateNode: (node: string) => { get().setActiveNode(node) },
+        clearNode: (node: string) => { get().clearActiveNode(node) },
+        appendAssistantText: (text: string) => { get().appendAssistantText(text) },
+        addToolCall: (tool: string, input: Record<string, unknown>) => get().addToolCall(tool, input),
+        completeToolCall: (index: number, output: Record<string, unknown>) => {
+          updateWorkspaceFromPayload(output)
+          get().completeToolCall(index, output)
+        },
+        addArtifact: (artifact: SSEArtifactEvent) => {
+          if ('smiles' in artifact && typeof artifact.smiles === 'string') {
+            updateWorkspaceFromPayload({ smiles: artifact.smiles })
+          }
+          get().addArtifact(artifact)
+        },
+        updateTasks: (tasks: SSETaskItem[]) => { get().updateTasks(tasks) },
+        addShadowError: (error: SSEShadowError) => { get().addShadowError(error) },
+        appendThinking: (thinking: SSEThinking) => { get().appendThinking(thinking) },
+        setPendingInterrupt: (interrupt: SSEPendingInterrupt) => { get().setPendingInterrupt(interrupt) },
+        setPendingApproval: (approval: SSEPendingApproval) => { get().setPendingApproval(approval) },
+        completeTurn: () => { get().completeStream() },
+        failTurn: (message: string) => { get().failStream(message) },
+        handleHttpError: (status: number, text: string) => {
+          get().replaceAssistantText(`❌ HTTP ${status}: ${text}`)
+        },
+        handleConnectionError: (message: string) => { get().handleConnectionError(message) },
+      }
+
+      await sseClient.sendApproval({ sessionId, turnId, approvalLabel, action, args, handlers })
     },
 
     appendThinking: (thinking) => {
