@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+
 from langchain_core.messages import SystemMessage
+
+logger = logging.getLogger(__name__)
 
 from app.agents.lg_tools import ALL_CHEM_TOOLS
 from app.agents.state import ChemState
@@ -26,6 +30,14 @@ async def chem_agent_node(state: ChemState) -> dict:
         ),
         *safe_messages,
     ])
+
+    if hasattr(response, "usage_metadata") and response.usage_metadata:
+        in_tok = response.usage_metadata.get("input_tokens", 0)
+        total_tok = response.usage_metadata.get("total_tokens", 0)
+        logger.info("📊 [Context Monitor] input=%d total=%d", in_tok, total_tok)
+        if total_tok > 100_000:
+            logger.warning("🚨 [Context Monitor] Approaching context limit (total=%d)", total_tok)
+
     return {"messages": [response]}
 
 

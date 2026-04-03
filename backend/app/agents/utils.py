@@ -159,14 +159,20 @@ def update_tasks(tasks: list[Task], task_id: str, status: TaskStatus) -> tuple[l
     return updated, matched_task
 
 
-def normalize_messages_for_api(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+def normalize_messages_for_api(
+    messages: Sequence[BaseMessage],
+    max_tool_history: int = 6,
+    max_tool_length: int = 6000,
+) -> list[BaseMessage]:
     """JIT in-memory sanitizer: produce a legally-sequenced message list for the
     LLM API without triggering any DB writes.
 
     Handles four failure modes:
     1. Virtual SystemMessages injected by the frontend.
     2. Orphan ToolMessages whose AI request was never recorded.
-    3. Dangling tool_calls whose ToolMessage was lost due to user interruption.
+    3. Dangling tool_calls whose ToolMessage was lost due to user interruption —
+       closure messages are injected *immediately after* the AIMessage, not
+       appended at the end, so the API sequence is never broken.
     4. Consecutive same-type messages that some models reject.
     """
     if not messages:
@@ -181,9 +187,28 @@ def normalize_messages_for_api(messages: Sequence[BaseMessage]) -> list[BaseMess
     final_messages: list[BaseMessage] = []
     pending_tool_calls: dict[str, Any] = {}
 
-    # 2. Tool-call pairing validation.
+    def _flush_pending() -> None:
+        """Insert closure ToolMessages for any dangling tool_calls in-place,
+        immediately before the next non-ToolMessage.  This keeps the sequence
+        legal: ToolMessages must follow their AIMessage without interruption."""
+        for tool_id, tc in pending_tool_calls.items():
+            final_messages.append(
+                ToolMessage(
+                    content="[System] Tool execution interrupted by user.",
+                    tool_call_id=tool_id,
+                    name=tc["name"],
+                )
+            )
+        pending_tool_calls.clear()
+
+    # 2+3. Tool-call pairing validation with inline dangling-call closure.
+    #      When a non-ToolMessage is encountered while tool_calls are still
+    #      pending, close them *before* appending that message so that the
+    #      API sequence is always AIMessage → ToolMessage(s) → next message.
     for msg in filtered:
         if isinstance(msg, AIMessage) and msg.tool_calls:
+            # Close any dangling calls from a previous AI turn first.
+            _flush_pending()
             for tc in msg.tool_calls:
                 pending_tool_calls[tc["id"]] = tc
             final_messages.append(msg)
@@ -193,26 +218,60 @@ def normalize_messages_for_api(messages: Sequence[BaseMessage]) -> list[BaseMess
                 final_messages.append(msg)
             # Drop orphan ToolMessages that have no matching AIMessage.
         else:
+            # Any non-tool message breaks the tool-call window — close first.
+            _flush_pending()
             final_messages.append(msg)
 
-    # 3. Close dangling tool_calls caused by mid-flight interruptions.
-    for tool_id, tc in pending_tool_calls.items():
-        final_messages.append(
-            ToolMessage(
-                content="[System] Tool execution interrupted by user.",
-                tool_call_id=tool_id,
-                name=tc["name"],
-            )
-        )
+    # Close any tool_calls still pending at the very end of the sequence.
+    _flush_pending()
 
-    # 4. Merge consecutive same-type messages.
-    #    AIMessages carrying tool_calls are exempt: collapsing them would destroy
-    #    the tool-call structure required by the API.
+    # 4. Compress ToolMessage history (reverse-iterate, newest-first).
+    #    4a. Snip: replace old ToolMessages beyond max_tool_history with a placeholder.
+    #    4b. Budget: head+tail truncate results that exceed max_tool_length.
+    tool_count = 0
+    compressed: list[BaseMessage] = []
+    for msg in reversed(final_messages):
+        if isinstance(msg, ToolMessage):
+            tool_count += 1
+            if tool_count > max_tool_history:
+                # 4a — too far back in history; replace with a tiny sentinel
+                compressed.append(
+                    ToolMessage(
+                        content="[System] Tool result omitted (history limit).",
+                        tool_call_id=msg.tool_call_id,
+                        name=msg.name,
+                    )
+                )
+            elif isinstance(msg.content, str) and len(msg.content) > max_tool_length:
+                # 4b — result is too large; keep head and tail
+                half = max_tool_length // 2
+                head = msg.content[:half]
+                tail = msg.content[-half:]
+                omitted = len(msg.content) - max_tool_length
+                truncated = f"{head}\n…[{omitted} chars omitted]…\n{tail}"
+                compressed.append(
+                    ToolMessage(
+                        content=truncated,
+                        tool_call_id=msg.tool_call_id,
+                        name=msg.name,
+                    )
+                )
+            else:
+                compressed.append(msg)
+        else:
+            compressed.append(msg)
+    compressed.reverse()
+
+    # 5. Merge consecutive same-type messages.
+    #    Exempt from merging:
+    #    - ToolMessages: each has a unique tool_call_id; merging destroys all but the first.
+    #    - AIMessages carrying tool_calls: merging destroys the tool-call structure.
     merged: list[BaseMessage] = []
-    for msg in final_messages:
+    for msg in compressed:
         if (
             merged
             and type(msg) is type(merged[-1])
+            and not isinstance(msg, ToolMessage)
             and not (isinstance(msg, AIMessage) and msg.tool_calls)
             and not (isinstance(merged[-1], AIMessage) and merged[-1].tool_calls)
         ):
