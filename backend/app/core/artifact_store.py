@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from app.core.task_queue import get_redis_pool
@@ -25,7 +26,9 @@ from app.core.task_queue import get_redis_pool
 logger = logging.getLogger(__name__)
 
 _ENGINE_ARTIFACT_PREFIX = "chemagent:engine-artifact:"
-_DEFAULT_TTL_SECONDS = 3600  # 1 hour
+# Read from ARTIFACT_TTL_SECONDS env var (default 300s = 5 min for deployments)
+# Local dev can override via .env or compose.yaml
+_DEFAULT_TTL_SECONDS = int(os.getenv("ARTIFACT_TTL_SECONDS", "300"))
 
 # In-process fallback — used when Redis is unavailable.
 # Capped at 256 entries (FIFO eviction) to prevent unbounded growth during
