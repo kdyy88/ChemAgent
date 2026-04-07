@@ -59,6 +59,9 @@ _SILENT_TOOL_NAMES = frozenset({"tool_update_task_status"})
 # LangGraph node names whose LLM token stream is forwarded to the client.
 _STREAMING_NODES = {"chem_agent"}
 
+# Sub-graph node name prefix — tokens from sub-agent nodes are also streamed.
+_SUB_AGENT_NODE_PREFIX = "sub_agent"
+
 # LangGraph node names for which we emit node_start / node_end lifecycle events.
 _LIFECYCLE_NODES = {"task_router", "planner_node", "chem_agent", "tools_executor"}
 
@@ -502,6 +505,12 @@ class ChemSessionEngine:
                         "与 LLM 服务的连接被意外中断（incomplete chunked read）。"
                         "请检查网络连接或 API 服务状态后重试。"
                     )
+                elif "recursion limit" in err_str.lower() or "recursion_limit" in err_str:
+                    err_str = (
+                        "LangGraph 递归深度达到当前上限。为防止超出预期Token上限，任务被中断。"
+                        "如果这是一个合法的复杂任务，请联系管理员将设置为更大的整数，"
+    
+                    )
                 yield self._sse(
                     self._event_payload("error", error=err_str, traceback=tb)
                 )
@@ -622,7 +631,11 @@ class ChemSessionEngine:
         node_name: str = event.get("metadata", {}).get("langgraph_node", "")
 
         # ── 1. LLM token streaming ─────────────────────────────────────────────
-        if event_name == "on_chat_model_stream" and node_name in _STREAMING_NODES:
+        # Accepts both root-agent nodes and sub-agent nodes (prefix "sub_agent").
+        is_sub_agent_node = node_name.startswith(_SUB_AGENT_NODE_PREFIX)
+        if event_name == "on_chat_model_stream" and (
+            node_name in _STREAMING_NODES or is_sub_agent_node
+        ):
             chunk = event["data"].get("chunk")
             if chunk is not None:
                 self._debug_reasoning_payload("stream", node_name, chunk)
@@ -643,11 +656,16 @@ class ChemSessionEngine:
                     )
 
                 if token:
-                    results.append(
-                        self._event_payload("token", node=node_name, content=token)
+                    token_payload = self._event_payload(
+                        "token", node=node_name, content=token
                     )
+                    if is_sub_agent_node:
+                        token_payload["source"] = "sub_agent"
+                    results.append(token_payload)
 
-        elif event_name == "on_chat_model_end" and node_name in _STREAMING_NODES:
+        elif event_name == "on_chat_model_end" and (
+            node_name in _STREAMING_NODES or is_sub_agent_node
+        ):
             output_msg = event.get("data", {}).get("output")
             # Some providers aggregate reasoning only at model-end; emit it only
             # when the streaming phase produced no reasoning, to avoid duplicates.

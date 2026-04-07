@@ -4,13 +4,68 @@ import { ImageOff } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useSseStore } from '@/store/sseStore'
 import { ArtifactCard } from './ArtifactCard'
+import { MoleculeGroupCard } from './MoleculeGroupCard'
 import type { SSEArtifactEvent } from '@/lib/sse-types'
+
+// Artifact kinds that belong to a molecule and can be grouped by SMILES.
+const MOL_KINDS = new Set([
+  'molecule_image',
+  'descriptor_structure_image',
+  'highlighted_substructure',
+  'conformer_sdf',
+  'pdbqt_file',
+])
+
+type MolGroup = {
+  smiles: string
+  artifacts: SSEArtifactEvent[]
+  firstIndex: number
+}
+
+type CanvasItem =
+  | { type: 'group'; group: MolGroup; index: number }
+  | { type: 'single'; artifact: SSEArtifactEvent; index: number }
+
+/**
+ * Group consecutive/non-consecutive artifacts that share the same SMILES and
+ * are molecule-related into a single MoleculeGroupCard.  All other artifacts
+ * render as individual ArtifactCards, preserving their original chronological
+ * position (first appearance of each SMILES group).
+ */
+function groupArtifacts(artifacts: SSEArtifactEvent[]): CanvasItem[] {
+  const groups = new Map<string, MolGroup>()
+  const order: CanvasItem[] = []
+
+  artifacts.forEach((artifact, i) => {
+    const smiles = 'smiles' in artifact && artifact.smiles && MOL_KINDS.has(artifact.kind)
+      ? artifact.smiles
+      : null
+
+    if (smiles) {
+      if (!groups.has(smiles)) {
+        const group: MolGroup = { smiles, artifacts: [artifact], firstIndex: i }
+        groups.set(smiles, group)
+        order.push({ type: 'group', group, index: i })
+      } else {
+        groups.get(smiles)!.artifacts.push(artifact)
+      }
+    } else {
+      order.push({ type: 'single', artifact, index: i })
+    }
+  })
+
+  return order
+}
 
 export function ArtifactCanvas() {
   const turns = useSseStore((s) => s.turns)
 
   // Collect all artifacts across all turns, keeping chronological order.
   const artifacts: SSEArtifactEvent[] = turns.flatMap((t) => t.artifacts)
+  const items = groupArtifacts(artifacts)
+
+  // For the header count show unique molecule groups + ungrouped artifacts
+  const displayCount = items.length
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
@@ -19,16 +74,16 @@ export function ArtifactCanvas() {
         <span className="text-xs font-semibold tracking-tight text-foreground/80 uppercase">
           Artifact Canvas
         </span>
-        {artifacts.length > 0 && (
+        {displayCount > 0 && (
           <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-            {artifacts.length} result{artifacts.length !== 1 ? 's' : ''}
+            {displayCount} result{displayCount !== 1 ? 's' : ''}
           </span>
         )}
       </div>
 
       {/* ── Canvas body ── */}
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        {artifacts.length === 0 ? (
+        {items.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-center select-none">
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-dashed border-border/60 text-muted-foreground/40">
               <ImageOff className="h-6 w-6" />
@@ -43,15 +98,19 @@ export function ArtifactCanvas() {
         ) : (
           <div className="columns-1 gap-3 sm:columns-2 xl:columns-3">
             <AnimatePresence initial={false}>
-              {artifacts.map((artifact, i) => (
+              {items.map((item) => (
                 <motion.div
-                  key={`${artifact.turn_id}-${i}`}
+                  key={item.type === 'group' ? `group-${item.group.smiles}` : `single-${item.index}`}
                   initial={{ opacity: 0, y: 12 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.25, delay: 0.03 * Math.min(i, 8) }}
+                  transition={{ duration: 0.25, delay: 0.03 * Math.min(item.index, 8) }}
                   className="mb-3 break-inside-avoid"
                 >
-                  <ArtifactCard artifact={artifact} />
+                  {item.type === 'group' ? (
+                    <MoleculeGroupCard group={item.group} />
+                  ) : (
+                    <ArtifactCard artifact={item.artifact} />
+                  )}
                 </motion.div>
               ))}
             </AnimatePresence>

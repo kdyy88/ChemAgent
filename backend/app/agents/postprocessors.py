@@ -7,9 +7,23 @@ from app.agents.utils import ToolPostprocessor, ToolResult, refresh_result, stri
 from app.chem.babel_ops import build_3d_conformer, convert_format, prepare_pdbqt
 from app.chem.rdkit_ops import compute_descriptors, substructure_match
 
+# Fields that are dispatched via SSE artifact event but must NOT be stored in
+# ChemState.artifacts (operator.add accumulator).  Keeping raw binary data in
+# the LangGraph state causes unbounded checkpoint growth and pollutes debug logs.
+_STATE_STRIP_FIELDS: frozenset[str] = frozenset({
+    "image", "structure_image", "highlighted_image",
+    "sdf_content", "pdbqt_content",
+})
+
+
+def _strip_for_state(artifact: dict) -> dict:
+    """Return a copy of artifact without large binary fields for state storage."""
+    return {k: v for k, v in artifact.items() if k not in _STATE_STRIP_FIELDS}
+
 
 async def _dispatch_artifact(artifacts: list[dict], artifact: dict, config: RunnableConfig) -> None:
-    artifacts.append(artifact)
+    # State list gets a lean copy (no binary blobs); SSE gets the full payload.
+    artifacts.append(_strip_for_state(artifact))
     await adispatch_custom_event("artifact", artifact, config=config)
 
 

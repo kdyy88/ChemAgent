@@ -87,5 +87,57 @@ async def get_engine_artifact(artifact_id: str) -> Any | None:
     serialized = _local_fallback.get(artifact_id)
     if serialized is not None:
         return json.loads(serialized)
-
     return None
+
+
+async def patch_engine_artifact(
+    artifact_id: str,
+    patch: dict[str, Any],
+) -> bool:
+    """Merge-patch an existing artifact with new top-level keys.
+
+    Performs a **shallow** merge: ``existing.update(patch)``.  Existing keys
+    not present in *patch* are left untouched.  The write inherits the
+    artifact's remaining Redis TTL so the expiry clock is never reset.
+
+    Parameters
+    ----------
+    artifact_id:
+        ID of the artifact to update.
+    patch:
+        Dict of top-level keys to add or overwrite.  Arbitrary keys are
+        accepted, enabling downstream modules (bioactivity, synthesizability,
+        etc.) to attach data without modifying the writer's schema.
+
+    Returns
+    -------
+    bool
+        ``True`` on success, ``False`` if the artifact does not exist.
+
+    Raises
+    ------
+    Nothing — all exceptions are caught and logged as warnings.
+    """
+    existing = await get_engine_artifact(artifact_id)
+    if existing is None:
+        logger.warning("patch_engine_artifact: artifact %s not found — patch skipped", artifact_id)
+        return False
+
+    existing.update(patch)
+    serialized = json.dumps(existing, ensure_ascii=False)
+
+    # Try to inherit the remaining Redis TTL so the expiry clock is unchanged.
+    try:
+        redis = await get_redis_pool()
+        key = _artifact_key(artifact_id)
+        remaining_ttl = await redis.ttl(key)
+        # ttl() returns -1 (no expiry) or -2 (key missing); treat both as
+        # "use default" so we don't silently make entries immortal.
+        ttl = remaining_ttl if remaining_ttl > 0 else _DEFAULT_TTL_SECONDS
+        await redis.set(key, serialized, ex=ttl)
+        logger.debug("Patched engine artifact %s in Redis (remaining_ttl=%ss)", artifact_id, ttl)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Redis unavailable — patching in-process fallback: %s", exc)
+        _local_fallback[artifact_id] = serialized
+
+    return True

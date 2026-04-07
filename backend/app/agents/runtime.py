@@ -87,5 +87,26 @@ async def has_persisted_session(thread_id: str) -> bool:
     return checkpoint is not None
 
 
+def get_checkpointer() -> AsyncSqliteSaver:
+    """Return the shared ``AsyncSqliteSaver`` instance.
+
+    Required by ``build_sub_agent_graph()`` and ``tool_run_sub_agent`` so that
+    sub-graphs share the parent's persistent checkpointer.  In-memory
+    checkpointers are not acceptable because HITL interrupt state must survive
+    HTTP request cycle boundaries.
+
+    Raises
+    ------
+    RuntimeError
+        If ``initialize_graph_runtime()`` has not been called yet.
+    """
+    if _checkpointer is None:
+        raise RuntimeError(
+            "LangGraph checkpointer has not been initialized. "
+            "Call initialize_graph_runtime() first (it runs automatically on FastAPI startup)."
+        )
+    return _checkpointer
+
+
 def get_checkpoint_db_path() -> str | None:
     return str(_checkpoint_db_path) if _checkpoint_db_path is not None else None

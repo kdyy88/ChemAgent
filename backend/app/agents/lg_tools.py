@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
+from datetime import datetime, timezone
 from typing import Annotated, Literal
 from urllib.parse import quote
 
@@ -61,6 +63,30 @@ def _check_smiles_input(smiles: str) -> str | None:
     return None
 
 
+async def _resolve_smiles_from_artifact(artifact_id: str, fallback_smiles: str) -> tuple[str, bool]:
+    """Resolve canonical SMILES from an artifact record.
+
+    Returns (smiles, from_artifact) where ``from_artifact`` is True when the
+    artifact lookup succeeded.  Falls back to ``fallback_smiles`` on miss/error
+    and logs a WARNING so the caller can audit the degraded path.
+    """
+    from app.core.artifact_store import get_engine_artifact  # noqa: PLC0415
+    import logging  # noqa: PLC0415
+    _log = logging.getLogger(__name__)
+    try:
+        record = await get_engine_artifact(artifact_id)
+        if record and isinstance(record, dict) and record.get("canonical_smiles"):
+            _log.debug("Resolved SMILES from artifact %s", artifact_id)
+            return record["canonical_smiles"], True
+        _log.warning(
+            "artifact_id=%s not found or has no canonical_smiles — falling back to raw SMILES input",
+            artifact_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("Failed to resolve artifact %s: %s — falling back to raw SMILES input", artifact_id, exc)
+    return fallback_smiles, False
+
+
 # ── T1: Validate & Canonicalize SMILES ───────────────────────────────────────
 
 @tool
@@ -76,16 +102,95 @@ def tool_validate_smiles(smiles: Annotated[str, "SMILES string to validate"]) ->
 # ── T3: Comprehensive Molecular Descriptors ──────────────────────────────────
 
 @tool
-def tool_compute_descriptors(
+async def tool_evaluate_molecule(
     smiles: Annotated[str, "SMILES string of the molecule"],
     name: Annotated[str, "Common or IUPAC name of the compound (optional)"] = "",
+    artifact_id: Annotated[str, "Optional artifact pointer; when set, canonical_smiles is resolved from ArtifactStore"] = "",
+) -> str:
+    """Evaluate a molecule atomically via validate -> descriptors pipeline.
+
+    This tool is the preferred entrypoint for new molecule assessment because it
+    guarantees sequential execution and canonical SMILES handoff, avoiding race
+    conditions between separate validate/descriptor calls.
+    """
+    input_smiles = smiles
+    from_artifact = False
+    if artifact_id.strip():
+        input_smiles, from_artifact = await _resolve_smiles_from_artifact(artifact_id.strip(), smiles)
+
+    if err := _check_smiles_input(input_smiles):
+        return err
+
+    validation = validate_smiles(input_smiles)
+    if not validation.get("is_valid"):
+        return _to_text(
+            {
+                "type": "evaluation",
+                "is_valid": False,
+                "artifact_id": artifact_id.strip() or None,
+                "from_artifact": from_artifact,
+                "validation": validation,
+                "error": validation.get("error", "SMILES validation failed"),
+            }
+        )
+
+    canonical = validation.get("canonical_smiles", input_smiles)
+    descriptors = compute_descriptors(canonical, name)
+
+    # Persist a stable molecule record so follow-up tools can use artifact_id as
+    # a pointer and avoid string-copy drift (chirality/isotope loss).
+    created_artifact_id = artifact_id.strip() or f"art_{uuid.uuid4().hex[:8]}"
+    from app.core.artifact_store import store_engine_artifact  # noqa: PLC0415
+    record = {
+        "type": "molecule",
+        "canonical_smiles": canonical,
+        "formula": validation.get("formula") or descriptors.get("formula"),
+        "name": name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await store_engine_artifact(created_artifact_id, record)
+
+    return _to_text(
+        {
+            "type": "evaluation",
+            "is_valid": bool(descriptors.get("is_valid", False)),
+            "artifact_id": created_artifact_id,
+            "from_artifact": from_artifact,
+            "validation": validation,
+            "descriptors": descriptors.get("descriptors"),
+            "lipinski": descriptors.get("lipinski"),
+            "formula": descriptors.get("formula") or validation.get("formula"),
+            "smiles": canonical,
+            "name": name,
+        }
+    )
+
+
+# ── T3: Comprehensive Molecular Descriptors ──────────────────────────────────
+
+@tool
+async def tool_compute_descriptors(
+    smiles: Annotated[str, "SMILES string of the molecule"],
+    name: Annotated[str, "Common or IUPAC name of the compound (optional)"] = "",
+    artifact_id: Annotated[str, "Optional artifact pointer; when set, canonical_smiles is resolved from ArtifactStore"] = "",
 ) -> str:
     """Compute comprehensive molecular descriptors including Lipinski Rule-of-5
     (MW, LogP, HBD, HBA), TPSA, QED drug-likeness score, synthetic accessibility
-    (SA Score), ring count, fraction sp3, and heavy atom count.  Returns JSON."""
-    if err := _check_smiles_input(smiles):
+    (SA Score), ring count, fraction sp3, and heavy atom count.
+
+    Prefer ``tool_evaluate_molecule`` for new molecules (atomic validate->compute).
+    This tool remains useful for incremental descriptor updates and supports
+    artifact pointers to avoid SMILES copy drift.
+    """
+    resolved_smiles = smiles
+    if artifact_id.strip():
+        resolved_smiles, _ = await _resolve_smiles_from_artifact(artifact_id.strip(), smiles)
+
+    if err := _check_smiles_input(resolved_smiles):
         return err
-    result = compute_descriptors(smiles, name)
+    result = compute_descriptors(resolved_smiles, name)
+    if artifact_id.strip():
+        result["artifact_id"] = artifact_id.strip()
     return _to_text(result)
 
 
@@ -412,6 +517,7 @@ def tool_update_task_status(
 
 ALL_RDKIT_TOOLS = [
     tool_validate_smiles,
+    tool_evaluate_molecule,
     tool_compute_descriptors,
     tool_compute_similarity,
     tool_substructure_match,
@@ -424,7 +530,15 @@ ALL_RDKIT_TOOLS = [
     tool_update_task_status,
 ]
 
+# Lazy import to avoid circular dependency:
+# lg_tools → tools/sub_agent → tool_registry → lg_tools
+def _get_sub_agent_tool() -> list:
+    from app.agents.tools.sub_agent import tool_run_sub_agent  # noqa: PLC0415
+    return [tool_run_sub_agent]
+
+
 ALL_CHEM_TOOLS = [
     *ALL_RDKIT_TOOLS,
     *ALL_BABEL_TOOLS,
+    *_get_sub_agent_tool(),
 ]
