@@ -169,6 +169,21 @@ export class SSEClient {
       }
 
       case 'token':
+        if (ev.source === 'sub_agent') {
+          handlers.appendThinking({
+            type: 'thinking',
+            text: ev.content,
+            iteration: 0,
+            done: false,
+            source: `sub_agent:${ev.node}`,
+            category: 'llm',
+            importance: 'high',
+            group_key: `sub_agent:${ev.node}`,
+            session_id: ev.session_id,
+            turn_id: ev.turn_id,
+          })
+          return
+        }
         handlers.appendAssistantText(ev.content)
         return
 

@@ -151,6 +151,7 @@ class TestSubAgentPrompts:
     def test_explore_mentions_readonly(self) -> None:
         prompt = get_sub_agent_prompt(SubAgentMode.explore)
         assert "只读" in prompt or "read" in prompt.lower()
+        assert "最多 6 个一级要点" in prompt
 
     def test_plan_mentions_markdown(self) -> None:
         prompt = get_sub_agent_prompt(SubAgentMode.plan)
@@ -169,6 +170,12 @@ class TestSubAgentPrompts:
     def test_custom_mode_fallback_without_instructions(self) -> None:
         prompt = get_sub_agent_prompt(SubAgentMode.custom, custom_instructions="")
         assert len(prompt) > 50  # Falls back to default body
+
+    def test_explore_prompt_forces_chem_tools(self) -> None:
+        prompt = get_sub_agent_prompt(SubAgentMode.explore)
+        assert "tool_murcko_scaffold" in prompt
+        assert "tool_pubchem_lookup" in prompt
+        assert "官能团" in prompt
 
 
 # ── sub_graph tests ───────────────────────────────────────────────────────────
@@ -270,6 +277,62 @@ class TestSubAgentToolHelpers:
         assert len(truncated) < len(long_ctx)
         assert "截断" in truncated
 
+    def test_condense_sub_agent_response_keeps_core_points(self) -> None:
+        from app.agents.tools.sub_agent import _condense_sub_agent_response
+
+        response = """# 共同母核特征
+- 保留双杂芳环 hinge binder。
+- 需要疏水延伸至后口袋。
+
+长段背景介绍：""" + ("A" * 1500)
+
+        condensed = _condense_sub_agent_response(response)
+        assert "共同母核特征" in condensed
+        assert "双杂芳环 hinge binder" in condensed
+        assert len(condensed) < len(response)
+
+    def test_preflight_rejects_explore_design_with_forbid_new_smiles(self) -> None:
+        from app.agents.tools.sub_agent import (
+            _preflight_sub_agent_request,
+            SubAgentOutputContract,
+            SubAgentSmilesPolicy,
+            SubAgentTaskKind,
+        )
+
+        mode, payload = _preflight_sub_agent_request(
+            mode=SubAgentMode.explore,
+            task="设计一个新的 scaffold hop 候选并输出 SMILES",
+            context="给出 1 个候选新骨架",
+            task_kind=SubAgentTaskKind.propose_scaffold,
+            output_contract=SubAgentOutputContract.candidate_package,
+            smiles_policy=SubAgentSmilesPolicy.forbid_new,
+        )
+
+        assert mode == SubAgentMode.explore
+        assert payload is not None
+        assert payload["status"] == "policy_conflict"
+        assert payload["recommended_mode"] == "general"
+
+    def test_preflight_allows_fact_only_scaffold_analysis_in_explore_mode(self) -> None:
+        from app.agents.tools.sub_agent import (
+            _preflight_sub_agent_request,
+            SubAgentOutputContract,
+            SubAgentSmilesPolicy,
+            SubAgentTaskKind,
+        )
+
+        mode, payload = _preflight_sub_agent_request(
+            mode=SubAgentMode.explore,
+            task="调研已获批 MET 激酶抑制剂，提取 Murcko scaffold 并总结共同结构特征；不要设计新分子。",
+            context="仅做事实调研与骨架比较：不做任何新分子设计/不输出任何候选 SMILES。",
+            task_kind=SubAgentTaskKind.compare_scaffolds,
+            output_contract=SubAgentOutputContract.json_findings,
+            smiles_policy=SubAgentSmilesPolicy.forbid_new,
+        )
+
+        assert mode == SubAgentMode.explore
+        assert payload is None
+
     def test_tool_schema_excludes_always_denied(self) -> None:
         """The tool's schema description should not expose denied tool names."""
         from app.agents.tools.sub_agent import tool_run_sub_agent
@@ -278,6 +341,46 @@ class TestSubAgentToolHelpers:
         schema_text = json.dumps(schema)
         # run_sub_agent itself should not be mentioned in LLM-facing schema
         assert "tool_run_sub_agent" not in schema_text
+
+    def test_infer_required_mode(self) -> None:
+        from app.agents.tools.sub_agent import _infer_required_mode
+
+        assert _infer_required_mode("please build 3D conformer for this ligand") == SubAgentMode.general
+        assert _infer_required_mode("extract the scaffold and compare similarity") == SubAgentMode.explore
+        assert _infer_required_mode("write a concise summary") is None
+
+    @pytest.mark.asyncio
+    async def test_build_inherited_context_block_with_missing_artifact(self) -> None:
+        from app.agents.tools.sub_agent import _build_inherited_context_block
+
+        with patch("app.agents.tools.sub_agent.get_engine_artifact", AsyncMock(return_value=None)):
+            block = await _build_inherited_context_block(["art_ghost"], "CCO", "")
+
+        assert "art_ghost" in block
+        assert "Error: Artifact not found or expired" in block
+
+    @pytest.mark.asyncio
+    async def test_build_inherited_context_block_auto_injects_active_smiles(self) -> None:
+        from app.agents.tools.sub_agent import _build_inherited_context_block
+
+        block = await _build_inherited_context_block([], "CCO", "")
+        assert "[System Auto-Inject]" in block
+        assert "CCO" in block
+
+    @pytest.mark.asyncio
+    async def test_build_inherited_context_block_includes_workspace_summary(self) -> None:
+        from app.agents.tools.sub_agent import _build_inherited_context_block
+
+        block = await _build_inherited_context_block(
+            [],
+            "CCO",
+            "",
+            None,
+            "- 乙醇 | active_smiles=CCO | formula=C2H6O | MW=46.07",
+        )
+
+        assert "Structured Molecule Workspace" in block
+        assert "乙醇" in block
 
 
 # ── integration: run_sub_agent tool with mocked sub-graph ────────────────────
@@ -322,6 +425,89 @@ class TestRunSubAgentToolIntegration:
         assert result["status"] == "ok"
         assert result["mode"] == "plan"
         assert "计划" in result["response"] or len(result["response"]) > 0
+        assert result["result"] == result["response"]
+        assert result["task_kind"] == "validate_candidate"
+        assert isinstance(result["findings"], list)
+
+    @pytest.mark.asyncio
+    async def test_run_sub_agent_returns_produced_artifacts_and_suggested_smiles(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.agents.tools.sub_agent import tool_run_sub_agent
+
+        fake_final_state = {
+            "messages": [AIMessage(content="已生成新分子并完成评估")],
+            "artifacts": [{"artifact_id": "art_sub_new", "smiles": "N#CC1=CC=CC=C1"}],
+            "molecule_workspace": [
+                {
+                    "key": "smiles:N#CC1=CC=CC=C1",
+                    "primary_name": "新骨架分子",
+                    "canonical_smiles": "N#CC1=CC=CC=C1",
+                    "scaffold_smiles": "c1ccccc1",
+                }
+            ],
+            "tasks": [],
+            "is_complex": False,
+            "active_smiles": "N#CC1=CC=CC=C1",
+        }
+
+        mock_graph = AsyncMock()
+        mock_graph.ainvoke = AsyncMock(return_value=fake_final_state)
+        mock_graph.aget_state = AsyncMock(return_value=MagicMock(interrupts=[]))
+
+        mock_checkpointer = MagicMock()
+
+        with (
+            patch("app.agents.tools.sub_agent.build_sub_agent_graph", return_value=mock_graph),
+            patch("app.agents.runtime.get_checkpointer", return_value=mock_checkpointer),
+            patch("app.agents.tools.sub_agent.get_engine_artifact", AsyncMock(return_value=None)),
+            patch(
+                "app.agents.tools.sub_agent._lg_get_config",
+                create=True,
+                return_value={
+                    "configurable": {
+                        "thread_id": "parent-thread",
+                        "parent_active_smiles": "CCO",
+                        "parent_active_artifact_id": "art_parent",
+                        "parent_molecule_workspace_summary": "- 乙醇 | active_smiles=CCO | formula=C2H6O",
+                    }
+                },
+            ),
+        ):
+            result_str = await tool_run_sub_agent.ainvoke(
+                {
+                    "mode": "explore",
+                    "task": "分析新的骨架结果",
+                    "artifact_ids": ["art_parent"],
+                }
+            )
+
+        result = json.loads(result_str)
+        assert result["status"] == "ok"
+        assert result["produced_artifacts"][0]["artifact_id"] == "art_sub_new"
+        assert result["suggested_active_smiles"] == "N#CC1=CC=CC=C1"
+        assert result["molecule_workspace"][0]["primary_name"] == "新骨架分子"
+        assert "findings" in result
+        assert "candidate_cores" in result
+
+    @pytest.mark.asyncio
+    async def test_explore_design_request_with_forbid_new_smiles_returns_policy_conflict(self) -> None:
+        from app.agents.tools.sub_agent import tool_run_sub_agent
+
+        result_str = await tool_run_sub_agent.ainvoke(
+            {
+                "mode": "explore",
+                "task": "设计一个不含咪唑的新骨架并给出候选 SMILES",
+                "task_kind": "propose_scaffold",
+                "output_contract": "candidate_package",
+                "smiles_policy": "forbid_new",
+            }
+        )
+
+        result = json.loads(result_str)
+        assert result["status"] == "policy_conflict"
+        assert result["needs_followup"] is True
+        assert result["recommended_mode"] == "general"
 
     @pytest.mark.asyncio
     async def test_unknown_mode_returns_error(self) -> None:

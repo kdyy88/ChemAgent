@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -29,7 +29,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from app.agents.postprocessors import TOOL_POSTPROCESSORS
-from app.agents.state import ChemState
+from app.agents.state import ChemState, MoleculeWorkspaceEntry
 from app.agents.sub_agent_prompts import SubAgentMode, get_sub_agent_prompt
 from app.agents.utils import (
     apply_active_smiles_update,
@@ -37,11 +37,35 @@ from app.agents.utils import (
     normalize_messages_for_api,
     parse_tool_output,
     tool_result_to_text,
+    update_molecule_workspace,
 )
 
 logger = logging.getLogger(__name__)
 
 _SUB_RECURSION_LIMIT = 25
+
+
+def extract_sub_agent_outcome(result: dict[str, Any] | None) -> tuple[str, list[dict], str | None, list[dict]]:
+    """Extract final text, produced artifacts, suggested active SMILES, and molecule workspace."""
+    payload = result or {}
+    messages = payload.get("messages", []) if isinstance(payload, dict) else []
+    artifacts = payload.get("artifacts", []) if isinstance(payload, dict) else []
+    active_smiles = payload.get("active_smiles") if isinstance(payload, dict) else None
+    molecule_workspace = payload.get("molecule_workspace", []) if isinstance(payload, dict) else []
+    final_text = "子智能体已完成任务，但未产生文本输出。"
+
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage) and not getattr(msg, "tool_calls", None):
+            content = msg.content
+            final_text = content if isinstance(content, str) else str(content)
+            break
+
+    return (
+        final_text,
+        artifacts if isinstance(artifacts, list) else [],
+        active_smiles if isinstance(active_smiles, str) else None,
+        molecule_workspace if isinstance(molecule_workspace, list) else [],
+    )
 
 
 # ── Node factory: LLM reasoning step ─────────────────────────────────────────
@@ -101,6 +125,11 @@ def _make_sub_tools_executor(
     async def sub_tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
         last_message = state["messages"][-1]
         new_active_smiles = state.get("active_smiles")
+        molecule_workspace: list[MoleculeWorkspaceEntry] = [
+            cast(MoleculeWorkspaceEntry, dict(entry))
+            for entry in state.get("molecule_workspace", [])
+            if isinstance(entry, dict)
+        ]
         artifacts: list[dict] = []
         tool_messages: list[ToolMessage] = []
         tool_calls = list(getattr(last_message, "tool_calls", []))
@@ -171,6 +200,7 @@ def _make_sub_tools_executor(
                     new_active_smiles = apply_active_smiles_update(
                         tool_name, parsed, new_active_smiles
                     )
+                    molecule_workspace = update_molecule_workspace(molecule_workspace, tool_name, parsed, args)
                     postprocessor = TOOL_POSTPROCESSORS.get(tool_name)
                     if postprocessor is not None:
                         parsed = await postprocessor(parsed, args, artifacts, config)
@@ -193,6 +223,7 @@ def _make_sub_tools_executor(
             "messages": tool_messages,
             "active_smiles": new_active_smiles,
             "artifacts": artifacts,
+            "molecule_workspace": molecule_workspace,
         }
 
     sub_tools_executor_node.__name__ = "sub_tools_executor"

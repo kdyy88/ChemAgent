@@ -207,6 +207,65 @@ describe('sseStore', () => {
     expect(turn.thinkingSteps[0].text).toBe('正在调用：生成三维构象')
   })
 
+  it('routes sub-agent token streams into thinking and preserves parent stream updates', async () => {
+    fetchEventSourceMock.mockImplementation(async (_url: string, options?: { onmessage?: (msg: { data: string }) => void }) => {
+      const emit = (event: SSEEvent) => {
+        options?.onmessage?.({ data: JSON.stringify(event) })
+      }
+
+      emit({ type: 'run_started', session_id: 'session-1', turn_id: 'turn-1', message: 'research' })
+      emit({ type: 'tool_start', tool: 'tool_run_sub_agent', input: { mode: 'explore' }, session_id: 'session-1', turn_id: 'turn-1' })
+      emit({
+        type: 'thinking',
+        text: '正在调用：run_sub_agent',
+        iteration: 0,
+        done: true,
+        source: 'tools_executor',
+        category: 'tool',
+        importance: 'high',
+        group_key: 'tool_run_sub_agent',
+        session_id: 'session-1',
+        turn_id: 'turn-1',
+      })
+      emit({
+        type: 'token',
+        node: 'sub_agent[explore]',
+        source: 'sub_agent',
+        content: 'Analyzing scaffold similarities...',
+        session_id: 'session-1',
+        turn_id: 'turn-1',
+      })
+      emit({
+        type: 'task_update',
+        tasks: [
+          { id: '1', description: '调研候选骨架', status: 'completed' },
+          { id: '2', description: '汇总设计约束', status: 'in_progress' },
+        ],
+        source: 'tools_executor',
+        session_id: 'session-1',
+        turn_id: 'turn-1',
+      })
+      emit({ type: 'tool_end', tool: 'tool_run_sub_agent', output: { status: 'ok' }, session_id: 'session-1', turn_id: 'turn-1' })
+      emit({
+        type: 'token',
+        node: 'chem_agent',
+        content: 'Parent agent continues with the integrated result.',
+        session_id: 'session-1',
+        turn_id: 'turn-1',
+      })
+      emit({ type: 'done', session_id: 'session-1', turn_id: 'turn-1' })
+    })
+
+    await useSseStore.getState().sendMessage('research')
+
+    const turn = useSseStore.getState().turns[0]
+    expect(turn.assistantText).toBe('Parent agent continues with the integrated result.')
+    expect(turn.thinkingSteps).toHaveLength(2)
+    expect(turn.thinkingSteps[0].text).toBe('正在调用：run_sub_agent')
+    expect(turn.thinkingSteps[1].text).toBe('Analyzing scaffold similarities...')
+    expect(turn.tasks[1]).toMatchObject({ id: '2', status: 'in_progress' })
+  })
+
   it('ignores silent task-status tools in the client tool timeline', async () => {
     fetchEventSourceMock.mockImplementation(async (_url: string, options?: { onmessage?: (msg: { data: string }) => void }) => {
       const emit = (event: SSEEvent) => {

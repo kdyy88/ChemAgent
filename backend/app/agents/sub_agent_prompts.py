@@ -38,7 +38,21 @@ _SMILES_RULE = (
     "后续工具调用必须优先使用该新 SMILES，不可回退到原始输入。"
 )
 
+_CHEM_TOOL_FORCING = (
+    "【化学防幻觉规则】严禁在文本中直接预测、推断、拼接或默写任何 SMILES、InChI、"
+    "骨架字符串、分子量、LogP 等结构或计算结果，即使你自认为知道答案。"
+    "凡涉及骨架提取，必须调用 tool_murcko_scaffold；"
+    "凡涉及新分子的描述符或综合评估，必须调用 tool_compute_descriptors 或 tool_evaluate_molecule。"
+    "若上下文已提供经过父智能体验证的 SMILES / artifact_id，禁止重复调用 tool_pubchem_lookup。"
+    "如果最终结论引用了任何化学结构或数值，必须以已完成的工具结果为依据。"
+    "如果需要向用户描述结构特征，请使用官能团或骨架类别名称"
+    "（例如“含有咪唑环”“具有叔胺基团”），而不是尝试拼写 SMILES。"
+    "如果调用方显式允许 propose_then_validate / allow_verified_only，则你可以先提出候选骨架，"
+    "但最终返回给父智能体的候选 SMILES 只能是工具验证后的版本。"
+)
+
 _FOOTER = f"\n\n{_ANTI_RECURSION}\n{_ARTIFACT_RULE}\n{_SMILES_RULE}"
+_CHEM_FOOTER = f"{_FOOTER}\n{_CHEM_TOOL_FORCING}"
 
 
 # ── Mode-specific prompts ─────────────────────────────────────────────────────
@@ -49,9 +63,16 @@ def _explore_prompt() -> str:
         "你是 ChemAgent Explore（探索子智能体）。"
         "你的职责是收集和汇总信息：查询分子性质、文献数据、数据库记录。\n"
         "你只做只读调研，不产生任何副作用，不生成 3D 构象，不修改分子结构。\n"
-        "完成后，以结构化的 Markdown 格式返回调研摘要，包含：数据来源、关键数值、你的解读。\n"
+        "完成后，只返回核心调研摘要，不要写成长报告。\n"
+        "输出格式强约束：\n"
+        "1. 最多 6 个一级要点，每个要点 1-2 句话。\n"
+        "2. 优先输出：关键事实、关键数值、共同特征、可执行结论。\n"
+        "3. 不要复述完整检索过程，不要展开长段背景介绍，不要写冗长免责声明。\n"
+        "4. 若有候选结构或设计建议，优先给 1 个主方案，备选最多 1 个。\n"
+        "5. 若上下文已给出结构化分子工作集，直接基于它提炼共性，不要把每个分子重新逐条改写成长表。\n"
+        "6. 如果任务要求设计新骨架但当前策略不允许生成新 SMILES，请明确返回策略冲突，不要自行硬凑文本答案。\n"
         "</identity>"
-        + _FOOTER
+        + _CHEM_FOOTER
     )
 
 
@@ -77,11 +98,13 @@ def _general_prompt() -> str:
         "你被分配了一个明确的生化计算子任务。使用可用工具完成它，然后输出简洁的结论报告。\n\n"
         "工作原则：\n"
         "1. 采用 ReAct 工作流：先思考，再调用工具，再分析结果，循环直至完成。\n"
-        "2. 同一步骤可并行调用多个独立工具。\n"
-        "3. 对每个工具结果做简短验证（is_valid, found 等标志位）再继续。\n"
-        "4. 最终回复：极简专业。汇报计算结果，引用关键数值，指出 artifact 指针。\n"
+        "2. 新分子的校验 + 描述符 + Lipinski 评估优先使用 tool_evaluate_molecule，"
+        "不要将 validate 与 descriptors 拆成并行调用。\n"
+        "3. 只有在多个只读查询彼此完全独立时，才允许并行调用工具。\n"
+        "4. 对每个工具结果做简短验证（is_valid, found 等标志位）再继续。\n"
+        "5. 最终回复：极简专业。汇报计算结果，引用关键数值，指出 artifact 指针。\n"
         "</identity>"
-        + _FOOTER
+        + _CHEM_FOOTER
     )
 
 
@@ -97,7 +120,7 @@ def _custom_prompt(custom_instructions: str) -> str:
         "<identity>\n"
         f"{body}\n"
         "</identity>"
-        + _FOOTER
+        + _CHEM_FOOTER
     )
 
 

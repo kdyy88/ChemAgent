@@ -411,9 +411,11 @@ class ChemSessionEngine:
         initial_state: ChemState = {
             "messages": initial_messages,
             "artifacts": [],
+            "molecule_workspace": [],
             "tasks": [],
             "is_complex": False,
             "active_smiles": active_smiles,
+            "evidence_revision": 0,
         }
 
         # Resolve graph input: normal turn vs. HITL resume.
@@ -877,8 +879,7 @@ class ChemSessionEngine:
             f"content_preview={_preview(raw_content)} "
             f"additional_preview={_preview(additional_kwargs)}"
         )
-        logger.warning(log_line)
-        print(log_line, flush=True)
+        logger.debug(log_line)
 
     @staticmethod
     def _tool_reasoning_text(

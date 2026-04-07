@@ -27,8 +27,11 @@ import i18next from '@/lib/i18n/client'
 import type {} from '@/lib/i18n/types'
 
 // Pre-load namespaces needed by Zustand/SSE handlers so t() works before
-// any React component mounts and triggers useTranslation().
-i18next.loadNamespaces(['agent'])
+// any React component mounts and triggers useTranslation(). In tests the i18n
+// singleton may be mocked down to a minimal shape without loadNamespaces.
+if (typeof i18next.loadNamespaces === 'function') {
+  void i18next.loadNamespaces(['agent'])
+}
 
 // ── Node label translation ────────────────────────────────────────────────────
 

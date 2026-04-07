@@ -7,6 +7,26 @@ from app.agents.utils import ToolPostprocessor, ToolResult, refresh_result, stri
 from app.chem.babel_ops import build_3d_conformer, convert_format, prepare_pdbqt
 from app.chem.rdkit_ops import compute_descriptors, substructure_match
 
+
+async def _resolve_smiles_for_postprocessor(
+    parsed: ToolResult,
+    args: dict[str, object],
+) -> str:
+    smiles = str(parsed.get("smiles") or args.get("smiles") or "").strip()
+    if smiles:
+        return smiles
+
+    artifact_id = str(parsed.get("artifact_id") or args.get("artifact_id") or "").strip()
+    if not artifact_id:
+        return ""
+
+    from app.core.artifact_store import get_engine_artifact  # noqa: PLC0415
+
+    record = await get_engine_artifact(artifact_id)
+    if isinstance(record, dict):
+        return str(record.get("canonical_smiles") or "").strip()
+    return ""
+
 # Fields that are dispatched via SSE artifact event but must NOT be stored in
 # ChemState.artifacts (operator.add accumulator).  Keeping raw binary data in
 # the LangGraph state causes unbounded checkpoint growth and pollutes debug logs.
@@ -68,10 +88,10 @@ async def postprocess_descriptors(
     artifacts: list[dict],
     config: RunnableConfig,
 ) -> ToolResult:
-    detailed = refresh_result(
-        parsed,
-        required_key="structure_image",
-        loader=lambda: compute_descriptors(str(args.get("smiles", "")), str(args.get("name", ""))),
+    smiles = await _resolve_smiles_for_postprocessor(parsed, args)
+    detailed = parsed if parsed.get("structure_image") else (
+        compute_descriptors(smiles, str(parsed.get("name") or args.get("name", "")))
+        if smiles else parsed
     )
     if detailed.get("structure_image"):
         await _dispatch_artifact(
@@ -80,14 +100,46 @@ async def postprocess_descriptors(
                 "kind": "descriptor_structure_image",
                 "title": detailed.get("name") or "分子结构图",
                 "smiles": detailed.get("smiles"),
+                "artifact_id": parsed.get("artifact_id"),
                 "image": detailed.get("structure_image"),
             },
             config,
         )
         summary = strip_binary_fields(detailed)
+        if parsed.get("artifact_id"):
+            summary["artifact_id"] = parsed.get("artifact_id")
         summary["message"] = "描述符结果已生成，结构图已发送给用户"
         return summary
     return detailed
+
+
+async def postprocess_evaluate_molecule(
+    parsed: ToolResult,
+    args: dict[str, object],
+    artifacts: list[dict],
+    config: RunnableConfig,
+) -> ToolResult:
+    smiles = await _resolve_smiles_for_postprocessor(parsed, args)
+    detailed = compute_descriptors(smiles, str(parsed.get("name") or args.get("name", ""))) if smiles else parsed
+
+    if detailed.get("structure_image") and parsed.get("artifact_id"):
+        await _dispatch_artifact(
+            artifacts,
+            {
+                "kind": "descriptor_structure_image",
+                "title": parsed.get("name") or detailed.get("name") or "分子结构图",
+                "smiles": parsed.get("smiles") or detailed.get("smiles"),
+                "artifact_id": parsed.get("artifact_id"),
+                "parent_artifact_id": parsed.get("parent_artifact_id"),
+                "image": detailed.get("structure_image"),
+            },
+            config,
+        )
+
+    summary = dict(parsed)
+    if detailed.get("structure_image"):
+        summary["message"] = "分子评估已完成，描述符与结构图已发送给用户"
+    return summary
 
 
 async def postprocess_substructure_match(
@@ -143,7 +195,7 @@ async def postprocess_build_3d_conformer(
             str(args.get("smiles", "")),
             name=str(args.get("name", "")),
             forcefield=str(args.get("forcefield", "mmff94")),
-            steps=int(args.get("steps", 500)),
+            steps=int(str(args.get("steps", 500))),
         ),
     )
     if detailed.get("sdf_content"):
@@ -176,7 +228,7 @@ async def postprocess_prepare_pdbqt(
         loader=lambda: prepare_pdbqt(
             str(args.get("smiles", "")),
             name=str(args.get("name", "")),
-            ph=float(args.get("ph", 7.4)),
+            ph=float(str(args.get("ph", 7.4))),
         ),
     )
     if detailed.get("pdbqt_content"):
@@ -266,6 +318,7 @@ async def postprocess_web_search(
 
 TOOL_POSTPROCESSORS: dict[str, ToolPostprocessor] = {
     "tool_render_smiles": postprocess_render_smiles,
+    "tool_evaluate_molecule": postprocess_evaluate_molecule,
     "tool_compute_descriptors": postprocess_descriptors,
     "tool_substructure_match": postprocess_substructure_match,
     "tool_build_3d_conformer": postprocess_build_3d_conformer,

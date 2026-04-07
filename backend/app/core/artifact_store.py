@@ -26,9 +26,10 @@ from app.core.task_queue import get_redis_pool
 logger = logging.getLogger(__name__)
 
 _ENGINE_ARTIFACT_PREFIX = "chemagent:engine-artifact:"
-# Read from ARTIFACT_TTL_SECONDS env var (default 300s = 5 min for deployments)
+# Read from ARTIFACT_TTL_SECONDS env var (default 86400s = 24h for HITL flows)
 # Local dev can override via .env or compose.yaml
-_DEFAULT_TTL_SECONDS = int(os.getenv("ARTIFACT_TTL_SECONDS", "300"))
+_DEFAULT_TTL_SECONDS = int(os.getenv("ARTIFACT_TTL_SECONDS", "86400"))
+_EXPIRY_WARNING_SECONDS = int(os.getenv("ARTIFACT_EXPIRY_WARNING_SECONDS", "1800"))
 
 # In-process fallback — used when Redis is unavailable.
 # Capped at 256 entries (FIFO eviction) to prevent unbounded growth during
@@ -90,6 +91,33 @@ async def get_engine_artifact(artifact_id: str) -> Any | None:
     return None
 
 
+async def get_engine_artifact_warning(artifact_id: str) -> str | None:
+    """Return a human-readable warning when an artifact is missing or near expiry."""
+    if not artifact_id:
+        return None
+
+    key = _artifact_key(artifact_id)
+    try:
+        redis = await get_redis_pool()
+        exists = await redis.exists(key)
+        if not exists:
+            return f"[Warning: Artifact {artifact_id} is unavailable or has expired.]"
+
+        remaining_ttl = await redis.ttl(key)
+        if 0 < remaining_ttl <= _EXPIRY_WARNING_SECONDS:
+            return (
+                f"[Warning: Artifact {artifact_id} is nearing expiration "
+                f"({remaining_ttl}s remaining). Prioritize using or refreshing it.]"
+            )
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Redis unavailable — unable to inspect artifact TTL for %s: %s", artifact_id, exc)
+
+    if artifact_id in _local_fallback:
+        return None
+    return f"[Warning: Artifact {artifact_id} is unavailable or has expired.]"
+
+
 async def patch_engine_artifact(
     artifact_id: str,
     patch: dict[str, Any],
@@ -99,6 +127,12 @@ async def patch_engine_artifact(
     Performs a **shallow** merge: ``existing.update(patch)``.  Existing keys
     not present in *patch* are left untouched.  The write inherits the
     artifact's remaining Redis TTL so the expiry clock is never reset.
+
+    This function is intended for **passive metadata attachment only**
+    (bioactivity, synthesizability, async enrichment scores, etc.).  Core
+    molecular topology fields such as ``canonical_smiles`` should not be
+    mutated in-place; chemistry state transitions must create a new immutable
+    artifact record with ``parent_artifact_id`` lineage.
 
     Parameters
     ----------

@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, ConfigDict, Field
+from typing_extensions import NotRequired
 from typing_extensions import TypedDict
 
 
@@ -16,14 +17,37 @@ class Task(TypedDict):
     id: str
     description: str
     status: TaskStatus
+    summary: NotRequired[str]
+    completion_revision: NotRequired[int]
+
+
+class MoleculeWorkspaceEntry(TypedDict):
+    key: str
+    primary_name: NotRequired[str]
+    aliases: NotRequired[list[str]]
+    canonical_smiles: NotRequired[str]
+    isomeric_smiles: NotRequired[str]
+    formula: NotRequired[str]
+    molecular_weight: NotRequired[float | str]
+    iupac_name: NotRequired[str]
+    artifact_ids: NotRequired[list[str]]
+    parent_artifact_ids: NotRequired[list[str]]
+    scaffold_smiles: NotRequired[str]
+    generic_scaffold_smiles: NotRequired[str]
+    descriptors: NotRequired[dict]
+    lipinski: NotRequired[dict]
+    validation: NotRequired[dict]
+    source_tools: NotRequired[list[str]]
 
 
 class ChemState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     active_smiles: str | None
     artifacts: Annotated[list[dict], operator.add]
+    molecule_workspace: list[MoleculeWorkspaceEntry]
     tasks: list[Task]
     is_complex: bool
+    evidence_revision: int
 
 
 class RouteDecision(BaseModel):

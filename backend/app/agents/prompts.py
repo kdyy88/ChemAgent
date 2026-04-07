@@ -20,6 +20,8 @@
 ------------------------
   active_smiles          当前画布激活的 SMILES（str | None）
   active_artifact_id     最近生成工件的 ID，如 "art_8f2a"（str | None）
+    artifact_warning       工件即将过期或已失效的警告文本（str | None）
+    molecule_workspace_summary  结构化分子工作集摘要（str | None）
   active_receptor_id     当前选中的靶点蛋白 ID（str | None）
   available_tool_namespaces  已挂载工具包列表（str | None）
   os                     运行环境描述（str | None）
@@ -52,14 +54,17 @@ def _SYSTEM_RULES() -> str:
 【SMILES 一致性规则】
 3. 如果调用了 `tool_strip_salts`、`tool_murcko_scaffold`、`tool_validate_smiles` 或 `tool_pubchem_lookup` 并拿到了新的 SMILES，下一个工具必须优先使用这个新 SMILES，绝不能回退到用户最初输入的旧 SMILES。
 4. 如果拿到了 `artifact_id`，后续计算工具必须优先传 `artifact_id`，禁止手动复制 SMILES 字符串（避免手性/同位素信息丢失）。若当前没有可用 `artifact_id`，再回退使用环境信息中的 `active_smiles`。
-5. 如果需要生成 3D 构象、PDBQT、MOL2 等 Open Babel 结果，优先确保使用的是干净、可用的 SMILES。
+5. 如果 `tool_run_sub_agent` 返回了新的 `artifact_id`、`produced_artifacts` 或 `suggested_active_smiles`，后续操作必须将其视为最新实验产物，优先基于该状态继续推理与计算。
+6. 如果 `tool_run_sub_agent` 返回了 `policy_conflicts` 或 `needs_followup=true`，说明子智能体任务定义与能力/策略不匹配。此时不要直接脑补补全结果；应根据其 `recommended_mode` / `recommended_task_kind` 重新委派，或缩减任务目标。
+6. 如果需要生成 3D 构象、PDBQT、MOL2 等 Open Babel 结果，优先确保使用的是干净、可用的 SMILES。
 
 【化学严谨性】
-6. 在修改分子结构前，必须验证价键合法性（Valence）、手性（Chirality）和芳香性（Aromaticity）。不要捏造违背第一性原理的结构。
-7. 绝不要编造工具结果；所有结论都必须基于现有消息与工具返回。
+7. 在修改分子结构前，必须验证价键合法性（Valence）、手性（Chirality）和芳香性（Aromaticity）。不要捏造违背第一性原理的结构。
+8. 绝不要编造工具结果；所有结论都必须基于现有消息与工具返回。
+9. 如果环境中提供了“结构化分子工作集 / molecule_workspace_summary”，它是当前会话里经过工具验证的稳定事实表。当较早的工具消息因 history limit 被裁剪时，优先依据该事实表，而不是依赖不稳定的自然语言记忆。
 
 【不确定性处理】
-8. 遇到高度歧义的化学请求（例如："帮我对接这个分子"，但未指定靶点蛋白），必须使用 `tool_ask_human` 工具请求科学家澄清，严禁自行幻觉填充缺失参数。
+10. 遇到高度歧义的化学请求（例如："帮我对接这个分子"，但未指定靶点蛋白），必须使用 `tool_ask_human` 工具请求科学家澄清，严禁自行幻觉填充缺失参数。
 </system_rules>"""
 
 
@@ -95,7 +100,7 @@ def _TOOL_USAGE() -> str:
 使用 `tool_run_sub_agent` 将独立子任务委派给专项隔离子智能体。子智能体拥有独立线程、独立工具集和专属 Persona。
 
 可用模式：
-- mode="explore"：深度只读调研，无副作用（分子性质查询、PubChem 检索、文献搜索）
+- mode="explore"：深度调研与特征提取（分子性质计算、骨架分析、PubChem / 文献检索），不会产生需要保存到 3D 画布的复杂计算中间体
 - mode="plan"：生成结构化 Markdown 执行计划，纯 LLM 推理，不调用任何工具
 - mode="general"：独立执行多步生化计算（如：验证 → 去盐 → 3D 构象 → PDBQT 全流程）
 - mode="custom"：使用自定义工具白名单和专属指令集
@@ -111,6 +116,12 @@ def _TOOL_USAGE() -> str:
 
 重要约束：
 - 子智能体无法访问当前对话历史——必须在 context 参数中传入所有必要的上下文信息
+- 状态接力：委派任务时，必须优先通过 `artifact_ids` 参数传递当前相关的工件指针；禁止在 `context` 中手动复制大段 SMILES，只有在没有可用工件时才回退描述 `active_smiles`
+- 如果 context 中已经提供父智能体验证过的 SMILES / artifact_id，禁止让子智能体重复调用 `tool_pubchem_lookup`
+- 状态同步：`tool_run_sub_agent` 完成后，必须优先检查其返回的 `produced_artifacts` 与 `suggested_active_smiles`，并将其视为最新研发进展
+- 结果消费：优先读取其结构化字段 `findings`、`candidate_cores`、`candidate_smiles`、`policy_conflicts`、`needs_followup`，不要只依赖自然语言 `response`
+- 若子智能体返回 `policy_conflicts`，先修正委派契约（mode / task_kind / smiles_policy），再决定是否继续
+- 禁止幻觉：不得向子智能体暗示可以“脑补结构”或跳过工具验证
 - 子智能体不能再委派子任务（depth=1 强制限制）
 - 子智能体的 Token 流会实时透传到当前对话气泡（免费流式传输，无需等待）
 </tool_usage>"""
@@ -152,10 +163,13 @@ def _OUTPUT_EFFICIENCY(env: dict) -> str:
 def _ENVIRONMENT_INFO(env: dict) -> str:
     active_smiles = env.get("active_smiles") or "（无）"
     active_artifact = env.get("active_artifact_id") or "None"
+    artifact_warning = env.get("artifact_warning") or ""
     active_receptor = env.get("active_receptor_id") or "None"
+    molecule_workspace_summary = env.get("molecule_workspace_summary") or "- 当前没有结构化分子工作集。"
     tool_ns = env.get("available_tool_namespaces") or "rdkit, babel"
     os_info = env.get("os") or "Linux/Docker"
     py_env = env.get("python_env") or "Python 3.11"
+    warning_line = f"- 工件状态警告: {artifact_warning}\n" if artifact_warning else ""
     return f"""<environment>
 当前系统环境信息：
 - 操作系统: {os_info}
@@ -163,7 +177,9 @@ def _ENVIRONMENT_INFO(env: dict) -> str:
 - 当前挂载的工具包: {tool_ns}
 - 当前全局最新 SMILES (active_smiles): {active_smiles}
 - 当前画布激活的工件 (active_artifact_id): {active_artifact}
-- 当前选中的靶点蛋白 (active_receptor_id): {active_receptor}
+{warning_line}- 当前选中的靶点蛋白 (active_receptor_id): {active_receptor}
+- 结构化分子工作集:
+{molecule_workspace_summary}
 </environment>"""
 
 
@@ -173,6 +189,9 @@ def _TASK_PLAN(env: dict) -> str:
     )
     return f"""<task_plan>
 【任务清单】
+当你把某项任务标记为 `completed` 或 `failed` 时，如有明确阶段结论，请在 `tool_update_task_status` 中附带一句 `summary`，把该阶段的可复用产物写入状态。
+如果某个任务会在当前工作跨度内直接完成，可跳过单独的 `in_progress` 调用；只有跨多轮或长耗时阶段才需要显式标记 `in_progress`。
+已完成任务默认视为锁定；只有当新的工具证据、用户补充信息或实验结果出现时，才允许重新标记为 `in_progress`。
 {task_plan}
 </task_plan>"""
 

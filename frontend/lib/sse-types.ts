@@ -115,6 +115,7 @@ export interface SSEToken {
   node: string
   session_id: string
   turn_id: string
+  source?: 'sub_agent'
   content: string       // partial text — append to the current bubble
 }
 
