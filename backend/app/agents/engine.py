@@ -33,6 +33,7 @@ from langgraph.types import Command
 from app.agents.runtime import get_compiled_graph, has_persisted_session
 from app.agents.state import ChemState
 from app.core.artifact_store import store_engine_artifact
+from app.core.plan_store import update_plan_file
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,8 @@ _BULKY_TOOL_OUTPUT_KEYS = frozenset({
     "image",
     "structure_image",
     "highlighted_image",
+    "molecule_image",
+    "scaffold_image",
     "sdf_content",
     "pdbqt_content",
 })
@@ -416,6 +419,10 @@ class ChemSessionEngine:
             "is_complex": False,
             "active_smiles": active_smiles,
             "evidence_revision": 0,
+            "sub_agent_result": None,
+            "active_subtasks": {},
+            "active_subtask_id": None,
+            "subtask_control": None,
         }
 
         # Resolve graph input: normal turn vs. HITL resume.
@@ -485,7 +492,7 @@ class ChemSessionEngine:
 
                 yield self._sse(
                     self._thinking_dict(
-                        text=f"Execution error detected. Initiating self-correction attempt {current_retry}...",
+                        text=f"检测到执行错误，正在进行自我修正，第 {current_retry} 次尝试...",
                         source="engine",
                         category="system",
                         importance="high",
@@ -556,6 +563,16 @@ class ChemSessionEngine:
                     tool_call_id=str(pending_value.get("tool_call_id", "")),
                     interrupt_id=pending.id,
                 )
+            elif pending_value.get("type") == "plan_approval_request":
+                yield self._event_payload(
+                    "plan_approval_request",
+                    plan_id=str(pending_value.get("plan_id", "")),
+                    plan_file_ref=str(pending_value.get("plan_file_ref", "")),
+                    summary=str(pending_value.get("summary", "")),
+                    status=str(pending_value.get("status", "pending_approval")),
+                    mode=str(pending_value.get("mode", "plan")),
+                    interrupt_id=pending.id,
+                )
             else:
                 yield self._event_payload(
                     "interrupt",
@@ -578,6 +595,7 @@ class ChemSessionEngine:
         *,
         action: str,
         args: dict | None,
+        plan_id: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """【审批恢复生成器】处理前端的 approve / reject / modify 决策。
 
@@ -585,6 +603,29 @@ class ChemSessionEngine:
         审批而挂起的图，并将后续执行结果以 SSE 流的形式返回。
         不进行额外的 DB 写入——恢复操作复用 LangGraph 原生 Checkpointer 路径。
         """
+        if plan_id and action == "modify":
+            content = str((args or {}).get("content") or (args or {}).get("plan_content") or (args or {}).get("markdown") or "").strip()
+            if not content:
+                yield self._sse(self._event_payload("error", error="modify plan requires 'content' or 'plan_content'."))
+                return
+            try:
+                pointer = update_plan_file(session_id=self.session_id, plan_id=plan_id, content=content)
+            except Exception as exc:
+                yield self._sse(self._event_payload("error", error=str(exc)))
+                return
+
+            yield self._sse(
+                self._event_payload(
+                    "plan_modified",
+                    plan_id=pointer.plan_id,
+                    plan_file_ref=pointer.plan_file_ref,
+                    summary=pointer.summary,
+                    status=pointer.status,
+                )
+            )
+            yield self._sse(self._event_payload("done", checkpoint_id=None))
+            return
+
         graph_config = {
             "configurable": {
                 "thread_id": self.session_id,
@@ -594,8 +635,14 @@ class ChemSessionEngine:
             "recursion_limit": _graph_recursion_limit(),
         }
 
+        resume_action = action
+        if plan_id and action == "approve":
+            resume_action = "execute_plan"
+        elif plan_id and action == "reject":
+            resume_action = "reject_plan"
+
         resume_payload = Command(
-            resume={"action": action, "args": args or {}}
+            resume={"action": resume_action, "plan_id": plan_id, "args": args or {}}
         )
 
         yield self._sse(self._event_payload("run_started", message=f"[approval:{action}]"))
@@ -755,7 +802,7 @@ class ChemSessionEngine:
                         "tool_end", tool=tool_name, output=parsed_output
                     )
                 )
-                if isinstance(parsed_output, dict) and "error" in parsed_output:
+                if isinstance(parsed_output, dict) and parsed_output.get("error"):
                     results.append(
                         self._thinking_dict(
                             text=self._tool_reasoning_text(

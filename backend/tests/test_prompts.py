@@ -13,12 +13,37 @@ def test_system_prompt_includes_artifact_handoff_rules() -> None:
         }
     )
 
-    assert "artifact_ids" in prompt
+    assert "delegation.artifact_pointers" in prompt
     assert "produced_artifacts" in prompt
     assert "suggested_active_smiles" in prompt
     assert "policy_conflicts" in prompt
     assert "needs_followup" in prompt
     assert "骨架分析" in prompt
+
+
+def test_system_prompt_requires_structured_completion_over_response() -> None:
+    prompt = get_system_prompt(
+        {
+            "active_smiles": "CCO",
+            "active_artifact_id": "art_123",
+            "task_plan": "- test",
+            "is_native_reasoning_model": True,
+        }
+    )
+
+    assert "completion.summary" in prompt
+    assert "不要只依赖自然语言 `response`" in prompt
+    assert "禁止父智能体根据自然语言 `response` 自行改写具体环系或尾部名称" in prompt
+
+
+def test_sub_agent_prompt_forbids_speculative_ring_naming() -> None:
+    from app.agents.sub_agent_prompts import SubAgentMode, get_sub_agent_prompt
+
+    prompt = get_sub_agent_prompt(SubAgentMode.explore)
+
+    assert "禁止仅凭‘含氧六元环’‘含氮六元环’" in prompt
+    assert "若无法可靠命名某段取代基" in prompt
+    assert "含氧六元环尾部" in prompt
 
 
 def test_system_prompt_renders_artifact_warning() -> None:

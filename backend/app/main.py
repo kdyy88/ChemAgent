@@ -67,6 +67,7 @@ from app.agents.runtime import initialize_graph_runtime, shutdown_graph_runtime
 from app.api.sse_chat import router as sse_chat_router
 from app.api.rdkit_api import router as rdkit_router
 from app.api.babel_api import router as babel_router
+from app.api.scratchpad_api import router as scratchpad_router
 from app.core.network import get_allowed_origins
 
 
@@ -99,6 +100,7 @@ app.add_middleware(
 app.include_router(sse_chat_router, prefix="/api/chat")
 app.include_router(rdkit_router, prefix="/api")
 app.include_router(babel_router, prefix="/api")
+app.include_router(scratchpad_router, prefix="/api/scratchpad")
 
 
 @app.get("/")

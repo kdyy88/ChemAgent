@@ -52,6 +52,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.engine import ChemSessionEngine
 from app.core.artifact_store import get_engine_artifact
+from app.core.plan_store import read_plan_file
 
 router = APIRouter()
 
@@ -87,6 +88,7 @@ class ApproveToolRequest(BaseModel):
 
     session_id: str = Field(..., description="会话 ID，用于定位挂起的图检查点")
     turn_id: str = Field(default_factory=lambda: uuid4().hex)
+    plan_id: str | None = Field(default=None, description="计划审批流的稳定 plan_id。提供后表示此次审批针对计划文件而非普通工具断点。")
     action: str = Field(..., description='"approve" | "reject" | "modify"')
     args: dict | None = Field(
         default=None,
@@ -139,7 +141,7 @@ async def approve_tool(req: ApproveToolRequest) -> StreamingResponse:
         )
     engine = ChemSessionEngine(session_id=req.session_id, turn_id=req.turn_id)
     return StreamingResponse(
-        engine.resume_approval(action=req.action, args=req.args),
+        engine.resume_approval(action=req.action, args=req.args, plan_id=req.plan_id),
         media_type="text/event-stream",
         headers={
             "X-Accel-Buffering": "no",
@@ -167,4 +169,24 @@ async def get_artifact(artifact_id: str):
             detail=f"Artifact '{artifact_id}' not found or has expired.",
         )
     return {"artifact_id": artifact_id, "data": data}
+
+
+@router.get("/plans/{plan_id}")
+async def get_plan(plan_id: str, session_id: str):
+    """Retrieve a file-backed plan document by session and stable plan id."""
+    try:
+        pointer, content = read_plan_file(session_id=session_id, plan_id=plan_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return {
+        "plan_id": pointer.plan_id,
+        "plan_file_ref": pointer.plan_file_ref,
+        "status": pointer.status,
+        "summary": pointer.summary,
+        "revision": pointer.revision,
+        "content": content,
+    }
 

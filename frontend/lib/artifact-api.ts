@@ -25,3 +25,21 @@ export async function fetchArtifact(artifactId: string): Promise<unknown> {
   const json = await res.json() as { artifact_id: string; data: unknown }
   return json.data
 }
+
+export interface PlanDocument {
+  plan_id: string
+  plan_file_ref: string
+  status: string
+  summary: string
+  revision: number
+  content: string
+}
+
+export async function fetchPlanDocument(sessionId: string, planId: string): Promise<PlanDocument> {
+  const url = new URL(`${BASE_URL}/api/chat/plans/${encodeURIComponent(planId)}`)
+  url.searchParams.set('session_id', sessionId)
+  const res = await fetch(url.toString())
+  if (res.status === 404) throw new Error(`Plan ${planId} not found or expired`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+  return await res.json() as PlanDocument
+}

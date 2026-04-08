@@ -7,6 +7,8 @@ import type {
   SSEInterrupt,
   SSEPendingApproval,
   SSEPendingInterrupt,
+  SSEPlanApprovalRequest,
+  SSEPlanModified,
   SSESendMessageOptions,
   SSEShadowError,
   SSETaskItem,
@@ -65,6 +67,7 @@ interface SendApprovalArgs {
   approvalLabel: string
   action: 'approve' | 'reject' | 'modify'
   args?: Record<string, unknown>
+  planId?: string
   handlers: Omit<SSEClientHandlers, 'startTurn'>
 }
 
@@ -112,7 +115,7 @@ export class SSEClient {
 
           try {
             const event = JSON.parse(msg.data) as SSEEvent
-            if (event.type === 'done' || event.type === 'error' || event.type === 'interrupt' || event.type === 'approval_required') {
+            if (event.type === 'done' || event.type === 'error' || event.type === 'interrupt' || event.type === 'approval_required' || event.type === 'plan_approval_request') {
               terminalEventSeen = true
             }
             this.handleEvent(event, turnId, handlers)
@@ -252,12 +255,53 @@ export class SSEClient {
       case 'approval_required': {
         const approvalEvent = ev as SSEApprovalRequired
         handlers.setPendingApproval({
+          kind: 'tool',
           tool_name: approvalEvent.tool_name,
           args: approvalEvent.args,
           tool_call_id: approvalEvent.tool_call_id,
           interrupt_id: approvalEvent.interrupt_id,
         })
         this.finishStream()
+        return
+      }
+
+      case 'plan_approval_request': {
+        const approvalEvent = ev as SSEPlanApprovalRequest
+        handlers.setPendingApproval({
+          kind: 'plan',
+          plan_id: approvalEvent.plan_id,
+          plan_file_ref: approvalEvent.plan_file_ref,
+          summary: approvalEvent.summary,
+          status: approvalEvent.status,
+          mode: approvalEvent.mode,
+          interrupt_id: approvalEvent.interrupt_id,
+        })
+        this.finishStream()
+        return
+      }
+
+      case 'plan_modified': {
+        const modifiedEvent = ev as SSEPlanModified
+        handlers.setPendingApproval({
+          kind: 'plan',
+          plan_id: modifiedEvent.plan_id,
+          plan_file_ref: modifiedEvent.plan_file_ref,
+          summary: modifiedEvent.summary,
+          status: modifiedEvent.status,
+          mode: 'plan',
+          interrupt_id: '',
+        })
+        handlers.appendThinking({
+          type: 'thinking',
+          text: '计划已更新，仍待最终审批。',
+          iteration: 0,
+          done: true,
+          source: 'chem_agent',
+          category: 'status',
+          importance: 'high',
+          session_id: modifiedEvent.session_id,
+          turn_id: modifiedEvent.turn_id,
+        })
         return
       }
 
@@ -322,7 +366,7 @@ export class SSEClient {
    * POSTs to /api/chat/approve and streams the continuation exactly like
    * sendMessage does, reusing the same handlers.
    */
-  async sendApproval({ sessionId, turnId, approvalLabel, action, args = {}, handlers }: SendApprovalArgs) {
+  async sendApproval({ sessionId, turnId, approvalLabel, action, args = {}, planId, handlers }: SendApprovalArgs) {
     this.abortActiveStream()
     const ctrl = new AbortController()
     this.abortCtrl = ctrl
@@ -337,7 +381,7 @@ export class SSEClient {
       await fetchEventSource(APPROVE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, turn_id: turnId, action, args }),
+        body: JSON.stringify({ session_id: sessionId, turn_id: turnId, plan_id: planId ?? null, action, args }),
         signal: ctrl.signal,
         openWhenHidden: true,
 
@@ -345,7 +389,7 @@ export class SSEClient {
           if (!msg.data) return
           try {
             const event = JSON.parse(msg.data) as SSEEvent
-            if (event.type === 'done' || event.type === 'error' || event.type === 'interrupt' || event.type === 'approval_required') {
+            if (event.type === 'done' || event.type === 'error' || event.type === 'interrupt' || event.type === 'approval_required' || event.type === 'plan_approval_request') {
               terminalEventSeen = true
             }
             this.handleEvent(event, turnId, handlers as SSEClientHandlers)

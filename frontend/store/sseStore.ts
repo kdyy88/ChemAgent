@@ -27,6 +27,10 @@ import {
   translateReasoningText,
 } from '@/lib/i18n/sse-interceptor'
 
+function makeApprovalStatusLabel(approval: SSEPendingApproval): string {
+  return approval.kind === 'plan' ? '⏸️ 等待计划审批' : '⏸️ 等待工具审批'
+}
+
 const WORKSPACE_SMILES_KEYS = [
   'cleaned_smiles',
   'canonical_smiles',
@@ -106,6 +110,34 @@ function appendThinkingStep(steps: SSEThinking[], entry: SSEThinking): SSEThinki
 
   next.push({ ...entry, text })
   return next
+}
+
+function modeToChineseLabel(mode: unknown): string {
+  const value = String(mode || '').trim().toLowerCase()
+  if (value === 'explore') return '调研'
+  if (value === 'plan') return '规划'
+  if (value === 'general') return '执行'
+  if (value === 'custom') return '自定义'
+  return '任务'
+}
+
+function summarizeSubAgentCompletion(output: Record<string, unknown>): string {
+  const completion = typeof output.completion === 'object' && output.completion !== null
+    ? output.completion as Record<string, unknown>
+    : null
+  const ref = typeof output.scratchpad_report_ref === 'object' && output.scratchpad_report_ref !== null
+    ? output.scratchpad_report_ref as Record<string, unknown>
+    : null
+  const summary = [
+    typeof completion?.summary === 'string' ? completion.summary : '',
+    typeof output.summary === 'string' ? output.summary : '',
+    typeof output.response === 'string' ? output.response : '',
+    typeof output.result === 'string' ? output.result : '',
+    typeof ref?.summary === 'string' ? ref.summary : '',
+  ].find((value) => value.trim().length > 0)?.trim()
+
+  const prefix = `子智能体${modeToChineseLabel(output.mode)}完成`
+  return summary ? `${prefix}：${summary}` : `${prefix}，结果已返回主流程。`
 }
 
 function createTurn(turnId: string, message: string, tasks: SSETaskItem[]): SSETurn {
@@ -299,14 +331,32 @@ export const useSseStore = create<SseState>((set, get) => {
           return { statusLabel: translateStatusLabel('integrating_results') }
 
         const toolCalls = [...turn.toolCalls]
+        const currentCall = toolCalls[index]
         toolCalls[index] = {
-          ...toolCalls[index],
+          ...currentCall,
           output,
           done: true,
         }
 
+        const thinkingSteps =
+          currentCall?.tool === 'tool_run_sub_agent'
+            ? appendThinkingStep(turn.thinkingSteps, {
+                type: 'thinking',
+                text: summarizeSubAgentCompletion(output),
+                iteration: 0,
+                done: true,
+                source: `sub_agent_report:${index}`,
+                category: 'tool',
+                importance: 'high',
+                group_key: `sub_agent_report:${index}`,
+                session_id: '',
+                turn_id: turn.turnId,
+              })
+            : turn.thinkingSteps
+
         return {
           toolCalls,
+          thinkingSteps,
           statusLabel: translateStatusLabel('integrating_results'),
         }
       })
@@ -353,7 +403,7 @@ export const useSseStore = create<SseState>((set, get) => {
 
     setPendingApproval: (approval) => {
       stopStreamingTurn(() => ({
-        statusLabel: '⏸️ 等待审批',
+        statusLabel: makeApprovalStatusLabel(approval),
         pendingApproval: approval,
       }))
     },
@@ -368,9 +418,13 @@ export const useSseStore = create<SseState>((set, get) => {
         : Math.random().toString(36).slice(2) + Date.now().toString(36)
 
       const pendingApproval = get().turns.at(-1)?.pendingApproval
-      const toolNameLabel = pendingApproval?.tool_name?.replace('tool_', '') ?? ''
-      const actionLabel = action === 'approve' ? '✅ 批准' : action === 'reject' ? '❌ 拒绝' : '✏️ 修改并批准'
-      const approvalLabel = `${actionLabel}: ${toolNameLabel}`
+      if (!pendingApproval) return
+
+      const approvalTarget = pendingApproval.kind === 'plan'
+        ? `plan ${pendingApproval.plan_id.slice(0, 8)}`
+        : pendingApproval.tool_name.replace('tool_', '')
+      const actionLabel = action === 'approve' ? '✅ 批准' : action === 'reject' ? '❌ 拒绝' : '✏️ 修改并保存'
+      const approvalLabel = `${actionLabel}: ${approvalTarget}`
 
       // Clear the pendingApproval badge on the last turn before starting the new one
       updateLastTurn(() => ({ pendingApproval: undefined }))
@@ -406,7 +460,15 @@ export const useSseStore = create<SseState>((set, get) => {
         handleConnectionError: (message: string) => { get().handleConnectionError(message) },
       }
 
-      await sseClient.sendApproval({ sessionId, turnId, approvalLabel, action, args, handlers })
+      await sseClient.sendApproval({
+        sessionId,
+        turnId,
+        approvalLabel,
+        action,
+        args,
+        planId: pendingApproval.kind === 'plan' ? pendingApproval.plan_id : undefined,
+        handlers,
+      })
     },
 
     appendThinking: (thinking) => {

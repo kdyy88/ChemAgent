@@ -1,12 +1,13 @@
 'use client'
 
 import { memo, useEffect, useMemo, useState } from 'react'
-import { FlaskConical, AlertTriangle } from 'lucide-react'
+import { AlertTriangle, FlaskConical, LoaderCircle } from 'lucide-react'
 import { Message, MessageContent } from '@/components/ui/message'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ClarificationCard } from './ClarificationCard'
 import { ApprovalCard } from './ApprovalCard'
 import { LipinskiCard } from './LipinskiCard'
+import { SubAgentReportCard, type SubAgentOutput } from './SubAgentReportCard'
 import { ArtifactDispatcher } from './bubbles/ArtifactDispatcher'
 import { ResearchThinking } from './bubbles/ResearchThinking'
 import { WebSourcesArtifact } from './bubbles/WebSourcesArtifact'
@@ -26,6 +27,14 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
   const isAgentMode = appMode === 'agent'
   const lipinskiCards = parseLipinskiToolCalls(turn.toolCalls)
 
+  // Collect completed sub-agent tool call outputs for SubAgentReportCard.
+  const subAgentOutputs = useMemo<SubAgentOutput[]>(() => {
+    return turn.toolCalls
+      .filter((tc) => tc.tool === 'tool_run_sub_agent' && tc.done && tc.output != null)
+      .map((tc) => tc.output as unknown as SubAgentOutput)
+      .filter((o) => typeof o.status === 'string')
+  }, [turn.toolCalls])
+
   // Split artifacts: web sources show immediately; the rest are delayed
   const webSources = useMemo(
     () => turn.artifacts.filter((a): a is WebSearchSourcesArtifact => a.kind === 'web_search_sources'),
@@ -39,11 +48,11 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
   // Planning phase: activeNode==='planner_node' fires BEFORE tasks arrive (via node_start).
   // This is the reliable signal to show the planning card skeleton.
   const isPlanning = isStreaming && turn.activeNode === 'planner_node'
-  const showThinkingDots = isStreaming && turn.thinkingSteps.length === 0 && !isPlanning
 
   // ── Artifact reveal: 1 s delay + skeleton after streaming ends ──────────────
   const hasOtherArtifacts = otherArtifacts.length > 0 || lipinskiCards.length > 0
   const [artifactsReady, setArtifactsReady] = useState(false)
+  const [streamElapsedSeconds, setStreamElapsedSeconds] = useState(0)
 
   useEffect(() => {
     if (!isStreaming && hasOtherArtifacts) {
@@ -52,6 +61,22 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
     }
     if (isStreaming) setArtifactsReady(false)
   }, [isStreaming, hasOtherArtifacts])
+
+  useEffect(() => {
+    if (!isStreaming) {
+      setStreamElapsedSeconds(0)
+      return
+    }
+
+    const startedAt = Date.now()
+    setStreamElapsedSeconds(0)
+
+    const timer = window.setInterval(() => {
+      setStreamElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000))
+    }, 1000)
+
+    return () => window.clearInterval(timer)
+  }, [isStreaming, turn.turnId])
 
   const showArtifactSkeleton = !isStreaming && hasOtherArtifacts && !artifactsReady && !isAgentMode
   const showArtifacts = artifactsReady && !isAgentMode
@@ -94,26 +119,6 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
             </div>
           )}
 
-          {/* Subtle thinking dots — only when truly nothing has arrived yet */}
-          {showThinkingDots && (
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground py-0.5">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:0ms]" aria-hidden="true" />
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:120ms]" aria-hidden="true" />
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:240ms]" aria-hidden="true" />
-              <span className="ml-1 text-muted-foreground/70">Thinking…</span>
-            </div>
-          )}
-
-          {/* Planning indicator — text-only, no card */}
-          {isPlanning && (
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground py-0.5">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:0ms]" aria-hidden="true" />
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:120ms]" aria-hidden="true" />
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:240ms]" aria-hidden="true" />
-              <span className="ml-1 text-muted-foreground/70">Planning…</span>
-            </div>
-          )}
-
           {/* HITL clarification card — shown when researcher needs user input */}
           {turn.pendingInterrupt && (
             <ClarificationCard
@@ -125,6 +130,15 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
           {/* Hard-breakpoint approval card — shown before executing HEAVY_TOOLS */}
           {turn.pendingApproval && (
             <ApprovalCard approval={turn.pendingApproval} />
+          )}
+
+          {/* Sub-agent delegation result cards — one per completed tool_run_sub_agent call */}
+          {!isStreaming && subAgentOutputs.length > 0 && (
+            <div className="flex flex-col gap-2">
+              {subAgentOutputs.map((o, i) => (
+                <SubAgentReportCard key={`subagent-${turn.turnId}-${i}`} output={o} />
+              ))}
+            </div>
           )}
 
           {/* Assistant text */}
@@ -166,6 +180,18 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
           )}
           {showArtifacts && (
             <ArtifactDispatcher artifacts={otherArtifacts} />
+          )}
+
+          {isStreaming && (
+            <div className="flex items-center gap-2 rounded-full border border-border/70 bg-muted/45 px-3 py-1.5 text-xs text-muted-foreground/78 shadow-sm backdrop-blur-sm w-fit">
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin text-foreground/62" />
+              <span className="font-medium text-foreground/70">
+                {isPlanning ? 'Thinking · Planning…' : 'Thinking…'}
+              </span>
+              <span className="rounded-full bg-background/80 px-1.5 py-0.5 font-mono tabular-nums text-[10px] text-muted-foreground/72">
+                {streamElapsedSeconds}s
+              </span>
+            </div>
           )}
 
           {/* Shadow errors */}

@@ -134,6 +134,38 @@ describe('sseStore', () => {
     expect(useSseStore.getState().isStreaming).toBe(false)
   })
 
+  it('stores plan approval requests as pending plan approvals', async () => {
+    fetchEventSourceMock.mockImplementation(async (_url: string, options?: { onmessage?: (msg: { data: string }) => void }) => {
+      const emit = (event: SSEEvent) => {
+        options?.onmessage?.({ data: JSON.stringify(event) })
+      }
+
+      emit({ type: 'run_started', session_id: 'session-1', turn_id: 'turn-1', message: 'draft a plan' })
+      emit({
+        type: 'plan_approval_request',
+        plan_id: '1234567890abcdef1234567890abcdef',
+        plan_file_ref: 'session-1/1234567890abcdef1234567890abcdef.md',
+        summary: 'Three-step synthesis and validation plan',
+        status: 'pending_approval',
+        mode: 'plan',
+        interrupt_id: 'interrupt-plan-1',
+        session_id: 'session-1',
+        turn_id: 'turn-1',
+      })
+    })
+
+    await useSseStore.getState().sendMessage('draft a plan')
+
+    const turn = useSseStore.getState().turns[0]
+    expect(turn.pendingApproval).toMatchObject({
+      kind: 'plan',
+      plan_id: '1234567890abcdef1234567890abcdef',
+      summary: 'Three-step synthesis and validation plan',
+      status: 'pending_approval',
+    })
+    expect(useSseStore.getState().isStreaming).toBe(false)
+  })
+
   it('tracks planner task updates for the active turn', async () => {
     fetchEventSourceMock.mockImplementation(async (_url: string, options?: { onmessage?: (msg: { data: string }) => void }) => {
       const emit = (event: SSEEvent) => {
@@ -260,9 +292,10 @@ describe('sseStore', () => {
 
     const turn = useSseStore.getState().turns[0]
     expect(turn.assistantText).toBe('Parent agent continues with the integrated result.')
-    expect(turn.thinkingSteps).toHaveLength(2)
+    expect(turn.thinkingSteps).toHaveLength(3)
     expect(turn.thinkingSteps[0].text).toBe('正在调用：run_sub_agent')
     expect(turn.thinkingSteps[1].text).toBe('Analyzing scaffold similarities...')
+    expect(turn.thinkingSteps[2].text).toBe('子智能体任务完成，结果已返回主流程。')
     expect(turn.tasks[1]).toMatchObject({ id: '2', status: 'in_progress' })
   })
 

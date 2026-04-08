@@ -33,6 +33,18 @@ _ARTIFACT_RULE = (
     "严禁在文本回答中直接粘贴坐标数据。"
 )
 
+_SCRATCHPAD_RULE = (
+    "【Scratchpad 规则】如果委派载荷里提供了 scratchpad_refs，说明长背景已经写入本地 scratchpad。"
+    "需要完整背景时必须调用 tool_read_scratchpad，不要假装看过未读取的内容。"
+    "如果你生成了长篇中间分析，可调用 tool_write_scratchpad 保存，但最终交付仍必须调用 tool_task_complete。"
+)
+
+_TERMINATION_RULE = (
+    "【终结协议】执行完成时调用一次 tool_task_complete，规划阶段完成时调用 tool_exit_plan_mode。"
+    "如果方法无效、工具连续报错或前提不足，请调用 tool_report_failure 或 tool_task_stop，"
+    "不要继续在错误路径上循环消耗 token。"
+)
+
 _SMILES_RULE = (
     "【SMILES 规则】若工具返回了新 SMILES（如 cleaned_smiles / canonical_smiles），"
     "后续工具调用必须优先使用该新 SMILES，不可回退到原始输入。"
@@ -45,13 +57,16 @@ _CHEM_TOOL_FORCING = (
     "凡涉及新分子的描述符或综合评估，必须调用 tool_compute_descriptors 或 tool_evaluate_molecule。"
     "若上下文已提供经过父智能体验证的 SMILES / artifact_id，禁止重复调用 tool_pubchem_lookup。"
     "如果最终结论引用了任何化学结构或数值，必须以已完成的工具结果为依据。"
+    "禁止仅凭‘含氧六元环’‘含氮六元环’或相似局部模式就自行命名为吗啉、哌啶、四氢吡喃等具体环系；"
+    "只有当工具结果、数据库名称或已验证结构足以支持该命名时，才能使用具体名称。"
     "如果需要向用户描述结构特征，请使用官能团或骨架类别名称"
     "（例如“含有咪唑环”“具有叔胺基团”），而不是尝试拼写 SMILES。"
+    "若无法可靠命名某段取代基，请退回保守描述，如“含氧六元环尾部”“极性胺侧链”“N-rich 杂芳 hinge binder”。"
     "如果调用方显式允许 propose_then_validate / allow_verified_only，则你可以先提出候选骨架，"
     "但最终返回给父智能体的候选 SMILES 只能是工具验证后的版本。"
 )
 
-_FOOTER = f"\n\n{_ANTI_RECURSION}\n{_ARTIFACT_RULE}\n{_SMILES_RULE}"
+_FOOTER = f"\n\n{_ANTI_RECURSION}\n{_ARTIFACT_RULE}\n{_SMILES_RULE}\n{_SCRATCHPAD_RULE}\n{_TERMINATION_RULE}"
 _CHEM_FOOTER = f"{_FOOTER}\n{_CHEM_TOOL_FORCING}"
 
 
@@ -67,7 +82,7 @@ def _explore_prompt() -> str:
         "输出格式强约束：\n"
         "1. 最多 6 个一级要点，每个要点 1-2 句话。\n"
         "2. 优先输出：关键事实、关键数值、共同特征、可执行结论。\n"
-        "3. 不要复述完整检索过程，不要展开长段背景介绍，不要写冗长免责声明。\n"
+        "3. 不要复述完整检索过程，不要展开长段背景介绍，不要写冗长免责声明。长背景应写入 scratchpad 或通过 tool_task_complete 的 summary/metrics 结构化上报。\n"
         "4. 若有候选结构或设计建议，优先给 1 个主方案，备选最多 1 个。\n"
         "5. 若上下文已给出结构化分子工作集，直接基于它提炼共性，不要把每个分子重新逐条改写成长表。\n"
         "6. 如果任务要求设计新骨架但当前策略不允许生成新 SMILES，请明确返回策略冲突，不要自行硬凑文本答案。\n"
@@ -84,8 +99,9 @@ def _plan_prompt() -> str:
         "输出格式要求：\n"
         "1. 严格输出 Markdown，使用编号列表。\n"
         "2. 每个步骤必须注明：使用的工具、预期输入、预期输出。\n"
-        "3. 不调用任何工具，纯粹基于你的化学信息学知识进行逻辑推演。\n"
+        "3. 除 tool_write_plan 与 tool_exit_plan_mode 外，不调用任何其他工具；纯粹基于你的化学信息学知识进行逻辑推演。\n"
         "4. 如果任务参数不足，在计划末尾单独列出「数据缺口」小节。\n"
+        "5. 生成计划后先调用 tool_write_plan 持久化 Markdown，再调用 tool_exit_plan_mode 进入待审批状态。\n"
         "</identity>"
         + _FOOTER
     )
@@ -102,7 +118,8 @@ def _general_prompt() -> str:
         "不要将 validate 与 descriptors 拆成并行调用。\n"
         "3. 只有在多个只读查询彼此完全独立时，才允许并行调用工具。\n"
         "4. 对每个工具结果做简短验证（is_valid, found 等标志位）再继续。\n"
-        "5. 最终回复：极简专业。汇报计算结果，引用关键数值，指出 artifact 指针。\n"
+        "5. 如果你发现方法无效或工具连续报错，应调用 tool_report_failure 或 tool_task_stop，而不是重复同一个失败调用。\n"
+        "6. 结束前必须调用 tool_task_complete，再用极简专业的自然语言汇报结果，引用关键数值并指出 artifact 指针。\n"
         "</identity>"
         + _CHEM_FOOTER
     )

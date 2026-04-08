@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+from uuid import uuid4
 from typing import cast
 
 from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
+from app.agents.subagent_protocol import RecoveryAction
 from app.agents.lg_tools import ALL_CHEM_TOOLS
 from app.agents.postprocessors import TOOL_POSTPROCESSORS
 from app.agents.state import ChemState, MoleculeWorkspaceEntry, Task, TaskStatus
@@ -23,11 +25,13 @@ from app.agents.utils import (
     update_molecule_workspace,
     update_tasks,
 )
+from app.core.plan_store import read_plan_file
 
 _TOOL_LOOKUP = {tool.name: tool for tool in ALL_CHEM_TOOLS}
 logger = logging.getLogger(__name__)
 _MAX_PARENT_ARTIFACT_IDS = 8
 _SUB_AGENT_VERBOSE_LOGS = os.environ.get("CHEMAGENT_SUB_AGENT_VERBOSE_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}
+_MAX_SUBTASK_RECOVERY_ATTEMPTS = 1
 
 # Tools that require explicit user approval before execution (Hard Breakpoint tier).
 # Add tool names here to gate them behind the ApprovalCard UI.
@@ -101,6 +105,74 @@ def _increments_evidence_revision(tool_name: str, parsed: dict | None) -> bool:
     return True
 
 
+def _normalize_subagent_delegation(args: dict) -> dict:
+    delegation = args.get("delegation") if isinstance(args.get("delegation"), dict) else {}
+    return dict(delegation)
+
+
+def _build_recovery_hint(failure: dict, *, for_spawn: bool) -> str:
+    summary = str(failure.get("summary") or "").strip()
+    error = str(failure.get("error") or "").strip()
+    tool_name = str(failure.get("failed_tool_name") or "").strip()
+    prefix = "Spawn new worker" if for_spawn else "Continue same worker"
+    parts = [prefix, "avoid repeating the previous failing path"]
+    if tool_name:
+        parts.append(f"failing_tool={tool_name}")
+    if summary:
+        parts.append(f"summary={summary}")
+    if error:
+        parts.append(f"error={error}")
+    return " | ".join(parts)
+
+
+def _prepare_recovery_dispatch(
+    *,
+    args: dict,
+    tool_config: RunnableConfig | dict,
+    parsed: dict,
+) -> tuple[dict, dict, str] | None:
+    failure = parsed.get("failure") if isinstance(parsed.get("failure"), dict) else None
+    if failure is None:
+        return None
+
+    configurable = dict((tool_config or {}).get("configurable") or {})
+    recovery_attempts = int(configurable.get("subtask_recovery_attempts") or 0)
+    if recovery_attempts >= _MAX_SUBTASK_RECOVERY_ATTEMPTS:
+        return None
+
+    recommended_action = str(failure.get("recommended_action") or RecoveryAction.spawn_new_task.value).strip().lower()
+    is_recoverable = bool(failure.get("is_recoverable"))
+
+    should_continue = recommended_action == RecoveryAction.continue_same_task.value and is_recoverable
+    should_spawn = recommended_action == RecoveryAction.spawn_new_task.value or not is_recoverable
+    if not should_continue and not should_spawn:
+        return None
+
+    recovery_args = dict(args)
+    recovery_config = dict(tool_config or {})
+    recovery_configurable = dict(configurable)
+    recovery_configurable["subtask_recovery_attempts"] = recovery_attempts + 1
+    delegation = _normalize_subagent_delegation(recovery_args)
+    existing_inline_context = str(delegation.get("inline_context") or "").strip()
+
+    if should_continue:
+        recovery_hint = _build_recovery_hint(failure, for_spawn=False)
+        merged_inline_context = recovery_hint if not existing_inline_context else f"{existing_inline_context}\n\n{recovery_hint}"
+        delegation["inline_context"] = merged_inline_context[:1400]
+        if parsed.get("execution_task_id"):
+            recovery_configurable["execution_task_id"] = str(parsed.get("execution_task_id"))
+        recovery_args["delegation"] = delegation
+        recovery_config["configurable"] = recovery_configurable
+        return recovery_args, recovery_config, RecoveryAction.continue_same_task.value
+
+    recovery_hint = _build_recovery_hint(failure, for_spawn=True)
+    delegation["inline_context"] = recovery_hint[:1400]
+    recovery_args["delegation"] = delegation
+    recovery_configurable["execution_task_id"] = uuid4().hex
+    recovery_config["configurable"] = recovery_configurable
+    return recovery_args, recovery_config, RecoveryAction.spawn_new_task.value
+
+
 async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
     last_message = state["messages"][-1]
     new_active_smiles = state.get("active_smiles")
@@ -111,6 +183,12 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
     ]
     new_tasks: list[Task] = [cast(Task, dict(task)) for task in state.get("tasks", [])]
     evidence_revision = int(state.get("evidence_revision") or 0)
+    active_subtasks = {
+        str(task_id): dict(pointer)
+        for task_id, pointer in (state.get("active_subtasks") or {}).items()
+        if isinstance(pointer, dict)
+    }
+    active_subtask_id = str(state.get("active_subtask_id") or "").strip() or None
     parent_artifacts = state.get("artifacts") or []
     recent_artifact_ids = _collect_recent_artifact_ids(parent_artifacts)
     active_artifact_id = recent_artifact_ids[-1] if recent_artifact_ids else None
@@ -314,44 +392,175 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                     if isinstance(produced_artifacts, list):
                         artifacts.extend(_merge_sub_agent_artifacts(parent_artifacts, produced_artifacts))
 
-                    suggested_active_smiles = str(parsed.get("suggested_active_smiles") or "").strip()
+                    if str(parsed.get("status") or "").strip().lower() == "plan_pending_approval":
+                        plan_pointer = parsed.get("plan_pointer") if isinstance(parsed.get("plan_pointer"), dict) else {}
+                        plan_id = str(plan_pointer.get("plan_id") or "").strip()
+                        if plan_id:
+                            active_subtasks[plan_id] = {
+                                "kind": "plan",
+                                "status": "pending_approval",
+                                "summary": str(parsed.get("summary") or "").strip(),
+                                "plan_id": plan_id,
+                                "plan_file_ref": str(plan_pointer.get("plan_file_ref") or "").strip(),
+                            }
+                            active_subtask_id = plan_id
+
+                        resume_value = interrupt(
+                            {
+                                "type": "plan_approval_request",
+                                "plan_id": plan_id,
+                                "plan_file_ref": str(plan_pointer.get("plan_file_ref") or "").strip(),
+                                "summary": str(parsed.get("summary") or "").strip(),
+                                "status": "pending_approval",
+                                "mode": str(parsed.get("mode") or "plan"),
+                            }
+                        )
+
+                        action = str((resume_value or {}).get("action") or "").strip().lower() if isinstance(resume_value, dict) else ""
+                        if action == "reject_plan":
+                            if plan_id:
+                                active_subtasks.pop(plan_id, None)
+                                if active_subtask_id == plan_id:
+                                    active_subtask_id = None
+                            parsed = {
+                                "status": "rejected",
+                                "mode": parsed.get("mode"),
+                                "summary": "计划已被人工拒绝，等待重新规划。",
+                                "result": "计划已被人工拒绝，等待重新规划。",
+                                "response": "计划已被人工拒绝，等待重新规划。",
+                                "plan_pointer": plan_pointer,
+                                "needs_followup": True,
+                            }
+                        else:
+                            approved_plan_id = str((resume_value or {}).get("plan_id") or plan_id).strip()
+                            _, approved_plan_markdown = read_plan_file(
+                                session_id=str(((config or {}).get("configurable") or {}).get("thread_id") or "default"),
+                                plan_id=approved_plan_id,
+                            )
+                            execution_task_id = uuid4().hex
+                            execution_args = dict(args)
+                            execution_args["mode"] = "general"
+                            execution_args["task"] = f"执行已批准计划：{str(args.get('task') or '').strip()}"[:1000]
+
+                            execution_delegation = dict(execution_args.get("delegation") or {})
+                            existing_inline_context = str(execution_delegation.get("inline_context") or "").strip()
+                            approved_plan_context = f"Approved plan ({approved_plan_id}):\n{approved_plan_markdown}".strip()
+                            merged_inline_context = approved_plan_context if not existing_inline_context else f"{existing_inline_context}\n\n{approved_plan_context}"
+                            execution_delegation["inline_context"] = merged_inline_context[:1400]
+                            execution_delegation["subagent_type"] = "general"
+                            execution_delegation["task_directive"] = execution_args["task"]
+                            execution_args["delegation"] = execution_delegation
+
+                            execution_config = dict(tool_config or {})
+                            execution_configurable = dict((execution_config.get("configurable") or {}))
+                            execution_configurable["execution_task_id"] = execution_task_id
+                            execution_configurable.pop("plan_id", None)
+                            execution_config["configurable"] = execution_configurable
+
+                            active_subtasks[execution_task_id] = {
+                                "kind": "execution",
+                                "status": "running",
+                                "summary": str(parsed.get("summary") or "").strip(),
+                                "plan_id": approved_plan_id,
+                                "plan_file_ref": str(plan_pointer.get("plan_file_ref") or "").strip(),
+                                "execution_task_id": execution_task_id,
+                            }
+                            active_subtask_id = execution_task_id
+                            active_subtasks.pop(approved_plan_id, None)
+
+                            raw_output = await tool.ainvoke(execution_args, config=execution_config)
+                            parsed = parse_tool_output(raw_output)
+                            if str((parsed or {}).get("status") or "").strip().lower() in {"ok", "failed", "stopped", "error", "timeout", "protocol_error"}:
+                                active_subtasks.pop(execution_task_id, None)
+                                if active_subtask_id == execution_task_id:
+                                    active_subtask_id = None
+
+                    recovery_dispatch = None
+                    if str((parsed or {}).get("status") or "").strip().lower() == "failed":
+                        recovery_dispatch = _prepare_recovery_dispatch(
+                            args=args,
+                            tool_config=tool_config,
+                            parsed=parsed,
+                        )
+
+                    if recovery_dispatch is not None:
+                        recovery_args, recovery_config, recovery_action = recovery_dispatch
+                        prior_execution_task_id = str(parsed.get("execution_task_id") or "").strip()
+                        if recovery_action == RecoveryAction.spawn_new_task.value and prior_execution_task_id:
+                            active_subtasks.pop(prior_execution_task_id, None)
+                            if active_subtask_id == prior_execution_task_id:
+                                active_subtask_id = None
+
+                        raw_output = await tool.ainvoke(recovery_args, config=recovery_config)
+                        parsed = parse_tool_output(raw_output)
+                        if isinstance(parsed, dict):
+                            parsed["parent_decision"] = recovery_action
+
+                        recovered_execution_task_id = str((parsed or {}).get("execution_task_id") or "").strip()
+                        if recovered_execution_task_id and recovery_action == RecoveryAction.spawn_new_task.value:
+                            active_subtasks[recovered_execution_task_id] = {
+                                "kind": "execution",
+                                "status": str((parsed or {}).get("status") or "running"),
+                                "summary": str((parsed or {}).get("summary") or "").strip(),
+                                "execution_task_id": recovered_execution_task_id,
+                            }
+                            active_subtask_id = recovered_execution_task_id
+                        if str((parsed or {}).get("status") or "").strip().lower() in {"ok", "failed", "stopped", "error", "timeout", "protocol_error"} and recovered_execution_task_id:
+                            active_subtasks.pop(recovered_execution_task_id, None)
+                            if active_subtask_id == recovered_execution_task_id:
+                                active_subtask_id = None
+
+                    completion = parsed.get("completion") if isinstance(parsed.get("completion"), dict) else {}
+                    suggested_active_smiles = str(
+                        parsed.get("suggested_active_smiles")
+                        or parsed.get("advisory_active_smiles")
+                        or completion.get("advisory_active_smiles")
+                        or ""
+                    ).strip()
                     if suggested_active_smiles:
                         new_active_smiles = suggested_active_smiles
 
-                    molecule_workspace = merge_molecule_workspace(
-                        molecule_workspace,
-                        parsed.get("molecule_workspace") if isinstance(parsed.get("molecule_workspace"), list) else [],
-                    )
-
                     if _SUB_AGENT_VERBOSE_LOGS:
                         logger.debug(
-                            "Sub-agent return payload: status=%s sub_thread_id=%s produced_artifacts=%d merged_artifacts=%d suggested_active_smiles_present=%s result_chars=%d",
+                            "Sub-agent return payload: status=%s sub_thread_id=%s produced_artifacts=%d merged_artifacts=%d suggested_active_smiles_present=%s summary_chars=%d report_ref=%s",
                             parsed.get("status", "ok"),
                             parsed.get("sub_thread_id"),
                             len(produced_artifacts) if isinstance(produced_artifacts, list) else 0,
                             len(artifacts),
                             bool(suggested_active_smiles),
-                            len(str(parsed.get("result") or parsed.get("response") or "")),
+                            len(str(parsed.get("summary") or parsed.get("result") or parsed.get("response") or "")),
+                            (parsed.get("scratchpad_report_ref") or {}).get("scratchpad_id") if isinstance(parsed.get("scratchpad_report_ref"), dict) else None,
                         )
 
                     parsed = {
                         "status": parsed.get("status", "ok"),
                         "mode": parsed.get("mode"),
                         "sub_thread_id": parsed.get("sub_thread_id"),
+                        "execution_task_id": parsed.get("execution_task_id"),
                         "task_kind": parsed.get("task_kind"),
                         "output_contract": parsed.get("output_contract"),
                         "smiles_policy": parsed.get("smiles_policy"),
-                        "result": parsed.get("result") or parsed.get("response") or "",
-                        "response": parsed.get("result") or parsed.get("response") or "",
-                        "findings": parsed.get("findings") if isinstance(parsed.get("findings"), list) else [],
-                        "candidate_cores": parsed.get("candidate_cores") if isinstance(parsed.get("candidate_cores"), list) else [],
-                        "candidate_smiles": parsed.get("candidate_smiles") if isinstance(parsed.get("candidate_smiles"), list) else [],
+                        "summary": parsed.get("summary") or parsed.get("result") or parsed.get("response") or "",
+                        "result": parsed.get("summary") or parsed.get("result") or parsed.get("response") or "",
+                        "response": parsed.get("summary") or parsed.get("result") or parsed.get("response") or "",
+                        "completion": completion,
+                        "plan_pointer": parsed.get("plan_pointer") if isinstance(parsed.get("plan_pointer"), dict) else None,
+                        "failure": parsed.get("failure") if isinstance(parsed.get("failure"), dict) else None,
+                        "delegation": parsed.get("delegation") if isinstance(parsed.get("delegation"), dict) else None,
+                        "scratchpad_report_ref": parsed.get("scratchpad_report_ref") if isinstance(parsed.get("scratchpad_report_ref"), dict) else None,
                         "policy_conflicts": parsed.get("policy_conflicts") if isinstance(parsed.get("policy_conflicts"), list) else [],
                         "needs_followup": bool(parsed.get("needs_followup")),
+                        "parent_decision": parsed.get("parent_decision"),
                         "recommended_mode": parsed.get("recommended_mode"),
                         "recommended_task_kind": parsed.get("recommended_task_kind"),
-                        "molecule_workspace": molecule_workspace,
+                        "suggested_active_smiles": suggested_active_smiles or None,
+                        "produced_artifacts": produced_artifacts if isinstance(produced_artifacts, list) else [],
                     }
+
+                    failure = parsed.get("failure") if isinstance(parsed.get("failure"), dict) else None
+                    if failure is not None:
+                        recommended_action = str(failure.get("recommended_action") or RecoveryAction.spawn_new_task.value)
+                        parsed["parent_decision"] = recommended_action
                 else:
                     new_active_smiles = apply_active_smiles_update(tool_name, parsed, new_active_smiles)
                     molecule_workspace = update_molecule_workspace(molecule_workspace, tool_name, parsed, args)
@@ -389,4 +598,6 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
         "molecule_workspace": molecule_workspace,
         "tasks": new_tasks,
         "evidence_revision": evidence_revision,
+        "active_subtasks": active_subtasks,
+        "active_subtask_id": active_subtask_id,
     }

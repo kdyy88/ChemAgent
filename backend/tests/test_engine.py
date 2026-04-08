@@ -397,6 +397,13 @@ class TestSubmitMessageOuterLoop:
             events.append(json.loads(body))
         return events
 
+    async def _collect_resume(self, engine: ChemSessionEngine, **kwargs) -> list[dict]:
+        events: list[dict] = []
+        async for line in engine.resume_approval(**kwargs):
+            body = line.removeprefix("data: ").strip()
+            events.append(json.loads(body))
+        return events
+
     async def test_emits_run_started_and_done(self, engine: ChemSessionEngine) -> None:
         mock_graph = _make_mock_graph([])
 
@@ -544,3 +551,67 @@ class TestSubmitMessageOuterLoop:
             )
 
         assert events[0]["type"] == "error"
+
+    async def test_emits_plan_approval_request_from_pending_interrupt(
+        self, engine: ChemSessionEngine
+    ) -> None:
+        snapshot = MagicMock()
+        snapshot.interrupts = [
+            MagicMock(
+                id="intr-plan-001",
+                value={
+                    "type": "plan_approval_request",
+                    "plan_id": "123e4567-e89b-12d3-a456-426614174000",
+                    "plan_file_ref": "sess-test/123e4567-e89b-12d3-a456-426614174000.md",
+                    "summary": "先验证 SMILES，再执行已批准步骤。",
+                    "status": "pending_approval",
+                    "mode": "plan",
+                },
+            )
+        ]
+        snapshot.config = {"configurable": {"checkpoint_id": "chk-plan"}}
+
+        async def _fake_astream(*_args, **_kwargs):
+            if False:
+                yield {}
+
+        mock_graph = MagicMock()
+        mock_graph.astream_events = _fake_astream
+        mock_graph.aget_state = AsyncMock(return_value=snapshot)
+
+        with (
+            patch("app.agents.engine.get_compiled_graph", return_value=mock_graph),
+            patch("app.agents.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
+        ):
+            events = await self._collect(engine, message="为该分子先生成执行计划")
+
+        plan_events = [e for e in events if e["type"] == "plan_approval_request"]
+        assert len(plan_events) == 1
+        assert plan_events[0]["plan_id"] == "123e4567-e89b-12d3-a456-426614174000"
+        assert plan_events[0]["plan_file_ref"].endswith(".md")
+
+    async def test_modify_plan_updates_file_without_resuming_graph(
+        self, engine: ChemSessionEngine
+    ) -> None:
+        with (
+            patch("app.agents.engine.update_plan_file") as update_plan_file,
+            patch("app.agents.engine.get_compiled_graph") as get_graph,
+        ):
+            update_plan_file.return_value = MagicMock(
+                plan_id="123e4567-e89b-12d3-a456-426614174000",
+                plan_file_ref="sess-test/123e4567-e89b-12d3-a456-426614174000.md",
+                summary="更新后的计划摘要",
+                status="pending_approval",
+            )
+            events = await self._collect_resume(
+                engine,
+                action="modify",
+                args={"content": "# Updated Plan\n1. Validate\n2. Execute"},
+                plan_id="123e4567-e89b-12d3-a456-426614174000",
+            )
+
+        get_graph.assert_not_called()
+        update_plan_file.assert_called_once()
+        assert events[0]["type"] == "plan_modified"
+        assert events[0]["plan_id"] == "123e4567-e89b-12d3-a456-426614174000"
+        assert events[-1]["type"] == "done"

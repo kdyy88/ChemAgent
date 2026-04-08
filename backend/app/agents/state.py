@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import operator
-from typing import Annotated, Literal
+from typing import Any, Annotated, Literal
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
@@ -40,6 +40,15 @@ class MoleculeWorkspaceEntry(TypedDict):
     source_tools: NotRequired[list[str]]
 
 
+class SubtaskStatePointer(TypedDict):
+    kind: str
+    status: str
+    summary: NotRequired[str]
+    plan_id: NotRequired[str]
+    plan_file_ref: NotRequired[str]
+    execution_task_id: NotRequired[str]
+
+
 class ChemState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     active_smiles: str | None
@@ -48,6 +57,10 @@ class ChemState(TypedDict):
     tasks: list[Task]
     is_complex: bool
     evidence_revision: int
+    sub_agent_result: dict[str, Any] | None
+    active_subtasks: dict[str, SubtaskStatePointer]
+    active_subtask_id: str | None
+    subtask_control: dict[str, Any] | None
 
 
 class RouteDecision(BaseModel):

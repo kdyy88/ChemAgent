@@ -4,18 +4,18 @@ Coverage:
 - tool_registry: whitelist correctness, ALWAYS_DENIED enforcement, custom mode
 - sub_agent_prompts: persona prompt generation, anti-recursion fragment presence
 - sub_graph: node topology, bypass_hitl, missing checkpointer guard
-- tool_run_sub_agent: deterministic sub_thread_id, context truncation helpers
+- tool_run_sub_agent: UUID-backed runtime ids, typed delegation normalization
 - anti-recursion contract: run_sub_agent absent from all mode tool sets
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.agents.subagent_protocol import ScratchpadKind, ScratchpadRef
 from app.agents.sub_agent_prompts import SubAgentMode, get_sub_agent_prompt
 from app.agents.tool_registry import ALWAYS_DENIED, get_tools_for_mode
 
@@ -130,6 +130,50 @@ class TestToolRegistry:
         assert tools == []
 
 
+class TestWebSearchTool:
+    async def test_web_search_uses_tavily(self) -> None:
+        from app.agents.lg_tools import tool_web_search
+
+        tavily_payload = {
+            "answer": "Azithromycin remains approved for several bacterial infections.",
+            "results": [
+                {
+                    "title": "FDA label update",
+                    "url": "https://example.com/fda",
+                    "content": "Updated safety and prescribing information.",
+                }
+            ],
+        }
+
+        with patch.dict("os.environ", {"TAVILY_API_KEY": "tvly-test-key"}, clear=False):
+            with patch("app.agents.lg_tools.TavilyClient") as client_cls:
+                client_cls.return_value.search.return_value = tavily_payload
+
+                raw = await tool_web_search.ainvoke({"query": "azithromycin 2026"})
+
+        parsed = json.loads(raw)
+        client_cls.assert_called_once_with(api_key="tvly-test-key")
+        client_cls.return_value.search.assert_called_once_with(
+            query="azithromycin 2026",
+            search_depth="advanced",
+            max_results=8,
+        )
+        assert parsed["status"] == "success"
+        assert parsed["provider"] == "tavily"
+        assert parsed["results"][0]["title"] == "Tavily Answer"
+        assert parsed["results"][1]["url"] == "https://example.com/fda"
+
+    async def test_web_search_requires_tavily_api_key(self) -> None:
+        from app.agents.lg_tools import tool_web_search
+
+        with patch.dict("os.environ", {}, clear=True):
+            raw = await tool_web_search.ainvoke({"query": "aspirin approval news"})
+
+        parsed = json.loads(raw)
+        assert parsed["status"] == "error"
+        assert "TAVILY_API_KEY" in parsed["error"]
+
+
 # ── sub_agent_prompts tests ───────────────────────────────────────────────────
 
 
@@ -157,10 +201,16 @@ class TestSubAgentPrompts:
         prompt = get_sub_agent_prompt(SubAgentMode.plan)
         assert "Markdown" in prompt or "markdown" in prompt.lower()
 
-    def test_plan_mentions_no_tools(self) -> None:
+    def test_plan_mentions_task_complete(self) -> None:
         prompt = get_sub_agent_prompt(SubAgentMode.plan)
-        # Plan should explicitly state no tool calls
-        assert "工具" in prompt
+        assert "tool_exit_plan_mode" in prompt
+        assert "tool_write_plan" in prompt
+
+    def test_prompts_mention_scratchpad_and_termination(self) -> None:
+        prompt = get_sub_agent_prompt(SubAgentMode.general)
+        assert "tool_read_scratchpad" in prompt
+        assert "tool_task_complete" in prompt
+        assert "tool_report_failure" in prompt
 
     def test_custom_mode_injects_custom_instructions(self) -> None:
         instructions = "专注于配体的分子量必须低于 300 Da 的筛选条件"
@@ -191,19 +241,17 @@ class TestSubGraphBuilder:
         with pytest.raises(ValueError, match="persistent checkpointer"):
             build_sub_agent_graph(SubAgentMode.explore, tools, checkpointer=None)
 
-    def test_plan_mode_has_single_node(self) -> None:
+    def test_plan_mode_has_runtime_tools_executor(self) -> None:
         from app.agents.sub_graph import build_sub_agent_graph
         from langgraph.checkpoint.memory import MemorySaver
 
-        # Use in-memory saver for unit tests (HITL tested separately)
         mem_checkpointer = MemorySaver()
-        tools = get_tools_for_mode(SubAgentMode.plan)  # empty
+        tools = get_tools_for_mode(SubAgentMode.plan)
         assert tools == []
 
         graph = build_sub_agent_graph(SubAgentMode.plan, tools, mem_checkpointer)
-        # plan graph: START → sub_agent → END (no sub_tools_executor)
         assert "sub_agent" in graph.get_graph().nodes
-        assert "sub_tools_executor" not in graph.get_graph().nodes
+        assert "sub_tools_executor" in graph.get_graph().nodes
 
     def test_explore_mode_has_two_nodes(self) -> None:
         from app.agents.sub_graph import build_sub_agent_graph
@@ -234,62 +282,81 @@ class TestSubGraphBuilder:
 
 
 class TestSubAgentToolHelpers:
-    """Deterministic thread ID and context truncation."""
+    """UUID-backed runtime ids and typed delegation normalization."""
 
-    def test_deterministic_sub_thread_id_is_stable(self) -> None:
-        from app.agents.tools.sub_agent import _deterministic_sub_thread_id
+    def test_resolve_runtime_ids_uses_plan_id_for_plan_mode(self) -> None:
+        from app.agents.tools.sub_agent import _resolve_runtime_ids
 
-        tid1 = _deterministic_sub_thread_id("session-abc", "explore", "Compute Lipinski properties")
-        tid2 = _deterministic_sub_thread_id("session-abc", "explore", "Compute Lipinski properties")
-        assert tid1 == tid2, "Same inputs must produce same sub_thread_id"
+        sub_thread_id, plan_id, execution_task_id = _resolve_runtime_ids(
+            mode="plan",
+            configurable={"plan_id": "123e4567-e89b-12d3-a456-426614174000"},
+        )
 
-    def test_deterministic_sub_thread_id_differs_by_task(self) -> None:
-        from app.agents.tools.sub_agent import _deterministic_sub_thread_id
+        assert sub_thread_id == "plan_123e4567-e89b-12d3-a456-426614174000"
+        assert plan_id == "123e4567-e89b-12d3-a456-426614174000"
+        assert execution_task_id is None
 
-        tid1 = _deterministic_sub_thread_id("session-abc", "explore", "Task A")
-        tid2 = _deterministic_sub_thread_id("session-abc", "explore", "Task B")
-        assert tid1 != tid2
+    def test_resolve_runtime_ids_uses_execution_id_for_non_plan_mode(self) -> None:
+        from app.agents.tools.sub_agent import _resolve_runtime_ids
 
-    def test_deterministic_sub_thread_id_differs_by_mode(self) -> None:
-        from app.agents.tools.sub_agent import _deterministic_sub_thread_id
+        sub_thread_id, plan_id, execution_task_id = _resolve_runtime_ids(
+            mode="general",
+            configurable={"execution_task_id": "123e4567-e89b-12d3-a456-426614174999"},
+        )
 
-        tid1 = _deterministic_sub_thread_id("session-abc", "explore", "Task X")
-        tid2 = _deterministic_sub_thread_id("session-abc", "general", "Task X")
-        assert tid1 != tid2
+        assert sub_thread_id == "exec_123e4567-e89b-12d3-a456-426614174999"
+        assert execution_task_id == "123e4567-e89b-12d3-a456-426614174999"
+        assert plan_id is None
 
-    def test_deterministic_sub_thread_id_has_prefix(self) -> None:
-        from app.agents.tools.sub_agent import _deterministic_sub_thread_id
+    def test_normalize_artifact_pointers_prefers_explicit_then_parent(self) -> None:
+        from app.agents.tools.sub_agent import _normalize_artifact_pointers
 
-        tid = _deterministic_sub_thread_id("session-abc", "plan", "Design a workflow")
-        assert tid.startswith("sub_")
+        assert _normalize_artifact_pointers(["art_a", "art_b"], ["art_c"], "art_d") == ["art_a", "art_b"]
+        assert _normalize_artifact_pointers([], ["art_c", "art_d"], "art_e") == ["art_c", "art_d"]
+        assert _normalize_artifact_pointers([], [], "art_e") == ["art_e"]
 
-    def test_context_not_truncated_when_short(self) -> None:
-        from app.agents.tools.sub_agent import _truncate_context
+    def test_normalize_delegation_keeps_short_context_inline(self) -> None:
+        """Without a context param the delegation always starts with empty inline_context."""
+        from app.agents.tools.sub_agent import _normalize_delegation_payload
 
-        short = "A" * 100
-        assert _truncate_context(short) == short
+        delegation = _normalize_delegation_payload(
+            mode="explore",
+            task="提取共同骨架特征",
+            requested_artifact_ids=["art_parent"],
+            parent_thread_id="parent-thread",
+            sub_thread_id="sub_123",
+            parent_active_smiles="CCO",
+            parent_active_artifact_id="art_parent",
+            parent_artifact_ids=["art_parent"],
+            parent_molecule_workspace_summary="- 乙醇 | active_smiles=CCO",
+            provided_delegation=None,
+        )
 
-    def test_context_truncated_at_8000_chars(self) -> None:
-        from app.agents.tools.sub_agent import _MAX_CONTEXT_CHARS, _truncate_context
+        assert delegation.inline_context == ""
+        assert delegation.scratchpad_refs == []
+        assert delegation.artifact_pointers == ["art_parent"]
 
-        long_ctx = "X" * (_MAX_CONTEXT_CHARS + 1000)
-        truncated = _truncate_context(long_ctx)
-        assert len(truncated) < len(long_ctx)
-        assert "截断" in truncated
+    def test_normalize_delegation_writes_long_context_to_scratchpad(self) -> None:
+        """Without a context param, no scratchpad entry is created during delegation build."""
+        from app.agents.tools.sub_agent import _normalize_delegation_payload
 
-    def test_condense_sub_agent_response_keeps_core_points(self) -> None:
-        from app.agents.tools.sub_agent import _condense_sub_agent_response
+        with patch("app.agents.tools.sub_agent.create_scratchpad_entry") as create_entry:
+            delegation = _normalize_delegation_payload(
+                mode="explore",
+                task="提取共同骨架特征",
+                requested_artifact_ids=[],
+                parent_thread_id="parent-thread",
+                sub_thread_id="sub_123",
+                parent_active_smiles="CCO",
+                parent_active_artifact_id="art_parent",
+                parent_artifact_ids=["art_parent"],
+                parent_molecule_workspace_summary="",
+                provided_delegation=None,
+            )
 
-        response = """# 共同母核特征
-- 保留双杂芳环 hinge binder。
-- 需要疏水延伸至后口袋。
-
-长段背景介绍：""" + ("A" * 1500)
-
-        condensed = _condense_sub_agent_response(response)
-        assert "共同母核特征" in condensed
-        assert "双杂芳环 hinge binder" in condensed
-        assert len(condensed) < len(response)
+        create_entry.assert_not_called()
+        assert delegation.inline_context == ""
+        assert delegation.scratchpad_refs == []
 
     def test_preflight_rejects_explore_design_with_forbid_new_smiles(self) -> None:
         from app.agents.tools.sub_agent import (
@@ -302,7 +369,6 @@ class TestSubAgentToolHelpers:
         mode, payload = _preflight_sub_agent_request(
             mode=SubAgentMode.explore,
             task="设计一个新的 scaffold hop 候选并输出 SMILES",
-            context="给出 1 个候选新骨架",
             task_kind=SubAgentTaskKind.propose_scaffold,
             output_contract=SubAgentOutputContract.candidate_package,
             smiles_policy=SubAgentSmilesPolicy.forbid_new,
@@ -324,7 +390,6 @@ class TestSubAgentToolHelpers:
         mode, payload = _preflight_sub_agent_request(
             mode=SubAgentMode.explore,
             task="调研已获批 MET 激酶抑制剂，提取 Murcko scaffold 并总结共同结构特征；不要设计新分子。",
-            context="仅做事实调研与骨架比较：不做任何新分子设计/不输出任何候选 SMILES。",
             task_kind=SubAgentTaskKind.compare_scaffolds,
             output_contract=SubAgentOutputContract.json_findings,
             smiles_policy=SubAgentSmilesPolicy.forbid_new,
@@ -337,7 +402,9 @@ class TestSubAgentToolHelpers:
         """The tool's schema description should not expose denied tool names."""
         from app.agents.tools.sub_agent import tool_run_sub_agent
 
-        schema = tool_run_sub_agent.args_schema.model_json_schema()
+        schema_model = tool_run_sub_agent.args_schema
+        assert schema_model is not None
+        schema = getattr(schema_model, "model_json_schema")()
         schema_text = json.dumps(schema)
         # run_sub_agent itself should not be mentioned in LLM-facing schema
         assert "tool_run_sub_agent" not in schema_text
@@ -349,39 +416,6 @@ class TestSubAgentToolHelpers:
         assert _infer_required_mode("extract the scaffold and compare similarity") == SubAgentMode.explore
         assert _infer_required_mode("write a concise summary") is None
 
-    @pytest.mark.asyncio
-    async def test_build_inherited_context_block_with_missing_artifact(self) -> None:
-        from app.agents.tools.sub_agent import _build_inherited_context_block
-
-        with patch("app.agents.tools.sub_agent.get_engine_artifact", AsyncMock(return_value=None)):
-            block = await _build_inherited_context_block(["art_ghost"], "CCO", "")
-
-        assert "art_ghost" in block
-        assert "Error: Artifact not found or expired" in block
-
-    @pytest.mark.asyncio
-    async def test_build_inherited_context_block_auto_injects_active_smiles(self) -> None:
-        from app.agents.tools.sub_agent import _build_inherited_context_block
-
-        block = await _build_inherited_context_block([], "CCO", "")
-        assert "[System Auto-Inject]" in block
-        assert "CCO" in block
-
-    @pytest.mark.asyncio
-    async def test_build_inherited_context_block_includes_workspace_summary(self) -> None:
-        from app.agents.tools.sub_agent import _build_inherited_context_block
-
-        block = await _build_inherited_context_block(
-            [],
-            "CCO",
-            "",
-            None,
-            "- 乙醇 | active_smiles=CCO | formula=C2H6O | MW=46.07",
-        )
-
-        assert "Structured Molecule Workspace" in block
-        assert "乙醇" in block
-
 
 # ── integration: run_sub_agent tool with mocked sub-graph ────────────────────
 
@@ -390,10 +424,18 @@ class TestRunSubAgentToolIntegration:
     """Integration tests with mocked LLM and sub-graph execution."""
 
     @pytest.mark.asyncio
-    async def test_plan_mode_returns_ok_status(self) -> None:
+    async def test_plan_mode_returns_pending_approval_status(self) -> None:
         from langchain_core.messages import AIMessage
 
         from app.agents.tools.sub_agent import tool_run_sub_agent
+
+        fake_ref = ScratchpadRef(
+            scratchpad_id="sp_abcdef123456",
+            kind=ScratchpadKind.report,
+            summary="计划摘要",
+            size_bytes=100,
+            created_by="sub_agent",
+        )
 
         fake_final_state = {
             "messages": [AIMessage(content="# 计划\n1. 验证 SMILES\n2. 计算描述符")],
@@ -401,6 +443,18 @@ class TestRunSubAgentToolIntegration:
             "tasks": [],
             "is_complex": False,
             "active_smiles": None,
+            "sub_agent_result": {
+                "status": "plan_pending_approval",
+                "summary": "先验证 SMILES，再计算描述符。",
+                "requires_approval": True,
+                "plan": {
+                    "plan_id": "123e4567-e89b-12d3-a456-426614174000",
+                    "plan_file_ref": "session/123e4567-e89b-12d3-a456-426614174000.md",
+                    "status": "pending_approval",
+                    "summary": "先验证 SMILES，再计算描述符。",
+                    "revision": 1,
+                },
+            },
         }
 
         mock_graph = AsyncMock()
@@ -412,6 +466,7 @@ class TestRunSubAgentToolIntegration:
         with (
             patch("app.agents.tools.sub_agent.build_sub_agent_graph", return_value=mock_graph),
             patch("app.agents.runtime.get_checkpointer", return_value=mock_checkpointer),
+            patch("app.agents.tools.sub_agent.create_scratchpad_entry", return_value=fake_ref),
         ):
             result_str = await tool_run_sub_agent.ainvoke(
                 {
@@ -422,12 +477,14 @@ class TestRunSubAgentToolIntegration:
             )
 
         result = json.loads(result_str)
-        assert result["status"] == "ok"
+        assert result["status"] == "plan_pending_approval"
         assert result["mode"] == "plan"
-        assert "计划" in result["response"] or len(result["response"]) > 0
+        assert result["plan_pointer"]["plan_id"] == "123e4567-e89b-12d3-a456-426614174000"
+        assert result["scratchpad_report_ref"]["scratchpad_id"] == "sp_abcdef123456"
+        assert "计划摘要" in result["response"] or len(result["response"]) > 0
         assert result["result"] == result["response"]
         assert result["task_kind"] == "validate_candidate"
-        assert isinstance(result["findings"], list)
+        assert result["delegation"]["task_directive"] == "为布洛芬的 Lipinski 分析设计执行步骤"
 
     @pytest.mark.asyncio
     async def test_run_sub_agent_returns_produced_artifacts_and_suggested_smiles(self) -> None:
@@ -435,20 +492,27 @@ class TestRunSubAgentToolIntegration:
 
         from app.agents.tools.sub_agent import tool_run_sub_agent
 
+        fake_ref = ScratchpadRef(
+            scratchpad_id="sp_111111aaaaaa",
+            kind=ScratchpadKind.report,
+            summary="已生成新分子并完成评估",
+            size_bytes=120,
+            created_by="sub_agent",
+        )
+
         fake_final_state = {
             "messages": [AIMessage(content="已生成新分子并完成评估")],
             "artifacts": [{"artifact_id": "art_sub_new", "smiles": "N#CC1=CC=CC=C1"}],
-            "molecule_workspace": [
-                {
-                    "key": "smiles:N#CC1=CC=CC=C1",
-                    "primary_name": "新骨架分子",
-                    "canonical_smiles": "N#CC1=CC=CC=C1",
-                    "scaffold_smiles": "c1ccccc1",
-                }
-            ],
             "tasks": [],
             "is_complex": False,
             "active_smiles": "N#CC1=CC=CC=C1",
+            "sub_agent_result": {
+                "status": "completed",
+                "summary": "已生成新分子并完成评估",
+                "produced_artifact_ids": ["art_sub_new"],
+                "metrics": {"qed": 0.72},
+                "advisory_active_smiles": "N#CC1=CC=CC=C1",
+            },
         }
 
         mock_graph = AsyncMock()
@@ -460,7 +524,7 @@ class TestRunSubAgentToolIntegration:
         with (
             patch("app.agents.tools.sub_agent.build_sub_agent_graph", return_value=mock_graph),
             patch("app.agents.runtime.get_checkpointer", return_value=mock_checkpointer),
-            patch("app.agents.tools.sub_agent.get_engine_artifact", AsyncMock(return_value=None)),
+            patch("app.agents.tools.sub_agent.create_scratchpad_entry", return_value=fake_ref),
             patch(
                 "app.agents.tools.sub_agent._lg_get_config",
                 create=True,
@@ -486,9 +550,223 @@ class TestRunSubAgentToolIntegration:
         assert result["status"] == "ok"
         assert result["produced_artifacts"][0]["artifact_id"] == "art_sub_new"
         assert result["suggested_active_smiles"] == "N#CC1=CC=CC=C1"
-        assert result["molecule_workspace"][0]["primary_name"] == "新骨架分子"
-        assert "findings" in result
-        assert "candidate_cores" in result
+        assert result["completion"]["produced_artifact_ids"] == ["art_sub_new"]
+        assert result["scratchpad_report_ref"]["scratchpad_id"] == "sp_111111aaaaaa"
+
+    @pytest.mark.asyncio
+    async def test_structured_completion_generates_report_content_without_placeholder(self) -> None:
+        from app.agents.tools.sub_agent import tool_run_sub_agent
+
+        fake_ref = ScratchpadRef(
+            scratchpad_id="sp_structured123",
+            kind=ScratchpadKind.report,
+            summary="structured report",
+            size_bytes=160,
+            created_by="sub_agent",
+        )
+
+        fake_final_state = {
+            "messages": [],
+            "artifacts": [{"artifact_id": "art_structured_1"}],
+            "tasks": [],
+            "is_complex": False,
+            "active_smiles": "CCN",
+            "sub_agent_result": {
+                "status": "completed",
+                "summary": "Found 3 reusable candidates with a shared quinazoline core.",
+                "produced_artifact_ids": ["art_structured_1"],
+                "metrics": {"common_core": "quinazoline", "candidate_count": 3},
+                "advisory_active_smiles": "CCN",
+            },
+        }
+
+        mock_graph = AsyncMock()
+        mock_graph.ainvoke = AsyncMock(return_value=fake_final_state)
+        mock_graph.aget_state = AsyncMock(return_value=MagicMock(interrupts=[]))
+        create_entry = MagicMock(return_value=fake_ref)
+
+        with (
+            patch("app.agents.tools.sub_agent.build_sub_agent_graph", return_value=mock_graph),
+            patch("app.agents.runtime.get_checkpointer", return_value=MagicMock()),
+            patch("app.agents.tools.sub_agent.create_scratchpad_entry", create_entry),
+        ):
+            result_str = await tool_run_sub_agent.ainvoke(
+                {
+                    "mode": "explore",
+                    "task": "List reusable candidates and common scaffold features",
+                }
+            )
+
+        result = json.loads(result_str)
+        assert result["status"] == "ok"
+        assert result["summary"] == "Found 3 reusable candidates with a shared quinazoline core."
+        create_kwargs = create_entry.call_args.kwargs
+        assert create_kwargs["content"] != "子智能体已完成任务，但未产生文本输出。"
+        assert "Found 3 reusable candidates" in create_kwargs["content"]
+        assert "Structured results:" in create_kwargs["content"]
+        assert "common_core: quinazoline" in create_kwargs["content"]
+        assert "Produced artifacts:" in create_kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_structured_completion_wins_over_conflicting_free_text(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.agents.tools.sub_agent import tool_run_sub_agent
+
+        fake_ref = ScratchpadRef(
+            scratchpad_id="sp_alignment123",
+            kind=ScratchpadKind.report,
+            summary="alignment report",
+            size_bytes=160,
+            created_by="sub_agent",
+        )
+
+        fake_final_state = {
+            "messages": [
+                AIMessage(
+                    content="候选采用吗啉乙胺尾部，并已通过所有验证。"
+                )
+            ],
+            "artifacts": [{"artifact_id": "art_alignment_1"}],
+            "tasks": [],
+            "is_complex": False,
+            "active_smiles": "COc1ccc(Nc2nc(NCC3CCOCC3)nc(Nc3ccc(C#N)cc3)n2)cc1",
+            "sub_agent_result": {
+                "status": "completed",
+                "summary": "候选保留 1,3,5-三嗪 hinge binder，并使用含氧六元环尾部；避免将该尾部误写为吗啉。",
+                "produced_artifact_ids": ["art_alignment_1"],
+                "metrics": {
+                    "tail_description": "oxygen-containing six-membered ring tail",
+                    "structure_grounded": True,
+                },
+                "advisory_active_smiles": "COc1ccc(Nc2nc(NCC3CCOCC3)nc(Nc3ccc(C#N)cc3)n2)cc1",
+            },
+        }
+
+        mock_graph = AsyncMock()
+        mock_graph.ainvoke = AsyncMock(return_value=fake_final_state)
+        mock_graph.aget_state = AsyncMock(return_value=MagicMock(interrupts=[]))
+        create_entry = MagicMock(return_value=fake_ref)
+
+        with (
+            patch("app.agents.tools.sub_agent.build_sub_agent_graph", return_value=mock_graph),
+            patch("app.agents.runtime.get_checkpointer", return_value=MagicMock()),
+            patch("app.agents.tools.sub_agent.create_scratchpad_entry", create_entry),
+        ):
+            result_str = await tool_run_sub_agent.ainvoke(
+                {
+                    "mode": "general",
+                    "task": "核对已验证分子的结构描述是否一致",
+                }
+            )
+
+        result = json.loads(result_str)
+        assert result["status"] == "ok"
+        assert result["summary"] == "候选保留 1,3,5-三嗪 hinge binder，并使用含氧六元环尾部；避免将该尾部误写为吗啉。"
+        assert "吗啉乙胺" not in result["response"]
+        assert result["completion"]["metrics"]["structure_grounded"] is True
+
+        create_kwargs = create_entry.call_args.kwargs
+        assert "含氧六元环尾部" in create_kwargs["content"]
+        assert "吗啉乙胺" not in create_kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_missing_task_complete_returns_protocol_error(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.agents.tools.sub_agent import tool_run_sub_agent
+
+        fake_ref = ScratchpadRef(
+            scratchpad_id="sp_deadbeefcafe",
+            kind=ScratchpadKind.report,
+            summary="仅自然语言输出",
+            size_bytes=80,
+            created_by="sub_agent",
+        )
+
+        fake_final_state = {
+            "messages": [AIMessage(content="我完成了任务，但没有调用终结工具")],
+            "artifacts": [],
+            "tasks": [],
+            "is_complex": False,
+            "active_smiles": None,
+            "sub_agent_result": None,
+        }
+
+        mock_graph = AsyncMock()
+        mock_graph.ainvoke = AsyncMock(return_value=fake_final_state)
+        mock_graph.aget_state = AsyncMock(return_value=MagicMock(interrupts=[]))
+
+        with (
+            patch("app.agents.tools.sub_agent.build_sub_agent_graph", return_value=mock_graph),
+            patch("app.agents.runtime.get_checkpointer", return_value=MagicMock()),
+            patch("app.agents.tools.sub_agent.create_scratchpad_entry", return_value=fake_ref),
+        ):
+            result_str = await tool_run_sub_agent.ainvoke(
+                {
+                    "mode": "explore",
+                    "task": "总结该分子的关键性质",
+                }
+            )
+
+        result = json.loads(result_str)
+        assert result["status"] == "protocol_error"
+        assert result["scratchpad_report_ref"]["scratchpad_id"] == "sp_deadbeefcafe"
+        assert "终结协议工具" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_report_failure_payload_is_preserved(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.agents.tools.sub_agent import tool_run_sub_agent
+
+        fake_ref = ScratchpadRef(
+            scratchpad_id="sp_failure1234",
+            kind=ScratchpadKind.report,
+            summary="执行失败",
+            size_bytes=60,
+            created_by="sub_agent",
+        )
+
+        fake_final_state = {
+            "messages": [AIMessage(content="工具连续失败，已终止")],
+            "artifacts": [],
+            "tasks": [],
+            "is_complex": False,
+            "active_smiles": None,
+            "sub_agent_result": {
+                "status": "failed",
+                "summary": "工具连续失败，已终止",
+                "error": "validation failed 3 times",
+                "failure_category": "validation",
+                "failed_tool_name": "tool_validate_smiles",
+                "failed_args_signature": "abc123",
+                "is_recoverable": False,
+                "recommended_action": "spawn",
+            },
+        }
+
+        mock_graph = AsyncMock()
+        mock_graph.ainvoke = AsyncMock(return_value=fake_final_state)
+        mock_graph.aget_state = AsyncMock(return_value=MagicMock(interrupts=[]))
+
+        with (
+            patch("app.agents.tools.sub_agent.build_sub_agent_graph", return_value=mock_graph),
+            patch("app.agents.runtime.get_checkpointer", return_value=MagicMock()),
+            patch("app.agents.tools.sub_agent.create_scratchpad_entry", return_value=fake_ref),
+        ):
+            result_str = await tool_run_sub_agent.ainvoke(
+                {
+                    "mode": "general",
+                    "task": "验证一个无效的 SMILES 并总结失败原因",
+                }
+            )
+
+        result = json.loads(result_str)
+        assert result["status"] == "failed"
+        assert result["failure"]["failure_category"] == "validation"
+        assert result["failure"]["recommended_action"] == "spawn"
+        assert result["needs_followup"] is True
 
     @pytest.mark.asyncio
     async def test_explore_design_request_with_forbid_new_smiles_returns_policy_conflict(self) -> None:

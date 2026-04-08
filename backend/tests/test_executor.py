@@ -175,13 +175,17 @@ async def test_run_sub_agent_receives_recent_artifact_ids_and_sanitized_response
                     "status": "ok",
                     "mode": "explore",
                     "sub_thread_id": "sub_123",
+                    "execution_task_id": "exec_123",
                     "task_kind": "compare_scaffolds",
                     "output_contract": "json_findings",
                     "smiles_policy": "forbid_new",
-                    "result": "Finished comparison",
-                    "findings": ["共同 hinge binder 为富 N 芳杂环"],
-                    "candidate_cores": [{"label": "喹唑啉", "status": "suggested"}],
-                    "candidate_smiles": [],
+                    "summary": "Finished comparison",
+                    "completion": {
+                        "summary": "Finished comparison",
+                        "produced_artifact_ids": ["art_child"],
+                        "metrics": {"shared_motif": "N-rich hinge binder"},
+                        "advisory_active_smiles": "CCN",
+                    },
                     "policy_conflicts": [],
                     "needs_followup": False,
                     "produced_artifacts": [
@@ -192,14 +196,6 @@ async def test_run_sub_agent_receives_recent_artifact_ids_and_sanitized_response
                         }
                     ],
                     "suggested_active_smiles": "CCN",
-                    "molecule_workspace": [
-                        {
-                            "key": "smiles:CCN",
-                            "primary_name": "乙胺",
-                            "canonical_smiles": "CCN",
-                            "formula": "C2H7N",
-                        }
-                    ],
                 },
                 ensure_ascii=False,
             )
@@ -213,13 +209,202 @@ async def test_run_sub_agent_receives_recent_artifact_ids_and_sanitized_response
     assert "乙醇" in configurable["parent_molecule_workspace_summary"]
     assert result["active_smiles"] == "CCN"
     assert result["artifacts"][0]["artifact_id"] == "art_child"
-    assert result["molecule_workspace"][-1]["canonical_smiles"] == "CCN"
+    assert result["molecule_workspace"][0]["canonical_smiles"] == "CCO"
     tool_message = result["messages"][0]
     content = json.loads(tool_message.content)
     assert content["status"] == "ok"
     assert content["task_kind"] == "compare_scaffolds"
-    assert content["findings"] == ["共同 hinge binder 为富 N 芳杂环"]
-    assert "artifact_payloads_removed" not in content
+    assert content["completion"]["metrics"]["shared_motif"] == "N-rich hinge binder"
+    assert content["parent_decision"] is None
+    assert content["artifact_payloads_removed"] == ["produced_artifacts[0].pdbqt_content"]
+
+
+@pytest.mark.asyncio
+async def test_failed_sub_agent_with_spawn_retries_in_new_execution_context() -> None:
+    state = cast(ChemState, {
+        "messages": [
+            AIMessage(
+                content="Delegate failing work",
+                tool_calls=[
+                    {
+                        "name": "tool_run_sub_agent",
+                        "id": "call-sub-fail",
+                        "args": {"mode": "general", "task": "Attempt execution"},
+                    }
+                ],
+            )
+        ],
+        "active_smiles": "CCO",
+        "artifacts": [],
+        "molecule_workspace": [],
+        "tasks": [],
+        "is_complex": False,
+        "evidence_revision": 0,
+        "active_subtasks": {},
+        "active_subtask_id": None,
+        "sub_agent_result": None,
+        "subtask_control": None,
+    })
+
+    seen_configs: list[dict] = []
+
+    class _FailThenRecoverTool:
+        name = "tool_run_sub_agent"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def ainvoke(self, args: dict, config: dict | None = None):
+            self.calls += 1
+            seen_configs.append(dict(config or {}))
+            if self.calls == 1:
+                return json.dumps(
+                    {
+                        "status": "failed",
+                        "mode": "general",
+                        "sub_thread_id": "exec_old",
+                        "execution_task_id": "exec_old",
+                        "summary": "Bad route",
+                        "failure": {
+                            "status": "failed",
+                            "summary": "Bad route",
+                            "error": "validation failed 3 times",
+                            "failure_category": "validation",
+                            "failed_tool_name": "tool_validate_smiles",
+                            "failed_args_signature": "abc123",
+                            "is_recoverable": False,
+                            "recommended_action": "spawn",
+                        },
+                        "needs_followup": True,
+                    },
+                    ensure_ascii=False,
+                )
+
+            return json.dumps(
+                {
+                    "status": "ok",
+                    "mode": "general",
+                    "sub_thread_id": "exec_new",
+                    "execution_task_id": str(((config or {}).get("configurable") or {}).get("execution_task_id") or ""),
+                    "summary": "Recovered in fresh worker",
+                    "completion": {
+                        "summary": "Recovered in fresh worker",
+                        "produced_artifact_ids": [],
+                        "metrics": {},
+                        "advisory_active_smiles": "",
+                    },
+                    "needs_followup": False,
+                },
+                ensure_ascii=False,
+            )
+
+    fake_tool = _FailThenRecoverTool()
+    with patch.dict("app.agents.nodes.executor._TOOL_LOOKUP", {"tool_run_sub_agent": fake_tool}):
+        result = await tools_executor_node(state, {"configurable": {"thread_id": "root"}})
+
+    assert fake_tool.calls == 2
+    first_execution_id = str((seen_configs[0].get("configurable") or {}).get("execution_task_id") or "")
+    second_execution_id = str((seen_configs[1].get("configurable") or {}).get("execution_task_id") or "")
+    assert first_execution_id != second_execution_id
+    content = json.loads(result["messages"][0].content)
+    assert content["status"] == "ok"
+    assert content["parent_decision"] == "spawn"
+
+
+@pytest.mark.asyncio
+async def test_failed_sub_agent_with_continue_retries_same_execution_context() -> None:
+    state = cast(ChemState, {
+        "messages": [
+            AIMessage(
+                content="Delegate retryable work",
+                tool_calls=[
+                    {
+                        "name": "tool_run_sub_agent",
+                        "id": "call-sub-continue",
+                        "args": {"mode": "general", "task": "Attempt execution", "delegation": {"inline_context": "base"}},
+                    }
+                ],
+            )
+        ],
+        "active_smiles": "CCO",
+        "artifacts": [],
+        "molecule_workspace": [],
+        "tasks": [],
+        "is_complex": False,
+        "evidence_revision": 0,
+        "active_subtasks": {},
+        "active_subtask_id": None,
+        "sub_agent_result": None,
+        "subtask_control": None,
+    })
+
+    seen_args: list[dict] = []
+    seen_configs: list[dict] = []
+
+    class _RetrySameTaskTool:
+        name = "tool_run_sub_agent"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def ainvoke(self, args: dict, config: dict | None = None):
+            self.calls += 1
+            seen_args.append(dict(args))
+            seen_configs.append(dict(config or {}))
+            if self.calls == 1:
+                return json.dumps(
+                    {
+                        "status": "failed",
+                        "mode": "general",
+                        "sub_thread_id": "exec_same",
+                        "execution_task_id": "exec_same",
+                        "summary": "Transient issue",
+                        "failure": {
+                            "status": "failed",
+                            "summary": "Transient issue",
+                            "error": "connection reset by peer",
+                            "failure_category": "infrastructure",
+                            "failed_tool_name": "tool_web_search",
+                            "failed_args_signature": "sig1",
+                            "is_recoverable": True,
+                            "recommended_action": "continue",
+                        },
+                        "needs_followup": True,
+                    },
+                    ensure_ascii=False,
+                )
+
+            return json.dumps(
+                {
+                    "status": "ok",
+                    "mode": "general",
+                    "sub_thread_id": "exec_same",
+                    "execution_task_id": "exec_same",
+                    "summary": "Recovered in same worker",
+                    "completion": {
+                        "summary": "Recovered in same worker",
+                        "produced_artifact_ids": [],
+                        "metrics": {},
+                        "advisory_active_smiles": "",
+                    },
+                    "needs_followup": False,
+                },
+                ensure_ascii=False,
+            )
+
+    fake_tool = _RetrySameTaskTool()
+    with patch.dict("app.agents.nodes.executor._TOOL_LOOKUP", {"tool_run_sub_agent": fake_tool}):
+        result = await tools_executor_node(state, {"configurable": {"thread_id": "root", "execution_task_id": "exec_same"}})
+
+    assert fake_tool.calls == 2
+    first_execution_id = str((seen_configs[0].get("configurable") or {}).get("execution_task_id") or "")
+    second_execution_id = str((seen_configs[1].get("configurable") or {}).get("execution_task_id") or "")
+    assert first_execution_id == second_execution_id
+    retry_inline_context = str(((seen_args[1].get("delegation") or {}).get("inline_context") or ""))
+    assert "Continue same worker" in retry_inline_context
+    content = json.loads(result["messages"][0].content)
+    assert content["status"] == "ok"
+    assert content["parent_decision"] == "continue"
 
 
 @pytest.mark.asyncio

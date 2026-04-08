@@ -177,13 +177,49 @@ export interface SSEApprovalRequired {
   turn_id: string
 }
 
+export interface SSEPlanApprovalRequest {
+  type: 'plan_approval_request'
+  plan_id: string
+  plan_file_ref: string
+  summary: string
+  status: string
+  mode: string
+  interrupt_id: string
+  session_id: string
+  turn_id: string
+}
+
+export interface SSEPlanModified {
+  type: 'plan_modified'
+  plan_id: string
+  plan_file_ref: string
+  summary: string
+  status: string
+  session_id: string
+  turn_id: string
+}
+
 /** Stored in SSETurn.pendingApproval while the graph awaits a user decision. */
-export interface SSEPendingApproval {
+export interface SSEPendingToolApproval {
+  kind: 'tool'
   tool_name: string
   args: Record<string, unknown>
   tool_call_id: string
   interrupt_id: string
 }
+
+export interface SSEPendingPlanApproval {
+  kind: 'plan'
+  plan_id: string
+  plan_file_ref: string
+  summary: string
+  status: string
+  mode: string
+  interrupt_id: string
+  content?: string
+}
+
+export type SSEPendingApproval = SSEPendingToolApproval | SSEPendingPlanApproval
 
 /** Researcher intermediate reasoning step — emitted before each tool call batch. */
 export interface SSEThinking {
@@ -252,6 +288,8 @@ export type SSEEvent =
   | SSEShadowError
   | SSEInterrupt
   | SSEApprovalRequired
+  | SSEPlanApprovalRequest
+  | SSEPlanModified
   | SSEThinking
   | SSEDone
   | SSEError

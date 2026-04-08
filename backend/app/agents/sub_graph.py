@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+from hashlib import sha256
 from typing import Any, cast
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
@@ -29,6 +30,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from app.agents.postprocessors import TOOL_POSTPROCESSORS
+from app.agents.subagent_runtime_tools import INTERNAL_SUB_AGENT_TOOLS
 from app.agents.state import ChemState, MoleculeWorkspaceEntry
 from app.agents.sub_agent_prompts import SubAgentMode, get_sub_agent_prompt
 from app.agents.utils import (
@@ -43,28 +45,125 @@ from app.agents.utils import (
 logger = logging.getLogger(__name__)
 
 _SUB_RECURSION_LIMIT = 25
+_TERMINAL_TOOL_NAMES = {
+    "tool_task_complete",
+    "tool_exit_plan_mode",
+    "tool_task_stop",
+    "tool_report_failure",
+}
 
 
-def extract_sub_agent_outcome(result: dict[str, Any] | None) -> tuple[str, list[dict], str | None, list[dict]]:
-    """Extract final text, produced artifacts, suggested active SMILES, and molecule workspace."""
+def _normalize_tool_signature(tool_name: str, args: Any) -> str:
+    try:
+        normalized_args = json.dumps(args, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except TypeError:
+        normalized_args = repr(args)
+    return sha256(f"{tool_name}|{normalized_args}".encode("utf-8")).hexdigest()
+
+
+def _classify_failure(error_text: str, category_hint: str | None = None) -> tuple[str, bool]:
+    if category_hint:
+        lowered_hint = category_hint.strip().lower()
+        if lowered_hint in {"infrastructure", "timeout"}:
+            return lowered_hint, True
+        if lowered_hint:
+            return lowered_hint, False
+
+    lowered = str(error_text or "").lower()
+    if any(token in lowered for token in ("timeout", "timed out", "429", "rate limit", "connection", "peer closed", "chunked read")):
+        if "timeout" in lowered or "timed out" in lowered:
+            return "timeout", True
+        return "infrastructure", True
+    if any(token in lowered for token in ("schema", "validation", "invalid", "missing required", "field required")):
+        return "validation", False
+    if any(token in lowered for token in ("not available", "unsupported", "not found")):
+        return "unsupported_tool", False
+    if any(token in lowered for token in ("forbidden", "denied", "policy", "not allowed")):
+        return "policy", False
+    return "unknown", False
+
+
+def _next_failure_state(
+    control: dict[str, Any],
+    *,
+    tool_name: str,
+    args: Any,
+    error_text: str,
+    category_hint: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    signature = _normalize_tool_signature(tool_name, args)
+    previous_signature = str(control.get("last_failure_signature") or "")
+    streak = int(control.get("failure_streak") or 0)
+    streak = streak + 1 if previous_signature == signature else 1
+    failure_category, is_recoverable = _classify_failure(error_text, category_hint)
+    updated = {
+        **control,
+        "last_failure_signature": signature,
+        "last_failure_tool": tool_name,
+        "last_failure_error": error_text,
+        "last_failure_category": failure_category,
+        "failure_streak": streak,
+    }
+    if streak < 3:
+        return updated, None
+    return updated, {
+        "status": "failed",
+        "summary": f"子智能体在工具 {tool_name} 上连续失败 {streak} 次，已触发熔断。",
+        "error": error_text,
+        "failure_category": failure_category,
+        "failed_tool_name": tool_name,
+        "failed_args_signature": signature,
+        "is_recoverable": is_recoverable,
+        "recommended_action": "spawn",
+    }
+
+
+def _reset_failure_state(control: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **control,
+        "last_failure_signature": "",
+        "last_failure_tool": "",
+        "last_failure_error": "",
+        "last_failure_category": "",
+        "failure_streak": 0,
+    }
+
+
+def _route_after_sub_tools_executor(state: ChemState) -> str:
+    payload = state.get("sub_agent_result")
+    if isinstance(payload, dict):
+        status = str(payload.get("status") or "").strip().lower()
+        if status in {"completed", "plan_pending_approval", "failed", "stopped"}:
+            return "__end__"
+    return "sub_agent"
+
+
+def extract_sub_agent_outcome(result: dict[str, Any] | None) -> tuple[str, list[dict], str | None, dict[str, Any] | None]:
+    """Extract final text, produced artifacts, advisory active SMILES, and terminal payload."""
     payload = result or {}
     messages = payload.get("messages", []) if isinstance(payload, dict) else []
     artifacts = payload.get("artifacts", []) if isinstance(payload, dict) else []
     active_smiles = payload.get("active_smiles") if isinstance(payload, dict) else None
-    molecule_workspace = payload.get("molecule_workspace", []) if isinstance(payload, dict) else []
+    sub_agent_result = payload.get("sub_agent_result") if isinstance(payload, dict) else None
     final_text = "子智能体已完成任务，但未产生文本输出。"
 
-    for msg in reversed(messages):
-        if isinstance(msg, AIMessage) and not getattr(msg, "tool_calls", None):
-            content = msg.content
-            final_text = content if isinstance(content, str) else str(content)
-            break
+    if isinstance(sub_agent_result, dict):
+        structured_summary = str(sub_agent_result.get("summary") or "").strip()
+        if structured_summary:
+            final_text = structured_summary
+
+    if final_text == "子智能体已完成任务，但未产生文本输出。":
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) and not getattr(msg, "tool_calls", None):
+                content = msg.content
+                final_text = content if isinstance(content, str) else str(content)
+                break
 
     return (
         final_text,
         artifacts if isinstance(artifacts, list) else [],
         active_smiles if isinstance(active_smiles, str) else None,
-        molecule_workspace if isinstance(molecule_workspace, list) else [],
+        sub_agent_result if isinstance(sub_agent_result, dict) else None,
     )
 
 
@@ -125,6 +224,8 @@ def _make_sub_tools_executor(
     async def sub_tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
         last_message = state["messages"][-1]
         new_active_smiles = state.get("active_smiles")
+        sub_agent_result = state.get("sub_agent_result") if isinstance(state.get("sub_agent_result"), dict) else None
+        subtask_control = dict(state.get("subtask_control") or {})
         molecule_workspace: list[MoleculeWorkspaceEntry] = [
             cast(MoleculeWorkspaceEntry, dict(entry))
             for entry in state.get("molecule_workspace", [])
@@ -180,16 +281,34 @@ def _make_sub_tools_executor(
             tool = tool_lookup.get(tool_name)
 
             if tool is None:
+                error_text = f"Tool '{tool_name}' is not available in this sub-agent mode."
                 tool_messages.append(
                     ToolMessage(
                         content=json.dumps(
-                            {"error": f"Tool '{tool_name}' is not available in this sub-agent mode."},
+                            {"error": error_text},
                             ensure_ascii=False,
                         ),
                         tool_call_id=tool_call_id,
                         name=tool_name,
                     )
                 )
+                subtask_control, forced_failure = _next_failure_state(
+                    subtask_control,
+                    tool_name=tool_name,
+                    args=args,
+                    error_text=error_text,
+                    category_hint="unsupported_tool",
+                )
+                if forced_failure is not None:
+                    sub_agent_result = forced_failure
+                    tool_messages.append(
+                        ToolMessage(
+                            content=tool_result_to_text(forced_failure),
+                            tool_call_id=tool_call_id,
+                            name="tool_report_failure",
+                        )
+                    )
+                    break
                 continue
 
             try:
@@ -197,33 +316,88 @@ def _make_sub_tools_executor(
                 parsed = parse_tool_output(raw_output)
 
                 if parsed is not None:
-                    new_active_smiles = apply_active_smiles_update(
-                        tool_name, parsed, new_active_smiles
+                    if tool_name in _TERMINAL_TOOL_NAMES:
+                        sub_agent_result = parsed
+                        logger.debug(
+                            "[PROTOCOL] terminal payload received: tool=%s summary=%r",
+                            tool_name,
+                            str(parsed.get("summary") or "")[:120],
+                        )
+                    else:
+                        new_active_smiles = apply_active_smiles_update(
+                            tool_name, parsed, new_active_smiles
+                        )
+                        molecule_workspace = update_molecule_workspace(molecule_workspace, tool_name, parsed, args)
+                        postprocessor = TOOL_POSTPROCESSORS.get(tool_name)
+                        if postprocessor is not None:
+                            parsed = await postprocessor(parsed, args, artifacts, config)
+
+                forced_failure: dict[str, Any] | None = None
+                parsed_status = str((parsed or {}).get("status") or "").strip().lower()
+                if parsed_status in {"error", "failed", "timeout", "rejected"}:
+                    error_text = str((parsed or {}).get("error") or (parsed or {}).get("message") or raw_output)
+                    subtask_control, forced_failure = _next_failure_state(
+                        subtask_control,
+                        tool_name=tool_name,
+                        args=args,
+                        error_text=error_text,
+                        category_hint=str((parsed or {}).get("failure_category") or "").strip() or None,
                     )
-                    molecule_workspace = update_molecule_workspace(molecule_workspace, tool_name, parsed, args)
-                    postprocessor = TOOL_POSTPROCESSORS.get(tool_name)
-                    if postprocessor is not None:
-                        parsed = await postprocessor(parsed, args, artifacts, config)
+                elif tool_name not in _TERMINAL_TOOL_NAMES:
+                    subtask_control = _reset_failure_state(subtask_control)
 
                 content = tool_result_to_text(parsed) if parsed is not None else str(raw_output)
                 tool_messages.append(
                     ToolMessage(content=content, tool_call_id=tool_call_id, name=tool_name)
                 )
 
+                if forced_failure is not None:
+                    sub_agent_result = forced_failure
+                    tool_messages.append(
+                        ToolMessage(
+                            content=tool_result_to_text(forced_failure),
+                            tool_call_id=tool_call_id,
+                            name="tool_report_failure",
+                        )
+                    )
+                    break
+
+                if tool_name in _TERMINAL_TOOL_NAMES:
+                    break
+
             except Exception as exc:
+                error_text = str(exc)
                 tool_messages.append(
                     ToolMessage(
-                        content=json.dumps({"error": str(exc)}, ensure_ascii=False),
+                        content=json.dumps({"error": error_text}, ensure_ascii=False),
                         tool_call_id=tool_call_id,
                         name=tool_name,
                     )
                 )
+                subtask_control, forced_failure = _next_failure_state(
+                    subtask_control,
+                    tool_name=tool_name,
+                    args=args,
+                    error_text=error_text,
+                )
+                if forced_failure is not None:
+                    sub_agent_result = forced_failure
+                    tool_messages.append(
+                        ToolMessage(
+                            content=tool_result_to_text(forced_failure),
+                            tool_call_id=tool_call_id,
+                            name="tool_report_failure",
+                        )
+                    )
+                    break
 
         return {
             "messages": tool_messages,
             "active_smiles": new_active_smiles,
             "artifacts": artifacts,
             "molecule_workspace": molecule_workspace,
+            "sub_agent_result": sub_agent_result,
+            "subtask_control": subtask_control,
         }
 
     sub_tools_executor_node.__name__ = "sub_tools_executor"
@@ -280,14 +454,15 @@ def build_sub_agent_graph(
         )
 
     bypass_hitl = mode in (SubAgentMode.explore, SubAgentMode.plan)
-    tool_lookup: dict[str, Any] = {t.name: t for t in tools}
+    runtime_tools = [*tools, *INTERNAL_SUB_AGENT_TOOLS]
+    tool_lookup: dict[str, Any] = {t.name: t for t in runtime_tools}
 
     graph: StateGraph = StateGraph(ChemState)
 
-    sub_agent_fn = _make_sub_agent_node(mode, tools, custom_instructions)
+    sub_agent_fn = _make_sub_agent_node(mode, runtime_tools, custom_instructions)
     graph.add_node("sub_agent", sub_agent_fn)
 
-    if tools:
+    if runtime_tools:
         sub_executor_fn = _make_sub_tools_executor(tool_lookup, bypass_hitl)
         graph.add_node("sub_tools_executor", sub_executor_fn)
 
@@ -297,9 +472,12 @@ def build_sub_agent_graph(
             _route_from_sub_agent,
             {"sub_tools_executor": "sub_tools_executor", "__end__": END},
         )
-        graph.add_edge("sub_tools_executor", "sub_agent")
+        graph.add_conditional_edges(
+            "sub_tools_executor",
+            _route_after_sub_tools_executor,
+            {"sub_agent": "sub_agent", "__end__": END},
+        )
     else:
-        # plan mode — single node, no tools
         graph.add_edge(START, "sub_agent")
         graph.add_edge("sub_agent", END)
 

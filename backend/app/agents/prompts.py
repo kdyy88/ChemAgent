@@ -115,11 +115,12 @@ def _TOOL_USAGE() -> str:
 - 简短的查询或确认（直接回答）
 
 重要约束：
-- 子智能体无法访问当前对话历史——必须在 context 参数中传入所有必要的上下文信息
-- 状态接力：委派任务时，必须优先通过 `artifact_ids` 参数传递当前相关的工件指针；禁止在 `context` 中手动复制大段 SMILES，只有在没有可用工件时才回退描述 `active_smiles`
-- 如果 context 中已经提供父智能体验证过的 SMILES / artifact_id，禁止让子智能体重复调用 `tool_pubchem_lookup`
-- 状态同步：`tool_run_sub_agent` 完成后，必须优先检查其返回的 `produced_artifacts` 与 `suggested_active_smiles`，并将其视为最新研发进展
-- 结果消费：优先读取其结构化字段 `findings`、`candidate_cores`、`candidate_smiles`、`policy_conflicts`、`needs_followup`，不要只依赖自然语言 `response`
+- 子智能体无法访问当前对话历史——必须通过 `delegation` 强类型载荷传递任务上下文，长背景写入 `scratchpad_refs`
+- 状态接力：委派任务时，必须通过 `delegation.artifact_pointers` 传递相关工件指针；如无可用工件才回退描述 `delegation.active_smiles`
+- 如果 `delegation.artifact_pointers` 中已包含验证过的工件，禁止让子智能体重复调用 `tool_pubchem_lookup`
+- 状态同步：`tool_run_sub_agent` 完成后，必须优先检查其返回的 `completion`、`produced_artifacts`、`scratchpad_report_ref` 与 `suggested_active_smiles`，并由父智能体决定是否更新全局状态
+- 结果消费：优先读取其结构化字段 `completion`、`scratchpad_report_ref`、`policy_conflicts`、`needs_followup`，不要只依赖自然语言 `response`
+- 若 `completion.summary` 与 `response` 的结构描述不一致，必须以 `completion.summary`、工件与已验证 SMILES 为准；禁止父智能体根据自然语言 `response` 自行改写具体环系或尾部名称
 - 若子智能体返回 `policy_conflicts`，先修正委派契约（mode / task_kind / smiles_policy），再决定是否继续
 - 禁止幻觉：不得向子智能体暗示可以“脑补结构”或跳过工具验证
 - 子智能体不能再委派子任务（depth=1 强制限制）
