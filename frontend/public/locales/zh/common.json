@@ -1,0 +1,110 @@
+{
+  "app": {
+    "title": "ChemAgent",
+    "description": "AI 化学专家"
+  },
+  "chat": {
+    "placeholder": "输入化学问题，例如：计算阿司匹林的分子量…",
+    "send": "发送",
+    "clear": "清空对话",
+    "thinking": "thinking...",
+    "streaming": "正在生成…",
+    "new_conversation": "新对话",
+    "empty_state": "向 ChemAgent 提问，开始化学探索之旅"
+  },
+  "nav": {
+    "chat": "对话",
+    "software": "软件视图",
+    "business": "业务视图"
+  },
+  "workspace": {
+    "molecule_viewer": "分子查看器",
+    "no_molecule": "暂无分子",
+    "smiles_label": "SMILES",
+    "copy_smiles": "复制 SMILES"
+  },
+  "interrupt": {
+    "clarification_needed": "需要澄清",
+    "submit_reply": "提交回复",
+    "quick_replies": "快速回复"
+  },
+  "errors": {
+    "connection_lost": "连接中断",
+    "http_error": "HTTP 错误 {{status}}",
+    "generic": "发生未知错误"
+  },
+  "theme": {
+    "toggle": "切换主题",
+    "light": "浅色",
+    "dark": "深色"
+  },
+  "language": {
+    "toggle": "切换语言",
+    "zh": "中文",
+    "en": "English"
+  },
+  "copilot": {
+    "turns": "{{count}} 轮",
+    "clear_history": "清除对话记录"
+  },
+  "input": {
+    "add_datasource": "添加数据源到聊天框",
+    "add_smiles": "添加当前 SMILES",
+    "upload_file": "上传文件",
+    "specify_website": "指定网站",
+    "coming_soon": "暂未开放",
+    "send": "发送",
+    "streaming": "正在生成…"
+  },
+  "home": {
+    "subtitle": "权威检索 · 结构化工具调用 · 可解释流式过程展示",
+    "subtitle_tagline": "Authoritative · Structured · Explainable",
+    "feature1_title": "12+ 专业计算工具",
+    "feature1_desc": "集成 RDKit 与 Open Babel 的结构清理、药效团分析与高通量 3D 构象优化。",
+    "feature2_title": "Agentic 深度穿透",
+    "feature2_desc": "对话中的上下文与侧边栏参数完美衔接，AI 可直接接管您的分子输入与参数编排。",
+    "feature3_title": "SDF 高通量处理",
+    "feature3_desc": "百万级结构库的拆分、合并与力场打分，内存流式处理，零落盘损耗。"
+  },
+  "sidebar": {
+    "software_header": "软件组件库",
+    "business_header": "业务场景流",
+    "home_button": "回首页",
+    "software_aria": "按软件组件视角",
+    "business_aria": "按业务场景视角"
+  },
+  "tool_category": {
+    "rdkit": "RDKit (Python)",
+    "openbabel": "Open Babel",
+    "data_cleaning": "数据清洗与准备",
+    "physical_chem": "物理化学性质",
+    "structural_analysis": "结构分析与检索",
+    "docking_3d": "3D 与对接处理"
+  },
+  "tool_label": {
+    "validate": "SMILES 验证",
+    "salt_strip": "脱盐与中和",
+    "descriptors": "综合分子描述符",
+    "similarity": "分子相似性",
+    "substructure": "子结构搜索 / PAINS",
+    "scaffold": "Murcko 骨架",
+    "mol_properties": "分子物理属性",
+    "partial_charge": "原子偏电荷分析",
+    "convert": "分子格式转换",
+    "conformer": "3D 构象生成",
+    "pdbqt": "对接预处理 (PDBQT)",
+    "sdf_batch": "SDF 批量处理",
+    "validate_biz": "SMILES 规范化与查错",
+    "salt_strip_biz": "脱盐与分子中和",
+    "descriptors_biz": "综合描述符 (含 Lipinski / QED / SA)",
+    "mol_properties_biz": "核心物理属性 (精确质量等)",
+    "similarity_biz": "相似度比对 (Tanimoto)",
+    "substructure_biz": "药效团与毒性警示 (PAINS)",
+    "scaffold_biz": "核心骨架提取 (Murcko)",
+    "partial_charge_biz": "原子偏电荷分析",
+    "convert_biz": "格式转换",
+    "conformer_biz": "3D 构象生成",
+    "pdbqt_biz": "PDBQT 预处理",
+    "sdf_batch_biz": "SDF 库批量处理"
+  }
+}

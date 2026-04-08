@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 
 from langchain_core.callbacks.manager import adispatch_custom_event
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 
@@ -39,7 +40,7 @@ CHEM_SYSTEM_PROMPT = """你是顶级化学智能体 ChemAgent。你可以同时�
 - 不允许输出“先查一下再顺便 ask_human”这类混合工具计划；`tool_ask_human` 与其他工具必须分成不同轮次。
 
 【输出要求】
-- 工具调用完成后，用中文给出清晰、专业、简洁的最终回答。
+- 工具调用完成后，与用户保持同一语种，给出清晰、专业、简洁的最终回答。
 - 当已经有足够信息时，不要继续调用工具。
 - 当 `tool_ask_human` 恢复后，你会在其工具结果里看到用户澄清答案字段 `answer`，把它当作最新用户补充信息继续研究。
 
@@ -156,6 +157,129 @@ def update_tasks(tasks: list[Task], task_id: str, status: TaskStatus) -> tuple[l
         updated.append(next_task)
 
     return updated, matched_task
+
+
+def normalize_messages_for_api(
+    messages: Sequence[BaseMessage],
+    max_tool_history: int = 6,
+    max_tool_length: int = 6000,
+) -> list[BaseMessage]:
+    """JIT in-memory sanitizer: produce a legally-sequenced message list for the
+    LLM API without triggering any DB writes.
+
+    Handles four failure modes:
+    1. Virtual SystemMessages injected by the frontend.
+    2. Orphan ToolMessages whose AI request was never recorded.
+    3. Dangling tool_calls whose ToolMessage was lost due to user interruption —
+       closure messages are injected *immediately after* the AIMessage, not
+       appended at the end, so the API sequence is never broken.
+    4. Consecutive same-type messages that some models reject.
+    """
+    if not messages:
+        return []
+
+    # 1. Drop virtual frontend SystemMessages.
+    filtered = [
+        m for m in messages
+        if not (isinstance(m, SystemMessage) and m.additional_kwargs.get("is_virtual"))
+    ]
+
+    final_messages: list[BaseMessage] = []
+    pending_tool_calls: dict[str, Any] = {}
+
+    def _flush_pending() -> None:
+        """Insert closure ToolMessages for any dangling tool_calls in-place,
+        immediately before the next non-ToolMessage.  This keeps the sequence
+        legal: ToolMessages must follow their AIMessage without interruption."""
+        for tool_id, tc in pending_tool_calls.items():
+            final_messages.append(
+                ToolMessage(
+                    content="[System] Tool execution interrupted by user.",
+                    tool_call_id=tool_id,
+                    name=tc["name"],
+                )
+            )
+        pending_tool_calls.clear()
+
+    # 2+3. Tool-call pairing validation with inline dangling-call closure.
+    #      When a non-ToolMessage is encountered while tool_calls are still
+    #      pending, close them *before* appending that message so that the
+    #      API sequence is always AIMessage → ToolMessage(s) → next message.
+    for msg in filtered:
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            # Close any dangling calls from a previous AI turn first.
+            _flush_pending()
+            for tc in msg.tool_calls:
+                pending_tool_calls[tc["id"]] = tc
+            final_messages.append(msg)
+        elif isinstance(msg, ToolMessage):
+            if msg.tool_call_id in pending_tool_calls:
+                del pending_tool_calls[msg.tool_call_id]
+                final_messages.append(msg)
+            # Drop orphan ToolMessages that have no matching AIMessage.
+        else:
+            # Any non-tool message breaks the tool-call window — close first.
+            _flush_pending()
+            final_messages.append(msg)
+
+    # Close any tool_calls still pending at the very end of the sequence.
+    _flush_pending()
+
+    # 4. Compress ToolMessage history (reverse-iterate, newest-first).
+    #    4a. Snip: replace old ToolMessages beyond max_tool_history with a placeholder.
+    #    4b. Budget: head+tail truncate results that exceed max_tool_length.
+    tool_count = 0
+    compressed: list[BaseMessage] = []
+    for msg in reversed(final_messages):
+        if isinstance(msg, ToolMessage):
+            tool_count += 1
+            if tool_count > max_tool_history:
+                # 4a — too far back in history; replace with a tiny sentinel
+                compressed.append(
+                    ToolMessage(
+                        content="[System] Tool result omitted (history limit).",
+                        tool_call_id=msg.tool_call_id,
+                        name=msg.name,
+                    )
+                )
+            elif isinstance(msg.content, str) and len(msg.content) > max_tool_length:
+                # 4b — result is too large; keep head and tail
+                half = max_tool_length // 2
+                head = msg.content[:half]
+                tail = msg.content[-half:]
+                omitted = len(msg.content) - max_tool_length
+                truncated = f"{head}\n…[{omitted} chars omitted]…\n{tail}"
+                compressed.append(
+                    ToolMessage(
+                        content=truncated,
+                        tool_call_id=msg.tool_call_id,
+                        name=msg.name,
+                    )
+                )
+            else:
+                compressed.append(msg)
+        else:
+            compressed.append(msg)
+    compressed.reverse()
+
+    # 5. Merge consecutive same-type messages.
+    #    Exempt from merging:
+    #    - ToolMessages: each has a unique tool_call_id; merging destroys all but the first.
+    #    - AIMessages carrying tool_calls: merging destroys the tool-call structure.
+    merged: list[BaseMessage] = []
+    for msg in compressed:
+        if (
+            merged
+            and type(msg) is type(merged[-1])
+            and not isinstance(msg, ToolMessage)
+            and not (isinstance(msg, AIMessage) and msg.tool_calls)
+            and not (isinstance(merged[-1], AIMessage) and merged[-1].tool_calls)
+        ):
+            merged[-1].content += f"\n\n{msg.content}"
+        else:
+            merged.append(msg)
+
+    return merged
 
 
 async def dispatch_task_update(tasks: list[Task], config: RunnableConfig, source: str) -> None:

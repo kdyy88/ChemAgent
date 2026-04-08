@@ -6,3 +6,6 @@ frontend/.env.local
 # Dev logs
 .dev-logs/
 
+.agents/
+.claude/
+.github/

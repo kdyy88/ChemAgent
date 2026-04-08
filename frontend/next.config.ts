@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const BACKEND_URL =
-  process.env.BACKEND_INTERNAL_URL?.replace(/\/$/, "") ?? "http://localhost:8000";
+  process.env.BACKEND_INTERNAL_URL?.replace(/\/$/, "") ?? "http://localhost:3030";
 
 const nextConfig: NextConfig = {
   output: "standalone",
