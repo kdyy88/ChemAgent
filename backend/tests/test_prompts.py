@@ -91,3 +91,18 @@ def test_system_prompt_includes_structured_molecule_workspace_summary() -> None:
     assert "结构化分子工作集" in prompt
     assert "history limit" in prompt
     assert "乙醇" in prompt
+
+
+def test_system_prompt_includes_execution_failed_self_correction_rule() -> None:
+    prompt = get_system_prompt(
+        {
+            "active_smiles": "CCO",
+            "active_artifact_id": "art_123",
+            "task_plan": "- test",
+            "is_native_reasoning_model": True,
+        }
+    )
+
+    assert "[Execution Failed]" in prompt
+    assert "DO NOT apologize or stop" in prompt
+    assert "You have up to 3 attempts to correct an error" in prompt

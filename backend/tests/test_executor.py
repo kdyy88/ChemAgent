@@ -122,6 +122,32 @@ async def test_summary_tool_message_is_compacted_without_artifact_redaction() ->
     store_mock.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_sub_agent_tool_message_is_exempt_from_firewall() -> None:
+    message = ToolMessage(
+        content=json.dumps(
+            {
+                "status": "ok",
+                "summary": "S" * 2000,
+                "completion": {
+                    "summary": "Sub-agent completed",
+                    "produced_artifact_ids": ["art_a", "art_b"],
+                },
+                "produced_artifacts": [{"artifact_id": "art_a"}] * 20,
+            },
+            ensure_ascii=False,
+        ),
+        tool_call_id="call-subagent",
+        name="tool_run_sub_agent",
+    )
+
+    with patch("app.agents.utils.store_engine_artifact", new=AsyncMock()) as store_mock:
+        sanitized = await sanitize_message_for_state(message, source="tools_executor[0]")
+
+    assert sanitized.content == message.content
+    store_mock.assert_not_awaited()
+
+
 def test_normalize_messages_aggregates_omitted_tool_placeholders_across_rounds() -> None:
     messages = [
         AIMessage(
@@ -222,11 +248,13 @@ async def test_run_sub_agent_receives_recent_artifact_ids_and_sanitized_response
     })
 
     captured_config: dict = {}
+    captured_args: dict = {}
 
     class _FakeTool:
         name = "tool_run_sub_agent"
 
         async def ainvoke(self, args: dict, config: dict | None = None):
+            captured_args.update(args)
             captured_config.update(config or {})
             return json.dumps(
                 {
@@ -264,6 +292,9 @@ async def test_run_sub_agent_receives_recent_artifact_ids_and_sanitized_response
     configurable = captured_config["configurable"]
     assert configurable["parent_active_artifact_id"] == "art_b"
     assert configurable["parent_artifact_ids"] == ["art_a", "art_b"]
+    assert captured_args["artifact_ids"] == ["art_a", "art_b"]
+    assert captured_args["delegation"]["artifact_pointers"] == ["art_a", "art_b"]
+    assert captured_args["delegation"]["active_artifact_id"] == "art_b"
     assert "乙醇" in configurable["parent_molecule_workspace_summary"]
     assert result["active_smiles"] == "CCN"
     assert result["artifacts"][0]["artifact_id"] == "art_child"
@@ -275,6 +306,50 @@ async def test_run_sub_agent_receives_recent_artifact_ids_and_sanitized_response
     assert content["completion"]["metrics"]["shared_motif"] == "N-rich hinge binder"
     assert content["parent_decision"] is None
     assert content["artifact_payloads_removed"] == ["produced_artifacts[0].pdbqt_content"]
+
+
+@pytest.mark.asyncio
+async def test_run_sub_agent_preserves_explicit_artifact_ids_over_parent_fallback() -> None:
+    state = cast(ChemState, {
+        "messages": [
+            AIMessage(
+                content="Delegate work",
+                tool_calls=[
+                    {
+                        "name": "tool_run_sub_agent",
+                        "id": "call-sub-explicit",
+                        "args": {
+                            "mode": "explore",
+                            "task": "Use explicit artifact only",
+                            "artifact_ids": ["art_explicit"],
+                            "delegation": {"artifact_pointers": ["art_explicit"]},
+                        },
+                    }
+                ],
+            )
+        ],
+        "active_smiles": "CCO",
+        "artifacts": [{"artifact_id": "art_parent_a"}, {"artifact_id": "art_parent_b"}],
+        "molecule_workspace": [],
+        "tasks": [],
+        "is_complex": False,
+        "evidence_revision": 0,
+    })
+
+    captured_args: dict = {}
+
+    class _FakeTool:
+        name = "tool_run_sub_agent"
+
+        async def ainvoke(self, args: dict, config: dict | None = None):  # noqa: ARG002
+            captured_args.update(args)
+            return json.dumps({"status": "ok", "summary": "done", "completion": {"summary": "done"}}, ensure_ascii=False)
+
+    with patch.dict("app.agents.nodes.executor._TOOL_LOOKUP", {"tool_run_sub_agent": _FakeTool()}):
+        await tools_executor_node(state, {"configurable": {"thread_id": "root"}})
+
+    assert captured_args["artifact_ids"] == ["art_explicit"]
+    assert captured_args["delegation"]["artifact_pointers"] == ["art_explicit"]
 
 
 @pytest.mark.asyncio
@@ -806,3 +881,59 @@ async def test_pubchem_lookup_updates_structured_molecule_workspace() -> None:
     assert result["active_smiles"] == "CC(C1=C(C=CC(=C1Cl)F)Cl)OC2=C(N=CC(=C2)C3=CN(N=C3)C4CCNCC4)N"
     assert result["molecule_workspace"][0]["primary_name"] == "capmatinib"
     assert result["molecule_workspace"][0]["formula"] == "C23H17Cl2FN4O"
+
+
+@pytest.mark.asyncio
+async def test_murcko_scaffold_keeps_minimal_structured_fields_before_firewall() -> None:
+    state = cast(ChemState, {
+        "messages": [
+            AIMessage(
+                content="Extract scaffold",
+                tool_calls=[
+                    {
+                        "name": "tool_murcko_scaffold",
+                        "id": "call-murcko",
+                        "args": {"smiles": "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O"},
+                    }
+                ],
+            )
+        ],
+        "active_smiles": "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O",
+        "artifacts": [],
+        "molecule_workspace": [],
+        "tasks": [],
+        "is_complex": False,
+        "evidence_revision": 0,
+    })
+
+    class _FakeMurckoTool:
+        name = "tool_murcko_scaffold"
+
+        async def ainvoke(self, args: dict, config: dict | None = None):  # noqa: ARG002
+            return json.dumps(
+                {
+                    "type": "scaffold",
+                    "is_valid": True,
+                    "smiles": args["smiles"],
+                    "scaffold_smiles": "c1ccccc1",
+                    "generic_scaffold_smiles": "C1CCCCC1",
+                    "molecule_image": "A" * 18000,
+                    "scaffold_image": "B" * 12000,
+                },
+                ensure_ascii=False,
+            )
+
+    with patch.dict("app.agents.nodes.executor._TOOL_LOOKUP", {"tool_murcko_scaffold": _FakeMurckoTool()}), \
+         patch("app.agents.utils.store_engine_artifact", new=AsyncMock()) as store_mock, \
+         patch("app.agents.postprocessors.adispatch_custom_event", new=AsyncMock()):
+        result = await tools_executor_node(state, {"configurable": {}})
+
+    content = json.loads(result["messages"][0].content)
+    assert content["type"] == "scaffold"
+    assert content["scaffold_smiles"] == "c1ccccc1"
+    assert content["generic_scaffold_smiles"] == "C1CCCCC1"
+    assert content["message"] == "Murcko scaffold 已提取，结构图已发送给用户"
+    assert "molecule_image" not in content
+    assert "scaffold_image" not in content
+    assert len(result["artifacts"]) == 2
+    store_mock.assert_not_awaited()

@@ -73,6 +73,7 @@ def _TOOL_USAGE() -> str:
 【核心工作流法则 (ReAct)】
 1. 采用 ReAct 工作流：先思考，再调用工具，再读取结果，然后继续下一步。
 2. 你可以连续调用多个工具；上一个工具的输出就是下一个工具的输入依据。
+3. 当任一化学工具返回的 JSON 中 `error` 字段以 `[Execution Failed]` 开头时，DO NOT apologize or stop. Read the error details, analyze why the chemical computation failed, fix your parameters or code, and invoke the tool again. You have up to 3 attempts to correct an error.
 
 【工具分类】
 - 化学专业工具：RDKit、Open Babel 接口，用于精确的生化计算（属性预测、格式转换、构象生成等）。

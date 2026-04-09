@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 _STRIP_LLM_FIELDS = frozenset({
     "image", "structure_image", "highlighted_image",
+    "molecule_image", "scaffold_image",
     "sdf_content", "pdbqt_content", "zip_bytes", "atoms",
 })
 
@@ -64,6 +65,9 @@ _SUMMARY_SHRINK_TOOL_NAMES: frozenset[str] = frozenset({
     "tool_compute_similarity",
     "tool_compute_mol_properties",
     "tool_compute_partial_charges",
+})
+_CONTEXT_FIREWALL_EXEMPT_TOOL_NAMES: frozenset[str] = frozenset({
+    "tool_run_sub_agent",
 })
 _TOOL_CALL_ARG_POINTER_KEY = "__artifact_id__"
 _TOOL_CALL_ARG_REDACTED_KEY = "__redacted__"
@@ -369,6 +373,11 @@ def _build_redacted_tool_message_content(content: Any, artifact_id: str) -> str 
 async def sanitize_message_for_state(message: BaseMessage, *, source: str) -> BaseMessage:
     if isinstance(message, AIMessage):
         message = await _sanitize_ai_tool_calls_for_state(message, source=source)
+
+    if isinstance(message, ToolMessage):
+        tool_name = str(getattr(message, "name", "") or "").strip()
+        if tool_name in _CONTEXT_FIREWALL_EXEMPT_TOOL_NAMES:
+            return message
 
     serialized_content = _serialize_message_content(message.content)
     reason: str | None = None

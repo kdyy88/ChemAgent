@@ -30,6 +30,7 @@ from typing import Annotated
 
 from langchain_core.tools import tool
 
+from app.agents.decorators import safe_chem_tool
 from app.chem.babel_ops import (
     build_3d_conformer,
     compute_mol_properties,
@@ -62,6 +63,7 @@ def _to_text(data: dict, *, keep_atoms: bool = False) -> str:
 # ── T1: Universal Format Converter ───────────────────────────────────────────
 
 @tool
+@safe_chem_tool()
 def tool_convert_format(
     molecule_str: Annotated[str, "Molecule string encoded in input_fmt (SMILES, InChI, SDF text, …)"],
     input_fmt: Annotated[str, "Open Babel format code for the input, e.g. 'smi', 'inchi', 'sdf'"],
@@ -85,6 +87,7 @@ def tool_convert_format(
 # ── T2: 3D Conformer Builder ──────────────────────────────────────────────────
 
 @tool
+@safe_chem_tool()
 def tool_build_3d_conformer(
     smiles: Annotated[str, "Standard SMILES string of the molecule"],
     name: Annotated[str, "Optional compound name (used in SDF title / filename)"] = "",
@@ -106,6 +109,7 @@ def tool_build_3d_conformer(
 # ── T3: Docking PDBQT Prep ────────────────────────────────────────────────────
 
 @tool
+@safe_chem_tool()
 def tool_prepare_pdbqt(
     smiles: Annotated[str, "Standard SMILES string (2D, no explicit H required)"],
     name: Annotated[str, "Optional compound name (used in PDBQT REMARK)"] = "",
@@ -126,6 +130,7 @@ def tool_prepare_pdbqt(
 # ── T4: Molecular Properties (Open Babel) ────────────────────────────────────
 
 @tool
+@safe_chem_tool()
 def tool_compute_mol_properties(
     smiles: Annotated[str, "Standard SMILES string of the molecule"],
 ) -> str:
@@ -144,6 +149,7 @@ def tool_compute_mol_properties(
 # ── T5: Per-Atom Partial Charges ─────────────────────────────────────────────
 
 @tool
+@safe_chem_tool()
 def tool_compute_partial_charges(
     smiles: Annotated[str, "Standard SMILES string of the molecule"],
     method: Annotated[
@@ -167,6 +173,7 @@ def tool_compute_partial_charges(
 # ── T6: Supported Format Listing ─────────────────────────────────────────────
 
 @tool
+@safe_chem_tool()
 def tool_list_formats(
     direction: Annotated[
         str,

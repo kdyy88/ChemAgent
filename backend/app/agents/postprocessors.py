@@ -32,6 +32,7 @@ async def _resolve_smiles_for_postprocessor(
 # the LangGraph state causes unbounded checkpoint growth and pollutes debug logs.
 _STATE_STRIP_FIELDS: frozenset[str] = frozenset({
     "image", "structure_image", "highlighted_image",
+    "molecule_image", "scaffold_image",
     "sdf_content", "pdbqt_content",
 })
 
@@ -182,6 +183,43 @@ async def postprocess_substructure_match(
     return detailed
 
 
+async def postprocess_murcko_scaffold(
+    parsed: ToolResult,
+    _args: dict[str, object],
+    artifacts: list[dict],
+    config: RunnableConfig,
+) -> ToolResult:
+    if parsed.get("molecule_image"):
+        await _dispatch_artifact(
+            artifacts,
+            {
+                "kind": "molecule_image",
+                "title": "原分子结构图",
+                "smiles": parsed.get("smiles"),
+                "image": parsed.get("molecule_image"),
+            },
+            config,
+        )
+
+    if parsed.get("scaffold_image"):
+        await _dispatch_artifact(
+            artifacts,
+            {
+                "kind": "scaffold_image",
+                "title": "Murcko Scaffold 结构图",
+                "smiles": parsed.get("scaffold_smiles"),
+                "source_smiles": parsed.get("smiles"),
+                "image": parsed.get("scaffold_image"),
+            },
+            config,
+        )
+
+    summary = strip_binary_fields(parsed)
+    if parsed.get("is_valid"):
+        summary["message"] = "Murcko scaffold 已提取，结构图已发送给用户"
+    return summary
+
+
 async def postprocess_build_3d_conformer(
     parsed: ToolResult,
     args: dict[str, object],
@@ -321,6 +359,7 @@ TOOL_POSTPROCESSORS: dict[str, ToolPostprocessor] = {
     "tool_evaluate_molecule": postprocess_evaluate_molecule,
     "tool_compute_descriptors": postprocess_descriptors,
     "tool_substructure_match": postprocess_substructure_match,
+    "tool_murcko_scaffold": postprocess_murcko_scaffold,
     "tool_build_3d_conformer": postprocess_build_3d_conformer,
     "tool_prepare_pdbqt": postprocess_prepare_pdbqt,
     "tool_convert_format": postprocess_convert_format,

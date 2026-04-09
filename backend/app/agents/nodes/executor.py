@@ -75,6 +75,47 @@ def _collect_recent_artifact_ids(artifacts: list[dict], limit: int = _MAX_PARENT
     return recent_ids
 
 
+def _unique_nonempty_strings(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        item = str(value or "").strip()
+        if item and item not in normalized:
+            normalized.append(item)
+    return normalized
+
+
+def _prepare_sub_agent_artifact_inputs(
+    args: dict[str, Any],
+    *,
+    active_artifact_id: str | None,
+    parent_artifact_ids: list[str],
+) -> tuple[dict[str, Any], list[str]]:
+    prepared_args = dict(args)
+    delegation_raw = prepared_args.get("delegation")
+    delegation: dict[str, Any] = dict(delegation_raw) if isinstance(delegation_raw, dict) else {}
+
+    explicit_artifact_ids = _unique_nonempty_strings(
+        [str(artifact_id) for artifact_id in list(prepared_args.get("artifact_ids") or [])]
+    )
+    delegated_artifact_ids = _unique_nonempty_strings(
+        [str(artifact_id) for artifact_id in list(delegation.get("artifact_pointers") or [])]
+    )
+    inherited_artifact_ids = _unique_nonempty_strings([
+        *parent_artifact_ids,
+        str(active_artifact_id or ""),
+    ])
+
+    requested_artifact_ids = explicit_artifact_ids or delegated_artifact_ids or inherited_artifact_ids
+    if requested_artifact_ids:
+        prepared_args["artifact_ids"] = requested_artifact_ids
+        delegation["artifact_pointers"] = requested_artifact_ids
+        if not str(delegation.get("active_artifact_id") or "").strip() and active_artifact_id:
+            delegation["active_artifact_id"] = str(active_artifact_id).strip()
+        prepared_args["delegation"] = delegation
+
+    return prepared_args, requested_artifact_ids
+
+
 def _sanitize_message_bus_payload(tool_name: str, parsed: dict | None) -> dict | None:
     if parsed is None:
         return None
@@ -317,11 +358,11 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
         try:
             tool_config: RunnableConfig | dict = config
             if tool_name == "tool_run_sub_agent":
-                requested_artifact_ids = [
-                    str(artifact_id).strip()
-                    for artifact_id in list(args.get("artifact_ids") or [])
-                    if str(artifact_id).strip()
-                ]
+                args, requested_artifact_ids = _prepare_sub_agent_artifact_inputs(
+                    args,
+                    active_artifact_id=active_artifact_id,
+                    parent_artifact_ids=recent_artifact_ids,
+                )
                 if not requested_artifact_ids and recent_artifact_ids:
                     logger.warning(
                         "Sub-agent dispatch omitted artifact_ids despite available parent artifacts: active_artifact_id=%s parent_artifact_ids=%s",
