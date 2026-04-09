@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 from app.core.task_queue import get_redis_pool
@@ -26,10 +27,9 @@ from app.core.task_queue import get_redis_pool
 logger = logging.getLogger(__name__)
 
 _ENGINE_ARTIFACT_PREFIX = "chemagent:engine-artifact:"
-# Read from ARTIFACT_TTL_SECONDS env var (default 86400s = 24h for HITL flows)
-# Local dev can override via .env or compose.yaml
-_DEFAULT_TTL_SECONDS = int(os.getenv("ARTIFACT_TTL_SECONDS", "86400"))
+_TEMP_ARTIFACT_TTL_SECONDS = int(os.getenv("ARTIFACT_TEMP_TTL_SECONDS", os.getenv("ARTIFACT_TTL_SECONDS", "3600")))
 _EXPIRY_WARNING_SECONDS = int(os.getenv("ARTIFACT_EXPIRY_WARNING_SECONDS", "1800"))
+_ARTIFACT_ENVELOPE_VERSION = 1
 
 # In-process fallback — used when Redis is unavailable.
 # Capped at 256 entries (FIFO eviction) to prevent unbounded growth during
@@ -42,22 +42,113 @@ def _artifact_key(artifact_id: str) -> str:
     return f"{_ENGINE_ARTIFACT_PREFIX}{artifact_id}"
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _build_artifact_envelope(
+    artifact_id: str,
+    data: Any,
+    *,
+    tier: str,
+    ttl: int | None,
+    created_at: str | None = None,
+    promoted_at: str | None = None,
+) -> dict[str, Any]:
+    timestamp = created_at or _utc_now_iso()
+    meta: dict[str, Any] = {
+        "artifact_id": artifact_id,
+        "tier": tier,
+        "created_at": timestamp,
+        "storage_version": _ARTIFACT_ENVELOPE_VERSION,
+    }
+    if ttl is not None and ttl > 0:
+        meta["ttl_seconds"] = ttl
+    if promoted_at:
+        meta["promoted_at"] = promoted_at
+    return {"_meta": meta, "payload": data}
+
+
+def _normalize_artifact_record(artifact_id: str, raw_value: Any) -> dict[str, Any]:
+    if isinstance(raw_value, dict) and isinstance(raw_value.get("_meta"), dict) and "payload" in raw_value:
+        meta = dict(raw_value["_meta"])
+        meta.setdefault("artifact_id", artifact_id)
+        meta.setdefault("tier", "workspace")
+        meta.setdefault("storage_version", _ARTIFACT_ENVELOPE_VERSION)
+        return {"_meta": meta, "payload": raw_value.get("payload")}
+
+    return _build_artifact_envelope(
+        artifact_id,
+        raw_value,
+        tier="workspace",
+        ttl=None,
+    )
+
+
+async def _load_artifact_record(artifact_id: str) -> dict[str, Any] | None:
+    try:
+        redis = await get_redis_pool()
+        raw = await redis.get(_artifact_key(artifact_id))
+        if raw is not None:
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            return _normalize_artifact_record(artifact_id, json.loads(raw))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Redis unavailable — checking in-process fallback: %s", exc)
+
+    serialized = _local_fallback.get(artifact_id)
+    if serialized is not None:
+        return _normalize_artifact_record(artifact_id, json.loads(serialized))
+    return None
+
+
+def _serialize_record(record: dict[str, Any]) -> str:
+    return json.dumps(record, ensure_ascii=False)
+
+
 async def store_engine_artifact(
     artifact_id: str,
     data: Any,
     *,
-    ttl: int = _DEFAULT_TTL_SECONDS,
+    ttl: int | None = None,
+    tier: str = "workspace",
 ) -> None:
     """Serialize ``data`` and persist it under ``artifact_id``.
 
     Falls back to an in-process dict when Redis is unreachable so that
     callers never have to handle a storage error at the SSE level.
     """
-    serialized = json.dumps(data, ensure_ascii=False)
+    normalized_tier = str(tier or "workspace").strip().lower() or "workspace"
+    if normalized_tier not in {"temp", "workspace"}:
+        raise ValueError(f"Unsupported artifact tier: {tier}")
+
+    effective_ttl = ttl
+    if normalized_tier == "temp":
+        effective_ttl = _TEMP_ARTIFACT_TTL_SECONDS if ttl is None else ttl
+    elif ttl is not None and ttl > 0:
+        effective_ttl = ttl
+    else:
+        effective_ttl = None
+
+    record = _build_artifact_envelope(
+        artifact_id,
+        data,
+        tier=normalized_tier,
+        ttl=effective_ttl,
+    )
+    serialized = _serialize_record(record)
     try:
         redis = await get_redis_pool()
-        await redis.set(_artifact_key(artifact_id), serialized, ex=ttl)
-        logger.debug("Stored engine artifact %s in Redis (ttl=%ss)", artifact_id, ttl)
+        if effective_ttl is not None and effective_ttl > 0:
+            await redis.set(_artifact_key(artifact_id), serialized, ex=effective_ttl)
+        else:
+            await redis.set(_artifact_key(artifact_id), serialized)
+        logger.debug(
+            "Stored engine artifact %s in Redis (tier=%s ttl=%s)",
+            artifact_id,
+            normalized_tier,
+            effective_ttl,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Redis unavailable — falling back to in-process artifact store: %s", exc
@@ -75,20 +166,17 @@ async def get_engine_artifact(artifact_id: str) -> Any | None:
     Checks Redis first; falls back to the in-process dict.
     Returns ``None`` when the artifact is not found or has expired.
     """
-    try:
-        redis = await get_redis_pool()
-        raw = await redis.get(_artifact_key(artifact_id))
-        if raw is not None:
-            if isinstance(raw, bytes):
-                raw = raw.decode("utf-8")
-            return json.loads(raw)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Redis unavailable — checking in-process fallback: %s", exc)
+    record = await _load_artifact_record(artifact_id)
+    if record is None:
+        return None
+    return record.get("payload")
 
-    serialized = _local_fallback.get(artifact_id)
-    if serialized is not None:
-        return json.loads(serialized)
-    return None
+
+async def get_engine_artifact_metadata(artifact_id: str) -> dict[str, Any] | None:
+    record = await _load_artifact_record(artifact_id)
+    if record is None:
+        return None
+    return dict(record.get("_meta") or {})
 
 
 async def get_engine_artifact_warning(artifact_id: str) -> str | None:
@@ -97,6 +185,13 @@ async def get_engine_artifact_warning(artifact_id: str) -> str | None:
         return None
 
     key = _artifact_key(artifact_id)
+    metadata = await get_engine_artifact_metadata(artifact_id)
+    if metadata is None:
+        return f"[Warning: Artifact {artifact_id} is unavailable or has expired.]"
+
+    if str(metadata.get("tier") or "workspace") != "temp":
+        return None
+
     try:
         redis = await get_redis_pool()
         exists = await redis.exists(key)
@@ -152,26 +247,59 @@ async def patch_engine_artifact(
     ------
     Nothing — all exceptions are caught and logged as warnings.
     """
-    existing = await get_engine_artifact(artifact_id)
-    if existing is None:
+    record = await _load_artifact_record(artifact_id)
+    if record is None:
         logger.warning("patch_engine_artifact: artifact %s not found — patch skipped", artifact_id)
         return False
 
+    existing = record.get("payload")
+    if not isinstance(existing, dict):
+        logger.warning("patch_engine_artifact: artifact %s payload is not a dict — patch skipped", artifact_id)
+        return False
+
     existing.update(patch)
-    serialized = json.dumps(existing, ensure_ascii=False)
+    record["payload"] = existing
+    serialized = _serialize_record(record)
 
     # Try to inherit the remaining Redis TTL so the expiry clock is unchanged.
     try:
         redis = await get_redis_pool()
         key = _artifact_key(artifact_id)
         remaining_ttl = await redis.ttl(key)
-        # ttl() returns -1 (no expiry) or -2 (key missing); treat both as
-        # "use default" so we don't silently make entries immortal.
-        ttl = remaining_ttl if remaining_ttl > 0 else _DEFAULT_TTL_SECONDS
-        await redis.set(key, serialized, ex=ttl)
-        logger.debug("Patched engine artifact %s in Redis (remaining_ttl=%ss)", artifact_id, ttl)
+        if remaining_ttl > 0:
+            await redis.set(key, serialized, ex=remaining_ttl)
+        else:
+            await redis.set(key, serialized)
+        logger.debug("Patched engine artifact %s in Redis (remaining_ttl=%ss)", artifact_id, remaining_ttl)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Redis unavailable — patching in-process fallback: %s", exc)
+        _local_fallback[artifact_id] = serialized
+
+    return True
+
+
+async def promote_artifact(artifact_id: str) -> bool:
+    record = await _load_artifact_record(artifact_id)
+    if record is None:
+        logger.warning("promote_artifact: artifact %s not found", artifact_id)
+        return False
+
+    meta = dict(record.get("_meta") or {})
+    meta["tier"] = "workspace"
+    meta["promoted_at"] = _utc_now_iso()
+    meta.pop("ttl_seconds", None)
+    record["_meta"] = meta
+    serialized = _serialize_record(record)
+
+    try:
+        redis = await get_redis_pool()
+        key = _artifact_key(artifact_id)
+        await redis.set(key, serialized)
+        if hasattr(redis, "persist"):
+            await redis.persist(key)
+        logger.info("Promoted artifact to persistent tier: artifact_id=%s", artifact_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Redis unavailable — promoting artifact in in-process fallback: %s", exc)
         _local_fallback[artifact_id] = serialized
 
     return True

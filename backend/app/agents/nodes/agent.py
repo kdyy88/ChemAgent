@@ -12,7 +12,7 @@ from app.agents.lg_tools import ALL_CHEM_TOOLS
 from app.agents.prompts import get_system_prompt
 from app.agents.state import ChemState
 from app.agents.config import get_active_model_name, is_native_reasoning_model, _load_environment
-from app.agents.utils import build_llm, format_tasks_for_prompt, normalize_messages_for_api
+from app.agents.utils import build_llm, format_tasks_for_prompt, normalize_messages_for_api, sanitize_messages_for_state
 from app.agents.utils import format_molecule_workspace_for_prompt
 from app.core.artifact_store import get_engine_artifact_warning
 
@@ -138,7 +138,7 @@ async def chem_agent_node(state: ChemState) -> dict:
         if total_tok > 100_000:
             logger.warning("🚨 [Context Monitor] Approaching context limit (total=%d)", total_tok)
 
-    return {"messages": [response]}
+    return {"messages": await sanitize_messages_for_state([response], source="chem_agent")}
 
 
 def route_from_agent(state: ChemState) -> str:

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
+from uuid import uuid4
 from typing import Any, Awaitable, Callable, Sequence, cast
 
 from langchain_core.callbacks.manager import adispatch_custom_event
@@ -11,6 +14,9 @@ from langchain_openai import ChatOpenAI
 
 from app.agents.config import build_llm_config
 from app.agents.state import MoleculeWorkspaceEntry, PlannedTaskItem, Task, TaskStatus
+from app.core.artifact_store import store_engine_artifact
+
+logger = logging.getLogger(__name__)
 
 
 _STRIP_LLM_FIELDS = frozenset({
@@ -30,8 +36,402 @@ ToolResult = dict[str, Any]
 ToolPostprocessor = Callable[[ToolResult, dict[str, Any], list[dict], RunnableConfig], Awaitable[ToolResult]]
 _TASK_MAX_LENGTH = 16
 _TASK_SPLIT_RE = re.compile(r"[，,；;。:：(（\[]")
+_TASK_ID_PREFIX_RE = re.compile(r"^\s*(\d+)\s*(?:[\.．、:：\-\)]\s*.*)?$")
 _OMITTED_TOOL_RESULT = "[System] Tool result omitted (history limit)."
 _OMITTED_TOOL_RESULT_COMPACT = "[Omitted]"
+_CONTEXT_FIREWALL_MAX_CHARS = int(os.getenv("CHEMAGENT_CONTEXT_FIREWALL_MAX_CHARS", "500"))
+_CONTEXT_FIREWALL_TOOL_MAX_CHARS = int(os.getenv("CHEMAGENT_CONTEXT_FIREWALL_TOOL_MAX_CHARS", "900"))
+_CONTEXT_FIREWALL_RESEARCH_TOOL_MAX_CHARS = int(os.getenv("CHEMAGENT_CONTEXT_FIREWALL_RESEARCH_TOOL_MAX_CHARS", "3000"))
+_CONTEXT_FIREWALL_TOOL_CALL_ARG_MAX_CHARS = int(os.getenv("CHEMAGENT_CONTEXT_FIREWALL_TOOL_CALL_ARG_MAX_CHARS", "900"))
+_CONTEXT_FIREWALL_PREVIEW_CHARS = int(os.getenv("CHEMAGENT_CONTEXT_FIREWALL_PREVIEW_CHARS", "160"))
+_CONTEXT_FIREWALL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("pdb_header", re.compile(r"HEADER\s+PROTEIN", re.IGNORECASE)),
+    ("pdb_atom_block", re.compile(r"(^|\n)ATOM\s+\d+", re.IGNORECASE)),
+    ("sdf_counts", re.compile(r"\b\d+\s+\d+\s+0\s+0\s+0\s+0\b")),
+)
+_HARD_REDACT_TOOL_NAMES: frozenset[str] = frozenset({
+    "tool_convert_format",
+    "tool_build_3d_conformer",
+    "tool_prepare_pdbqt",
+})
+_SOFT_LIMIT_TOOL_NAMES: frozenset[str] = frozenset({
+    "tool_web_search",
+    "tool_pubchem_lookup",
+})
+_SUMMARY_SHRINK_TOOL_NAMES: frozenset[str] = frozenset({
+    "tool_evaluate_molecule",
+    "tool_compute_descriptors",
+    "tool_compute_similarity",
+    "tool_compute_mol_properties",
+    "tool_compute_partial_charges",
+})
+_TOOL_CALL_ARG_POINTER_KEY = "__artifact_id__"
+_TOOL_CALL_ARG_REDACTED_KEY = "__redacted__"
+
+
+def _serialize_message_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, ensure_ascii=False)
+    except TypeError:
+        return str(content)
+
+
+def _matches_context_firewall_patterns(text: str) -> str | None:
+    for label, pattern in _CONTEXT_FIREWALL_PATTERNS:
+        if pattern.search(text):
+            return label
+    return None
+
+
+def _tool_message_limit(tool_name: str | None) -> int:
+    normalized_name = str(tool_name or "").strip()
+    if normalized_name in _SOFT_LIMIT_TOOL_NAMES:
+        return _CONTEXT_FIREWALL_RESEARCH_TOOL_MAX_CHARS
+    return _CONTEXT_FIREWALL_TOOL_MAX_CHARS
+
+
+def _should_enforce_tool_message_length(tool_name: str | None) -> bool:
+    normalized_name = str(tool_name or "").strip()
+    return normalized_name not in _SOFT_LIMIT_TOOL_NAMES or _CONTEXT_FIREWALL_RESEARCH_TOOL_MAX_CHARS > 0
+
+
+def _tool_call_args_reason(tool_name: str, args: Any) -> str | None:
+    serialized_args = _serialize_message_content(args)
+    pattern_reason = _matches_context_firewall_patterns(serialized_args)
+    if pattern_reason is not None:
+        return pattern_reason
+    if tool_name in _HARD_REDACT_TOOL_NAMES and len(serialized_args) > _CONTEXT_FIREWALL_TOOL_CALL_ARG_MAX_CHARS:
+        return f"size>{_CONTEXT_FIREWALL_TOOL_CALL_ARG_MAX_CHARS}"
+    return None
+
+
+def _context_firewall_reason(text: str) -> str | None:
+    if len(text) > _CONTEXT_FIREWALL_MAX_CHARS:
+        return f"size>{_CONTEXT_FIREWALL_MAX_CHARS}"
+    return _matches_context_firewall_patterns(text)
+
+
+def _context_firewall_preview(text: str) -> str:
+    compact = re.sub(r"\s+", " ", text).strip()
+    if len(compact) <= _CONTEXT_FIREWALL_PREVIEW_CHARS:
+        return compact
+    return compact[:_CONTEXT_FIREWALL_PREVIEW_CHARS] + " ...[truncated]"
+
+
+def _compact_dict_keys(source: dict[str, Any], allowed_keys: Sequence[str]) -> dict[str, Any]:
+    compacted: dict[str, Any] = {}
+    for key in allowed_keys:
+        value = source.get(key)
+        if value not in (None, "", [], {}):
+            compacted[key] = value
+    return compacted
+
+
+def _build_compacted_summary_tool_content(
+    tool_name: str,
+    content: Any,
+    *,
+    max_chars: int,
+) -> str | None:
+    if not isinstance(content, str):
+        return None
+
+    try:
+        parsed = json.loads(content)
+    except Exception:
+        return None
+
+    if not isinstance(parsed, dict):
+        return None
+
+    compact: dict[str, Any] = _compact_dict_keys(
+        parsed,
+        (
+            "type",
+            "is_valid",
+            "artifact_id",
+            "parent_artifact_id",
+            "from_artifact",
+            "name",
+            "smiles",
+            "formula",
+            "similarity",
+            "interpretation",
+            "atom_count",
+            "heavy_atom_count",
+            "forcefield",
+            "steps",
+            "has_3d_coords",
+            "energy_kcal_mol",
+            "rotatable_bonds",
+            "total_atom_count",
+            "ph",
+            "error",
+            "artifact_payloads_removed",
+        ),
+    )
+
+    validation = parsed.get("validation")
+    if isinstance(validation, dict):
+        compact_validation = _compact_dict_keys(
+            validation,
+            ("is_valid", "canonical_smiles", "formula", "molecular_weight", "error"),
+        )
+        if compact_validation:
+            compact["validation"] = compact_validation
+
+    lipinski = parsed.get("lipinski")
+    if isinstance(lipinski, dict):
+        compact_lipinski = _compact_dict_keys(
+            lipinski,
+            ("mw", "logp", "hbd", "hba", "violations", "passes"),
+        )
+        if compact_lipinski:
+            compact["lipinski"] = compact_lipinski
+
+    descriptors = parsed.get("descriptors")
+    if isinstance(descriptors, dict):
+        compact_descriptors = _compact_dict_keys(
+            descriptors,
+            ("molecular_weight", "logp", "tpsa", "qed", "sa_score", "fraction_csp3", "ring_count"),
+        )
+        if compact_descriptors:
+            compact["descriptors"] = compact_descriptors
+
+    compact["content_compacted"] = True
+    compact["source_tool"] = tool_name
+    serialized = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized) <= max_chars:
+        return serialized
+
+    compact.pop("descriptors", None)
+    serialized = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized) <= max_chars:
+        return serialized
+
+    compact.pop("validation", None)
+    serialized = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized) <= max_chars:
+        return serialized
+
+    compact.pop("lipinski", None)
+    serialized = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    return serialized if len(serialized) <= max_chars else None
+
+
+async def _sanitize_ai_tool_calls_for_state(message: AIMessage, *, source: str) -> AIMessage:
+    tool_calls = list(getattr(message, "tool_calls", []) or [])
+    if not tool_calls:
+        return message
+
+    updated_calls: list[dict[str, Any]] = []
+    changed = False
+    for index, tool_call in enumerate(tool_calls):
+        if not isinstance(tool_call, dict):
+            updated_calls.append(tool_call)
+            continue
+
+        updated_call = dict(tool_call)
+        tool_name = str(updated_call.get("name") or "").strip()
+        args = updated_call.get("args", {})
+        reason = _tool_call_args_reason(tool_name, args)
+        if reason is not None:
+            artifact_id = f"temp_art_{uuid4().hex[:8]}"
+            await store_engine_artifact(artifact_id, args, tier="temp")
+            updated_call["args"] = {
+                _TOOL_CALL_ARG_POINTER_KEY: artifact_id,
+                _TOOL_CALL_ARG_REDACTED_KEY: True,
+                "message": f"[Tool args redacted. Full args stored at Artifact ID: {artifact_id}]",
+            }
+            logger.warning(
+                "Context firewall redacted tool_call args before state write: source=%s tool_name=%s artifact_id=%s reason=%s chars=%d preview=%s",
+                f"{source}.tool_call[{index}]",
+                tool_name,
+                artifact_id,
+                reason,
+                len(_serialize_message_content(args)),
+                _context_firewall_preview(_serialize_message_content(args)),
+            )
+            changed = True
+        updated_calls.append(updated_call)
+
+    if not changed:
+        return message
+    return message.model_copy(update={"tool_calls": updated_calls})
+
+
+def _build_redacted_tool_message_content(content: Any, artifact_id: str) -> str | None:
+    if not isinstance(content, str):
+        return None
+
+    try:
+        parsed = json.loads(content)
+    except Exception:
+        return None
+
+    if not isinstance(parsed, dict):
+        return None
+
+    summary = str(
+        parsed.get("summary")
+        or parsed.get("result")
+        or parsed.get("response")
+        or parsed.get("message")
+        or ""
+    ).strip()
+    compact: dict[str, Any] = {
+        "status": parsed.get("status", "ok"),
+        "summary": summary[:240] if summary else f"[Data Redacted: {artifact_id}]",
+        "result": summary[:240] if summary else f"[Data Redacted: {artifact_id}]",
+        "response": summary[:240] if summary else f"[Data Redacted: {artifact_id}]",
+        "parent_decision": parsed.get("parent_decision"),
+        "data_redacted": True,
+        "artifact_id": artifact_id,
+    }
+
+    for key in (
+        "mode",
+        "sub_thread_id",
+        "execution_task_id",
+        "task_kind",
+        "output_contract",
+        "smiles_policy",
+        "recommended_mode",
+        "recommended_task_kind",
+        "needs_followup",
+        "artifact_payloads_removed",
+    ):
+        value = parsed.get(key)
+        if value not in (None, "", [], {}):
+            compact[key] = value
+
+    completion = parsed.get("completion") if isinstance(parsed.get("completion"), dict) else None
+    if completion:
+        compact_completion: dict[str, Any] = {}
+        for key in ("summary", "metrics", "advisory_active_smiles", "produced_artifact_ids"):
+            value = completion.get(key)
+            if value not in (None, "", [], {}):
+                compact_completion[key] = value
+        if compact_completion:
+            compact["completion"] = compact_completion
+
+    serialized = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized) <= _CONTEXT_FIREWALL_MAX_CHARS:
+        return serialized
+
+    for key in (
+        "output_contract",
+        "smiles_policy",
+        "execution_task_id",
+        "sub_thread_id",
+        "recommended_mode",
+        "recommended_task_kind",
+        "mode",
+    ):
+        compact.pop(key, None)
+    serialized = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized) <= _CONTEXT_FIREWALL_MAX_CHARS:
+        return serialized
+
+    compact.pop("response", None)
+    compact.pop("result", None)
+    serialized = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized) <= _CONTEXT_FIREWALL_MAX_CHARS:
+        return serialized
+
+    if isinstance(compact.get("completion"), dict):
+        compact_completion = dict(compact["completion"])
+        compact_completion.pop("produced_artifact_ids", None)
+        if compact_completion:
+            compact["completion"] = compact_completion
+        else:
+            compact.pop("completion", None)
+        serialized = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+        if len(serialized) <= _CONTEXT_FIREWALL_MAX_CHARS:
+            return serialized
+
+        compact_completion.pop("metrics", None)
+        if compact_completion:
+            compact["completion"] = compact_completion
+        else:
+            compact.pop("completion", None)
+        serialized = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+        if len(serialized) <= _CONTEXT_FIREWALL_MAX_CHARS:
+            return serialized
+
+    compact.pop("completion", None)
+    serialized = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    return serialized if len(serialized) <= _CONTEXT_FIREWALL_MAX_CHARS else None
+
+
+async def sanitize_message_for_state(message: BaseMessage, *, source: str) -> BaseMessage:
+    if isinstance(message, AIMessage):
+        message = await _sanitize_ai_tool_calls_for_state(message, source=source)
+
+    serialized_content = _serialize_message_content(message.content)
+    reason: str | None = None
+    if isinstance(message, ToolMessage):
+        tool_name = str(getattr(message, "name", "") or "").strip()
+        pattern_reason = _matches_context_firewall_patterns(serialized_content)
+        if pattern_reason is not None:
+            reason = pattern_reason
+        else:
+            tool_limit = _tool_message_limit(tool_name)
+            if tool_name in _SUMMARY_SHRINK_TOOL_NAMES and len(serialized_content) > tool_limit:
+                compact_content = _build_compacted_summary_tool_content(
+                    tool_name,
+                    message.content,
+                    max_chars=tool_limit,
+                )
+                if compact_content is not None:
+                    logger.info(
+                        "Context firewall compacted summary tool message before state write: source=%s tool_name=%s chars=%d compacted_chars=%d",
+                        source,
+                        tool_name,
+                        len(serialized_content),
+                        len(compact_content),
+                    )
+                    return message.model_copy(update={"content": compact_content})
+                reason = f"size>{tool_limit}"
+            elif _should_enforce_tool_message_length(tool_name) and len(serialized_content) > tool_limit:
+                reason = f"size>{tool_limit}"
+    else:
+        reason = _matches_context_firewall_patterns(serialized_content)
+
+    if reason is None:
+        return message
+
+    artifact_id = f"temp_art_{uuid4().hex[:8]}"
+    await store_engine_artifact(artifact_id, message.content, tier="temp")
+    logger.warning(
+        "Context firewall redacted message before state write: source=%s message_type=%s artifact_id=%s reason=%s chars=%d preview=%s",
+        source,
+        getattr(message, "type", type(message).__name__),
+        artifact_id,
+        reason,
+        len(serialized_content),
+        _context_firewall_preview(serialized_content),
+    )
+    placeholder = f"[Data Redacted due to size. Full content stored at Artifact ID: {artifact_id}]"
+    redacted_content = placeholder
+    if isinstance(message, ToolMessage):
+        structured_proxy = _build_redacted_tool_message_content(message.content, artifact_id)
+        if structured_proxy is not None:
+            redacted_content = structured_proxy
+    return message.model_copy(update={"content": redacted_content})
+
+
+async def sanitize_messages_for_state(
+    messages: Sequence[BaseMessage],
+    *,
+    source: str,
+) -> list[BaseMessage]:
+    sanitized: list[BaseMessage] = []
+    for index, message in enumerate(messages):
+        sanitized.append(await sanitize_message_for_state(message, source=f"{source}[{index}]"))
+    return sanitized
 
 
 def _condense_task_description(text: str) -> str:
@@ -358,6 +758,7 @@ def format_tasks_for_prompt(tasks: list[Task] | None) -> str:
 
     lines = [
         "- 你必须按顺序执行以下任务。",
+        "- 调用 `tool_update_task_status` 时，优先直接使用任务列表里的纯数字 `task_id`（例如 `1`、`2`），不要拼接描述文本。",
         "- 如果某项任务会跨多轮推进、需要向前端显示长耗时阶段，开始前再调用 `tool_update_task_status(task_id, \"in_progress\")`。",
         "- 如果你会在当前工作跨度内直接完成该任务，可跳过单独的 `in_progress` 调用，完成后直接标记 `completed` 或 `failed`。",
         "- 完成某项任务后，立即调用 `tool_update_task_status(task_id, \"completed\")`；若已有明确阶段结论，请附带一句 `summary` 记录本阶段产物。",
@@ -392,6 +793,32 @@ def normalize_tasks(raw_tasks: list[PlannedTaskItem]) -> list[Task]:
     ]
 
 
+def normalize_task_id_reference(task_id: str) -> str:
+    normalized = str(task_id or "").strip()
+    if not normalized:
+        return ""
+    matched = _TASK_ID_PREFIX_RE.match(normalized)
+    if matched:
+        return matched.group(1)
+    return normalized
+
+
+def resolve_task_id(tasks: list[Task], task_id: str) -> str:
+    requested = normalize_task_id_reference(task_id)
+    if not requested:
+        return ""
+
+    task_ids = {str(task["id"]).strip() for task in tasks}
+    if requested in task_ids:
+        return requested
+
+    raw_requested = str(task_id or "").strip()
+    if raw_requested in task_ids:
+        return raw_requested
+
+    return requested
+
+
 def update_tasks(
     tasks: list[Task],
     task_id: str,
@@ -399,6 +826,7 @@ def update_tasks(
     evidence_revision: int,
     summary: str | None = None,
 ) -> tuple[list[Task], Task | None, str | None]:
+    resolved_task_id = resolve_task_id(tasks, task_id)
     updated: list[Task] = []
     matched_task: Task | None = None
     ignored_reason: str | None = None
@@ -406,10 +834,10 @@ def update_tasks(
 
     for task in tasks:
         next_task = dict(task)
-        if status == "in_progress" and next_task["status"] == "in_progress" and next_task["id"] != task_id:
+        if status == "in_progress" and next_task["status"] == "in_progress" and next_task["id"] != resolved_task_id:
             next_task["status"] = "pending"
 
-        if next_task["id"] == task_id:
+        if next_task["id"] == resolved_task_id:
             completion_revision = int(cast(int | str | None, next_task.get("completion_revision")) or -1)
             if (
                 next_task["status"] == "completed"

@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from uuid import uuid4
-from typing import cast
+from typing import Any, cast
 
 from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -20,12 +20,14 @@ from app.agents.utils import (
     format_molecule_workspace_for_prompt,
     merge_molecule_workspace,
     parse_tool_output,
+    sanitize_messages_for_state,
     strip_binary_fields_with_report,
     tool_result_to_text,
     update_molecule_workspace,
     update_tasks,
 )
 from app.core.plan_store import read_plan_file
+from app.core.artifact_store import get_engine_artifact
 
 _TOOL_LOOKUP = {tool.name: tool for tool in ALL_CHEM_TOOLS}
 logger = logging.getLogger(__name__)
@@ -106,8 +108,10 @@ def _increments_evidence_revision(tool_name: str, parsed: dict | None) -> bool:
 
 
 def _normalize_subagent_delegation(args: dict) -> dict:
-    delegation = args.get("delegation") if isinstance(args.get("delegation"), dict) else {}
-    return dict(delegation)
+    raw_delegation = args.get("delegation")
+    if isinstance(raw_delegation, dict):
+        return dict(raw_delegation)
+    return {}
 
 
 def _build_recovery_hint(failure: dict, *, for_spawn: bool) -> str:
@@ -283,7 +287,7 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
         )
         evidence_revision += 1
         return {
-            "messages": tool_messages,
+            "messages": await sanitize_messages_for_state(tool_messages, source="tools_executor.clarification"),
             "active_smiles": new_active_smiles,
             "artifacts": artifacts,
             "tasks": new_tasks,
@@ -293,7 +297,11 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
     for tool_call in tool_calls:
         tool_name = tool_call["name"]
         tool_call_id = tool_call.get("id", "")
-        args = tool_call.get("args", {})
+        args: dict[str, Any] = dict(tool_call.get("args", {}) if isinstance(tool_call.get("args"), dict) else {})
+        if isinstance(args, dict) and args.get("__redacted__") and args.get("__artifact_id__"):
+            restored_args = await get_engine_artifact(str(args.get("__artifact_id__")))
+            if isinstance(restored_args, dict):
+                args = dict(restored_args)
         tool = _TOOL_LOOKUP.get(tool_name)
 
         if tool is None:
@@ -388,18 +396,20 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                             "error": f"Unsupported task status: {requested_status}",
                         }
                 elif tool_name == "tool_run_sub_agent":
-                    produced_artifacts = parsed.get("produced_artifacts")
+                    subagent_payload: dict[str, Any] = parsed
+                    produced_artifacts = subagent_payload.get("produced_artifacts")
                     if isinstance(produced_artifacts, list):
                         artifacts.extend(_merge_sub_agent_artifacts(parent_artifacts, produced_artifacts))
 
-                    if str(parsed.get("status") or "").strip().lower() == "plan_pending_approval":
-                        plan_pointer = parsed.get("plan_pointer") if isinstance(parsed.get("plan_pointer"), dict) else {}
+                    if str(subagent_payload.get("status") or "").strip().lower() == "plan_pending_approval":
+                        plan_pointer_raw = subagent_payload.get("plan_pointer")
+                        plan_pointer: dict[str, Any] = dict(plan_pointer_raw) if isinstance(plan_pointer_raw, dict) else {}
                         plan_id = str(plan_pointer.get("plan_id") or "").strip()
                         if plan_id:
                             active_subtasks[plan_id] = {
                                 "kind": "plan",
                                 "status": "pending_approval",
-                                "summary": str(parsed.get("summary") or "").strip(),
+                                "summary": str(subagent_payload.get("summary") or "").strip(),
                                 "plan_id": plan_id,
                                 "plan_file_ref": str(plan_pointer.get("plan_file_ref") or "").strip(),
                             }
@@ -410,9 +420,9 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                                 "type": "plan_approval_request",
                                 "plan_id": plan_id,
                                 "plan_file_ref": str(plan_pointer.get("plan_file_ref") or "").strip(),
-                                "summary": str(parsed.get("summary") or "").strip(),
+                                "summary": str(subagent_payload.get("summary") or "").strip(),
                                 "status": "pending_approval",
-                                "mode": str(parsed.get("mode") or "plan"),
+                                "mode": str(subagent_payload.get("mode") or "plan"),
                             }
                         )
 
@@ -424,7 +434,7 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                                     active_subtask_id = None
                             parsed = {
                                 "status": "rejected",
-                                "mode": parsed.get("mode"),
+                                "mode": subagent_payload.get("mode"),
                                 "summary": "计划已被人工拒绝，等待重新规划。",
                                 "result": "计划已被人工拒绝，等待重新规划。",
                                 "response": "计划已被人工拒绝，等待重新规划。",
@@ -452,7 +462,12 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                             execution_args["delegation"] = execution_delegation
 
                             execution_config = dict(tool_config or {})
-                            execution_configurable = dict((execution_config.get("configurable") or {}))
+                            execution_configurable_raw = execution_config.get("configurable")
+                            execution_configurable: dict[str, Any] = (
+                                dict(execution_configurable_raw)
+                                if isinstance(execution_configurable_raw, dict)
+                                else {}
+                            )
                             execution_configurable["execution_task_id"] = execution_task_id
                             execution_configurable.pop("plan_id", None)
                             execution_config["configurable"] = execution_configurable
@@ -460,7 +475,7 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                             active_subtasks[execution_task_id] = {
                                 "kind": "execution",
                                 "status": "running",
-                                "summary": str(parsed.get("summary") or "").strip(),
+                                "summary": str(subagent_payload.get("summary") or "").strip(),
                                 "plan_id": approved_plan_id,
                                 "plan_file_ref": str(plan_pointer.get("plan_file_ref") or "").strip(),
                                 "execution_task_id": execution_task_id,
@@ -476,16 +491,17 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                                     active_subtask_id = None
 
                     recovery_dispatch = None
-                    if str((parsed or {}).get("status") or "").strip().lower() == "failed":
+                    parsed_dict: dict[str, Any] | None = parsed if isinstance(parsed, dict) else None
+                    if parsed_dict is not None and str(parsed_dict.get("status") or "").strip().lower() == "failed":
                         recovery_dispatch = _prepare_recovery_dispatch(
                             args=args,
                             tool_config=tool_config,
-                            parsed=parsed,
+                            parsed=parsed_dict,
                         )
 
                     if recovery_dispatch is not None:
                         recovery_args, recovery_config, recovery_action = recovery_dispatch
-                        prior_execution_task_id = str(parsed.get("execution_task_id") or "").strip()
+                        prior_execution_task_id = str(parsed_dict.get("execution_task_id") or "").strip() if parsed_dict is not None else ""
                         if recovery_action == RecoveryAction.spawn_new_task.value and prior_execution_task_id:
                             active_subtasks.pop(prior_execution_task_id, None)
                             if active_subtask_id == prior_execution_task_id:
@@ -496,24 +512,27 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                         if isinstance(parsed, dict):
                             parsed["parent_decision"] = recovery_action
 
-                        recovered_execution_task_id = str((parsed or {}).get("execution_task_id") or "").strip()
+                        parsed_dict: dict[str, Any] | None = parsed if isinstance(parsed, dict) else None
+                        recovered_execution_task_id = str(parsed_dict.get("execution_task_id") or "").strip() if parsed_dict is not None else ""
                         if recovered_execution_task_id and recovery_action == RecoveryAction.spawn_new_task.value:
                             active_subtasks[recovered_execution_task_id] = {
                                 "kind": "execution",
-                                "status": str((parsed or {}).get("status") or "running"),
-                                "summary": str((parsed or {}).get("summary") or "").strip(),
+                                "status": str(parsed_dict.get("status") or "running") if parsed_dict is not None else "running",
+                                "summary": str(parsed_dict.get("summary") or "").strip() if parsed_dict is not None else "",
                                 "execution_task_id": recovered_execution_task_id,
                             }
                             active_subtask_id = recovered_execution_task_id
-                        if str((parsed or {}).get("status") or "").strip().lower() in {"ok", "failed", "stopped", "error", "timeout", "protocol_error"} and recovered_execution_task_id:
+                        if parsed_dict is not None and str(parsed_dict.get("status") or "").strip().lower() in {"ok", "failed", "stopped", "error", "timeout", "protocol_error"} and recovered_execution_task_id:
                             active_subtasks.pop(recovered_execution_task_id, None)
                             if active_subtask_id == recovered_execution_task_id:
                                 active_subtask_id = None
 
-                    completion = parsed.get("completion") if isinstance(parsed.get("completion"), dict) else {}
+                    parsed_dict = parsed if isinstance(parsed, dict) else {}
+                    completion_raw = parsed_dict.get("completion")
+                    completion: dict[str, Any] = dict(completion_raw) if isinstance(completion_raw, dict) else {}
                     suggested_active_smiles = str(
-                        parsed.get("suggested_active_smiles")
-                        or parsed.get("advisory_active_smiles")
+                        parsed_dict.get("suggested_active_smiles")
+                        or parsed_dict.get("advisory_active_smiles")
                         or completion.get("advisory_active_smiles")
                         or ""
                     ).strip()
@@ -523,36 +542,36 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                     if _SUB_AGENT_VERBOSE_LOGS:
                         logger.debug(
                             "Sub-agent return payload: status=%s sub_thread_id=%s produced_artifacts=%d merged_artifacts=%d suggested_active_smiles_present=%s summary_chars=%d report_ref=%s",
-                            parsed.get("status", "ok"),
-                            parsed.get("sub_thread_id"),
+                            parsed_dict.get("status", "ok"),
+                            parsed_dict.get("sub_thread_id"),
                             len(produced_artifacts) if isinstance(produced_artifacts, list) else 0,
                             len(artifacts),
                             bool(suggested_active_smiles),
-                            len(str(parsed.get("summary") or parsed.get("result") or parsed.get("response") or "")),
-                            (parsed.get("scratchpad_report_ref") or {}).get("scratchpad_id") if isinstance(parsed.get("scratchpad_report_ref"), dict) else None,
+                            len(str(parsed_dict.get("summary") or parsed_dict.get("result") or parsed_dict.get("response") or "")),
+                            (parsed_dict.get("scratchpad_report_ref") or {}).get("scratchpad_id") if isinstance(parsed_dict.get("scratchpad_report_ref"), dict) else None,
                         )
 
                     parsed = {
-                        "status": parsed.get("status", "ok"),
-                        "mode": parsed.get("mode"),
-                        "sub_thread_id": parsed.get("sub_thread_id"),
-                        "execution_task_id": parsed.get("execution_task_id"),
-                        "task_kind": parsed.get("task_kind"),
-                        "output_contract": parsed.get("output_contract"),
-                        "smiles_policy": parsed.get("smiles_policy"),
-                        "summary": parsed.get("summary") or parsed.get("result") or parsed.get("response") or "",
-                        "result": parsed.get("summary") or parsed.get("result") or parsed.get("response") or "",
-                        "response": parsed.get("summary") or parsed.get("result") or parsed.get("response") or "",
+                        "status": parsed_dict.get("status", "ok"),
+                        "mode": parsed_dict.get("mode"),
+                        "sub_thread_id": parsed_dict.get("sub_thread_id"),
+                        "execution_task_id": parsed_dict.get("execution_task_id"),
+                        "task_kind": parsed_dict.get("task_kind"),
+                        "output_contract": parsed_dict.get("output_contract"),
+                        "smiles_policy": parsed_dict.get("smiles_policy"),
+                        "summary": parsed_dict.get("summary") or parsed_dict.get("result") or parsed_dict.get("response") or "",
+                        "result": parsed_dict.get("summary") or parsed_dict.get("result") or parsed_dict.get("response") or "",
+                        "response": parsed_dict.get("summary") or parsed_dict.get("result") or parsed_dict.get("response") or "",
                         "completion": completion,
-                        "plan_pointer": parsed.get("plan_pointer") if isinstance(parsed.get("plan_pointer"), dict) else None,
-                        "failure": parsed.get("failure") if isinstance(parsed.get("failure"), dict) else None,
-                        "delegation": parsed.get("delegation") if isinstance(parsed.get("delegation"), dict) else None,
-                        "scratchpad_report_ref": parsed.get("scratchpad_report_ref") if isinstance(parsed.get("scratchpad_report_ref"), dict) else None,
-                        "policy_conflicts": parsed.get("policy_conflicts") if isinstance(parsed.get("policy_conflicts"), list) else [],
-                        "needs_followup": bool(parsed.get("needs_followup")),
-                        "parent_decision": parsed.get("parent_decision"),
-                        "recommended_mode": parsed.get("recommended_mode"),
-                        "recommended_task_kind": parsed.get("recommended_task_kind"),
+                        "plan_pointer": parsed_dict.get("plan_pointer") if isinstance(parsed_dict.get("plan_pointer"), dict) else None,
+                        "failure": parsed_dict.get("failure") if isinstance(parsed_dict.get("failure"), dict) else None,
+                        "delegation": parsed_dict.get("delegation") if isinstance(parsed_dict.get("delegation"), dict) else None,
+                        "scratchpad_report_ref": parsed_dict.get("scratchpad_report_ref") if isinstance(parsed_dict.get("scratchpad_report_ref"), dict) else None,
+                        "policy_conflicts": parsed_dict.get("policy_conflicts") if isinstance(parsed_dict.get("policy_conflicts"), list) else [],
+                        "needs_followup": bool(parsed_dict.get("needs_followup")),
+                        "parent_decision": parsed_dict.get("parent_decision"),
+                        "recommended_mode": parsed_dict.get("recommended_mode"),
+                        "recommended_task_kind": parsed_dict.get("recommended_task_kind"),
                         "suggested_active_smiles": suggested_active_smiles or None,
                         "produced_artifacts": produced_artifacts if isinstance(produced_artifacts, list) else [],
                     }
@@ -592,7 +611,7 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
             )
 
     return {
-        "messages": tool_messages,
+        "messages": await sanitize_messages_for_state(tool_messages, source="tools_executor"),
         "active_smiles": new_active_smiles,
         "artifacts": artifacts,
         "molecule_workspace": molecule_workspace,

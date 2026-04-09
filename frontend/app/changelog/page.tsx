@@ -27,6 +27,19 @@ interface ChangelogVersion {
 
 const CHANGELOG: ChangelogVersion[] = [
   {
+    version: 'v1.4.4',
+    date: '2026-04-09',
+    highlight: '上下文防火墙分层，长链路执行更稳',
+    sections: [
+      { type: 'Feature', content: '新增分层式 Context Firewall：超长原始化学数据、结构块和大体积工具参数会优先隔离到临时 artifact，避免把 SDF / PDB / 大 JSON 直接塞进主对话状态。' },
+      { type: 'Feature', content: 'Artifact 生命周期现在区分 temp 与 workspace 两级。临时中间产物会带过期语义，确认需要长期保留的结果则可以提升为持久工件，减少 Redis 与检查点里的垃圾堆积。' },
+      { type: 'Improvement', content: '像 tool_evaluate_molecule 这类“结构化摘要型工具”不再因为体积稍大就被整段重定向成 artifact 指针；系统会先尝试保留关键信息并压缩成紧凑摘要，再决定是否需要更强的拦截。' },
+      { type: 'Improvement', content: '长篇自然语言结论现在会尽量保留在主流程中，只对明显像原始结构数据的内容触发强拦截。最终报告的连续性更好，不会因为单纯字数偏长就被误伤。' },
+      { type: 'Fix', content: '修复工具调用参数也会悄悄膨胀上下文的问题。某些高体积原始输入现在会先落到临时 artifact，在真正执行工具前再恢复，避免 LangGraph 状态被大参数污染。' },
+      { type: 'Fix', content: '修复任务状态更新里 task_id 格式漂移导致的额外回合消耗。像“1. 解析SMILES”这类带描述前缀的写法现在会自动规范化回真实任务 ID，而不是先报一次“找不到任务”。' },
+    ],
+  },
+  {
     version: 'v1.4.3',
     date: '2026-04-09',
     highlight: '子智能体汇报更清楚，思考流更连贯',

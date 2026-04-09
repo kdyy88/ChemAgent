@@ -38,6 +38,7 @@ from app.agents.utils import (
     build_llm,
     normalize_messages_for_api,
     parse_tool_output,
+    sanitize_messages_for_state,
     tool_result_to_text,
     update_molecule_workspace,
 )
@@ -189,7 +190,7 @@ def _make_sub_agent_node(
             [SystemMessage(content=system_prompt), *safe_messages],
             config=config,
         )
-        return {"messages": [response]}
+        return {"messages": await sanitize_messages_for_state([response], source=f"sub_agent.{mode.value}")}
 
     # Give the closure a stable name for LangGraph event tracing.
     sub_agent_node.__name__ = f"sub_agent[{mode.value}]"
@@ -252,7 +253,7 @@ def _make_sub_tools_executor(
             )
             if action == "reject":
                 return {
-                    "messages": [
+                    "messages": await sanitize_messages_for_state([
                         ToolMessage(
                             content=json.dumps(
                                 {"status": "rejected", "message": "User rejected this tool."},
@@ -261,7 +262,7 @@ def _make_sub_tools_executor(
                             tool_call_id=heavy_call["id"],
                             name=heavy_call["name"],
                         )
-                    ],
+                    ], source="sub_tools_executor.rejected"),
                     "active_smiles": new_active_smiles,
                     "artifacts": [],
                 }
@@ -392,7 +393,7 @@ def _make_sub_tools_executor(
                     break
 
         return {
-            "messages": tool_messages,
+            "messages": await sanitize_messages_for_state(tool_messages, source="sub_tools_executor"),
             "active_smiles": new_active_smiles,
             "artifacts": artifacts,
             "molecule_workspace": molecule_workspace,
