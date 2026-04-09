@@ -1,0 +1,63 @@
+{
+  "node": {
+    "task_router": "🧭 正在判断任务复杂度…",
+    "planner_node": "🗂️ 正在生成任务清单…",
+    "chem_agent": "🧠 智能体推理中…",
+    "tools_executor": "🛠️ 工具执行中…",
+    "unknown": "{{node}} 执行中…"
+  },
+  "status": {
+    "tool_running": "🛠️ 工具执行中…",
+    "integrating_results": "🧠 正在整合工具结果…",
+    "task_running": "📋 正在执行任务 {{id}}",
+    "task_list_updated": "📋 任务清单已更新",
+    "shadow_error": "⚠️ 正在修正结构问题…",
+    "awaiting_reply": "🙋 等待您的回复…",
+    "reasoning": "🧠 智能体推理中…"
+  },
+  "thinking_panel": {
+    "header_streaming": "thinking...",
+    "header_done": "思考记录",
+    "processing": "处理中",
+    "caption_llm_reasoning": "模型摘要",
+    "caption_tool": "使用工具",
+    "caption_other": "执行动态",
+    "status_running": "状态：进行中",
+    "outputting": "输出中",
+    "subtitle_streaming": "思考内容正在实时输出",
+    "subtitle_done": "展开可查看完整思考与工具步骤",
+    "stages": "{{count}} 个阶段",
+    "tool_call_fallback": "工具调用",
+    "steps": "{{count}} 步",
+    "merged_short": "合并 {{count}} 条",
+    "merged_updates": "已合并 {{count}} 条同类更新",
+    "running": "进行中"
+  },
+  "thinking": {
+    "structure_issue": "检测到结构问题：{{error}}",
+    "needs_clarification": "需要用户澄清：{{question}}",
+    "no_reasoning_summary": "本轮未收到可展示的模型 reasoning 摘要"
+  },
+  "error": {
+    "stream_error": "\n\n> ❌ **错误**: {{error}}",
+    "connection_lost": "❌ 连接中断: {{message}}"
+  },
+  "event": {
+    "on_chain_start": "链式调用开始",
+    "on_chain_end": "链式调用结束",
+    "on_tool_start": "工具调用开始",
+    "on_tool_end": "工具调用结束",
+    "on_chat_model_stream": "模型流式输出",
+    "on_custom_event": "自定义事件"
+  },
+  "reasoning": {
+    "task_router_start": "正在快速判断这次请求是否需要显式任务规划...",
+    "task_router_end": "复杂度判断完成。",
+    "planner_start": "检测到复杂任务，正在生成可执行任务清单...",
+    "planner_end": "任务清单已生成，准备进入执行阶段。",
+    "agent_start": "进入智能体大脑，正在评估当前信息并规划下一步行动...",
+    "agent_end": "智能体本轮思考完毕。",
+    "executor_start": "准备转入工具执行流水线...",
+    "executor_end": "工具调用链执行完毕，正在将实验数据交回给智能体大脑。"
+  }
+}

@@ -115,6 +115,7 @@ export interface SSEToken {
   node: string
   session_id: string
   turn_id: string
+  source?: 'sub_agent'
   content: string       // partial text — append to the current bubble
 }
 
@@ -159,6 +160,29 @@ export interface SSEInterrupt {
   known_smiles?: string
   session_id: string
   turn_id: string
+}
+
+/** Heavy-tool Hard Breakpoint — user must approve/reject/modify before execution. */
+export interface SSEApprovalRequired {
+  type: 'approval_required'
+  /** The tool name that requires approval (e.g. "tool_build_3d_conformer"). */
+  tool_name: string
+  /** The arguments the LLM wants to pass to the tool (user may edit these). */
+  args: Record<string, unknown>
+  /** Correlates back to the AIMessage tool_call that triggered the breakpoint. */
+  tool_call_id: string
+  /** Opaque LangGraph interrupt ID used to resume the frozen graph. */
+  interrupt_id: string
+  session_id: string
+  turn_id: string
+}
+
+/** Stored in SSETurn.pendingApproval while the graph awaits a user decision. */
+export interface SSEPendingApproval {
+  tool_name: string
+  args: Record<string, unknown>
+  tool_call_id: string
+  interrupt_id: string
 }
 
 /** Researcher intermediate reasoning step — emitted before each tool call batch. */
@@ -227,6 +251,7 @@ export type SSEEvent =
   | SSETaskUpdate
   | SSEShadowError
   | SSEInterrupt
+  | SSEApprovalRequired
   | SSEThinking
   | SSEDone
   | SSEError
@@ -257,6 +282,8 @@ export interface SSETurn {
   statusLabel: string
   /** Set when researcher pauses for user clarification (HITL). Cleared on next send. */
   pendingInterrupt?: SSEPendingInterrupt
+  /** Set when a heavy tool requires explicit user approval before execution. */
+  pendingApproval?: SSEPendingApproval
   /** Unified reasoning stream shown in the chain-of-thought area. */
   thinkingSteps: SSEThinking[]
 }

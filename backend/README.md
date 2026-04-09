@@ -9,6 +9,7 @@
 - `REDIS_URL`：可选，默认 `redis://127.0.0.1:6379/0`（本地）或 `redis://redis:6379/0`（Compose）
 - `CHEMAGENT_WORKER_MAX_JOBS`：可选，默认 `2`
 - `CHEMAGENT_WORKER_JOB_TIMEOUT_SECONDS`：可选，默认 `120`
+- `CHEMAGENT_GRAPH_RECURSION_LIMIT`：可选，默认 `60`。当 LangGraph 运行复杂任务出现“Recursion limit reached”错误时，可将其调高，例如 `120`。
 - `TASK_POLL_INTERVAL_SECONDS`：可选，默认 `0.2`
 - `TASK_RESULT_TTL_SECONDS` / `ARTIFACT_TTL_SECONDS`：可选，默认 `300`
 

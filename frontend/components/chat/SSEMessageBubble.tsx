@@ -5,11 +5,13 @@ import { FlaskConical, AlertTriangle } from 'lucide-react'
 import { Message, MessageContent } from '@/components/ui/message'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ClarificationCard } from './ClarificationCard'
+import { ApprovalCard } from './ApprovalCard'
 import { LipinskiCard } from './LipinskiCard'
 import { ArtifactDispatcher } from './bubbles/ArtifactDispatcher'
 import { ResearchThinking } from './bubbles/ResearchThinking'
 import { WebSourcesArtifact } from './bubbles/WebSourcesArtifact'
 import { parseLipinskiToolCalls } from '@/lib/chem-parsers'
+import { useUIStore } from '@/store/uiStore'
 import type { SSETurn, WebSearchSourcesArtifact } from '@/lib/sse-types'
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -20,6 +22,8 @@ interface SSEMessageBubbleProps {
 
 export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMessageBubbleProps) {
   const isStreaming = turn.isStreaming
+  const { appMode } = useUIStore()
+  const isAgentMode = appMode === 'agent'
   const lipinskiCards = parseLipinskiToolCalls(turn.toolCalls)
 
   // Split artifacts: web sources show immediately; the rest are delayed
@@ -49,8 +53,8 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
     if (isStreaming) setArtifactsReady(false)
   }, [isStreaming, hasOtherArtifacts])
 
-  const showArtifactSkeleton = !isStreaming && hasOtherArtifacts && !artifactsReady
-  const showArtifacts = artifactsReady
+  const showArtifactSkeleton = !isStreaming && hasOtherArtifacts && !artifactsReady && !isAgentMode
+  const showArtifacts = artifactsReady && !isAgentMode
   // Web sources show immediately as soon as they arrive (no delay)
   const showWebSources = webSources.length > 0
 
@@ -96,7 +100,7 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:0ms]" aria-hidden="true" />
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:120ms]" aria-hidden="true" />
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:240ms]" aria-hidden="true" />
-              <span className="ml-1 text-muted-foreground/70">正在思考…</span>
+              <span className="ml-1 text-muted-foreground/70">Thinking…</span>
             </div>
           )}
 
@@ -106,7 +110,7 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:0ms]" aria-hidden="true" />
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:120ms]" aria-hidden="true" />
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:240ms]" aria-hidden="true" />
-              <span className="ml-1 text-muted-foreground/70">正在制定执行计划…</span>
+              <span className="ml-1 text-muted-foreground/70">Planning…</span>
             </div>
           )}
 
@@ -116,6 +120,11 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
               interrupt={turn.pendingInterrupt}
               researchTopic={turn.userMessage}
             />
+          )}
+
+          {/* Hard-breakpoint approval card — shown before executing HEAVY_TOOLS */}
+          {turn.pendingApproval && (
+            <ApprovalCard approval={turn.pendingApproval} />
           )}
 
           {/* Assistant text */}
@@ -137,7 +146,7 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
 
           {/* Artifact skeleton — shown for 1s after streaming ends, before real artifacts fade in */}
           {showArtifactSkeleton && (
-            <div className="flex flex-row flex-wrap gap-3 mt-1" aria-label="加载结果中…">
+            <div className="flex flex-row flex-wrap gap-3 mt-1" aria-label="Loading results…">
               {otherArtifacts.map((_, i) => (
                 <Skeleton key={`skel-${i}`} className="h-40 w-40 rounded-xl" />
               ))}

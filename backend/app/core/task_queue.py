@@ -17,7 +17,7 @@ _TASK_RESULT_PREFIX = "chemagent:task-result:"
 _ARTIFACT_DATA_PREFIX = "chemagent:artifact:data:"
 _ARTIFACT_META_PREFIX = "chemagent:artifact:meta:"
 _DEFAULT_RESULT_TTL_SECONDS = 300
-_DEFAULT_ARTIFACT_TTL_SECONDS = 300
+_DEFAULT_ARTIFACT_TTL_SECONDS = 86400
 
 _arq_pool: ArqRedis | None = None
 _redis_pool: Redis | None = None
