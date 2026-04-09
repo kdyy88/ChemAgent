@@ -27,6 +27,24 @@ interface ChangelogVersion {
 
 const CHANGELOG: ChangelogVersion[] = [
   {
+    version: 'v1.4.5',
+    date: '2026-04-10',
+    highlight: '统一工具工厂与 L1/L2 分层基础，按需加载本地 Skill Markdown，输入框全面重设计',
+    sections: [
+      { type: 'Style', content: '输入框底部工具栏重新设计：左侧改为"+ 数据源"图标按钮 + 带 CPU 图标的模型选择器，右侧改为 Token 圆环进度 + 竖线分隔 + 发送按钮，布局更清晰、更高级。' },
+      { type: 'Style', content: 'Token 圆环新增 hover 交互：悬浮时圆环放大（scale-110）并出现 teal 色光晕（drop-shadow），颜色随用量变化：正常为青色、超过 60% 转琥珀色、超过 85% 转红色。' },
+      { type: 'Style', content: 'Token 悬浮卡片重设计：分为"上下文窗口"与"会话累计"两个区，顶部彩色渐变条作为视觉锚；去掉默认黑色箭头，去掉 inline-flex 导致的右侧留白。' },
+      { type: 'Improvement', content: '流式输出等待状态改为三个跳动圆点动画，替代原先的文字 + Spinner，视觉更安静。' },
+      { type: 'Fix', content: '修正 Token 统计口径：圆环进度与"上下文窗口"区展示最后一次调用的 total_tokens（反映上下文是否膨胀）；"会话累计"区展示本次会话所有 LLM 调用的 input+output 累加值（用于估算费用），两者不再混用。' },
+      { type: 'Feature', content: '聊天输入框底部新增模型选择器。可用模型现在由后端动态读取 provider 的 /models 接口并做 GPT-5 reasoning 白名单过滤，同一会话可在不同轮次切换模型。' },
+      { type: 'Feature', content: '输入框右侧新增 Token 圆环预估按钮。鼠标悬浮后会显示上下文窗口进度条、当前调用已用 token、模型上限以及会话累计 token，便于判断上下文是否逼近上限。' },
+      { type: 'Feature', content: 'custom 子智能体现在支持按需加载本地 Skill Markdown。你可以只为 custom mode 注入特定领域指南（例如 RDKit 操作规范），而不会影响 explore、plan、general 三个默认子智能体的既有行为。' },
+      { type: 'Refactor', content: '化学工具注册层开始演进为 L1 / L2 分层：新增统一的 chem_tool 工厂，把 LangChain 注册、安全超时边界和 tier 元数据收口到同一处，为后续快路径 / 慢路径路由提供稳定基础。' },
+      { type: 'Improvement', content: '主智能体绑定工具的方式改为走统一 registry 选择器，不再直接散落依赖整包工具列表。后续做 Root / SubAgent 权限收敛和路由观测时，改动范围更可控。' },
+      { type: 'Refactor', content: '子智能体完成协议开始切换到 XML 汇报卡：完成态现在可以生成并校验 `<subagent_report>`，把状态、artifact id、关键指标和简短总结收敛到可解析格式里，减少原始长文本污染主流程上下文。' },
+    ],
+  },
+  {
     version: 'v1.4.4',
     date: '2026-04-09',
     highlight: '上下文防火墙分层，长链路执行更稳',
