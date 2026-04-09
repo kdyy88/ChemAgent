@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import xml.etree.ElementTree as ET
 from enum import Enum
 from typing import Any
 
@@ -79,6 +81,7 @@ class TaskCompletePayload(BaseModel):
     produced_artifact_ids: list[str] = Field(default_factory=list, description="Artifact ids created or selected during the sub-task.")
     metrics: dict[str, Any] = Field(default_factory=dict, description="Structured completion metrics.")
     advisory_active_smiles: str = Field(default="", description="Optional advisory active SMILES for the parent to consider.")
+    xml_report: str = Field(default="", description="Validated XML report safe to persist in parent conversation history.")
 
 
 class ExitPlanModePayload(BaseModel):
@@ -134,6 +137,71 @@ class AgentToolResult(BaseModel):
     error: str | None = Field(default=None, description="Error text when execution failed.")
 
 
+def build_subagent_report_xml(
+    *,
+    status: str,
+    summary: str,
+    artifact_ids: list[str] | None = None,
+    metrics: dict[str, Any] | None = None,
+    advisory_active_smiles: str = "",
+) -> str:
+    root = ET.Element("subagent_report")
+    ET.SubElement(root, "status").text = str(status or "completed").strip() or "completed"
+    ET.SubElement(root, "summary").text = str(summary or "").strip()
+
+    generated_artifacts = ET.SubElement(root, "generated_artifacts")
+    for artifact_id in artifact_ids or []:
+        normalized = str(artifact_id or "").strip()
+        if normalized:
+            ET.SubElement(generated_artifacts, "artifact_id").text = normalized
+
+    metrics_node = ET.SubElement(root, "metrics")
+    for key, value in (metrics or {}).items():
+        metric = ET.SubElement(metrics_node, "metric", key=str(key))
+        metric.text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+    ET.SubElement(root, "advisory_active_smiles").text = str(advisory_active_smiles or "").strip()
+    return ET.tostring(root, encoding="unicode")
+
+
+def parse_subagent_report_xml(xml_report: str) -> TaskCompletePayload:
+    try:
+        root = ET.fromstring(str(xml_report or "").strip())
+    except ET.ParseError as exc:
+        raise ValueError(f"Invalid subagent_report XML: {exc}") from exc
+
+    if root.tag != "subagent_report":
+        raise ValueError("Invalid subagent_report XML: root tag must be <subagent_report>")
+
+    summary = (root.findtext("summary") or "").strip()
+    artifact_ids = [
+        (node.text or "").strip()
+        for node in root.findall("./generated_artifacts/artifact_id")
+        if (node.text or "").strip()
+    ]
+    metrics: dict[str, Any] = {}
+    for node in root.findall("./metrics/metric"):
+        key = str(node.attrib.get("key") or "").strip()
+        if not key:
+            continue
+        raw_value = (node.text or "").strip()
+        if not raw_value:
+            metrics[key] = ""
+            continue
+        try:
+            metrics[key] = json.loads(raw_value)
+        except json.JSONDecodeError:
+            metrics[key] = raw_value
+
+    return TaskCompletePayload(
+        summary=summary,
+        produced_artifact_ids=artifact_ids,
+        metrics=metrics,
+        advisory_active_smiles=(root.findtext("advisory_active_smiles") or "").strip(),
+        xml_report=ET.tostring(root, encoding="unicode"),
+    )
+
+
 def format_delegation_prompt(delegation: SubAgentDelegation) -> str:
     lines = [
         "<delegation>",
@@ -163,5 +231,5 @@ def format_delegation_prompt(delegation: SubAgentDelegation) -> str:
 
     lines.append("</delegation>")
     lines.append("若需要读取 scratchpad_refs 的全文，请调用 tool_read_scratchpad。")
-    lines.append("执行子任务完成时调用 tool_task_complete；规划阶段完成时调用 tool_exit_plan_mode；若无法继续，请调用 tool_report_failure 或 tool_task_stop。")
+    lines.append("执行子任务完成时调用 tool_task_complete，并传入 `<subagent_report>...</subagent_report>` XML；规划阶段完成时调用 tool_exit_plan_mode；若无法继续，请调用 tool_report_failure 或 tool_task_stop。")
     return "\n".join(lines)

@@ -8,7 +8,7 @@ from app.agents.utils import build_llm, dispatch_task_update, normalize_tasks
 
 
 async def planner_node(state: ChemState, config: RunnableConfig) -> dict:
-    llm = build_llm(PlanStructure)
+    llm = build_llm(PlanStructure, model=state.get("selected_model"))
     plan = await llm.ainvoke([
         SystemMessage(
             content=(

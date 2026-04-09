@@ -50,6 +50,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.agents.config import fetch_available_models
 from app.agents.engine import ChemSessionEngine
 from app.core.artifact_store import get_engine_artifact
 from app.core.plan_store import read_plan_file
@@ -69,6 +70,7 @@ class StreamChatRequest(BaseModel):
     message: str = Field(..., description="用户输入的化学问题或指令")
     session_id: str = Field(default_factory=lambda: uuid4().hex)
     turn_id: str = Field(default_factory=lambda: uuid4().hex)
+    model: str | None = Field(default=None, description="本轮对话使用的模型 ID（可选）")
     active_smiles: str | None = Field(
         default=None,
         description="当前画布上已激活的 SMILES（可选；来自前端状态）",
@@ -96,6 +98,20 @@ class ApproveToolRequest(BaseModel):
     )
 
 
+class ModelCatalogItem(BaseModel):
+    id: str
+    label: str
+    is_default: bool = False
+    is_reasoning: bool = False
+    max_context_tokens: int
+
+
+class ModelCatalogResponse(BaseModel):
+    source: str
+    models: list[ModelCatalogItem]
+    warning: str | None = None
+
+
 # ── FastAPI route ──────────────────────────────────────────────────────────────
 
 
@@ -113,6 +129,7 @@ async def stream_chat(req: StreamChatRequest) -> StreamingResponse:
         engine.submit_message(
             message=req.message,
             history=req.history,
+            model=req.model,
             active_smiles=req.active_smiles,
             interrupt_context=req.interrupt_context,
         ),
@@ -122,6 +139,16 @@ async def stream_chat(req: StreamChatRequest) -> StreamingResponse:
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
         },
+    )
+
+
+@router.get("/models", response_model=ModelCatalogResponse)
+async def list_models() -> ModelCatalogResponse:
+    models, warning = await fetch_available_models()
+    return ModelCatalogResponse(
+        source="provider" if warning is None else "fallback",
+        models=[ModelCatalogItem(**item) for item in models],
+        warning=warning,
     )
 
 

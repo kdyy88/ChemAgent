@@ -175,13 +175,14 @@ def _make_sub_agent_node(
     mode: SubAgentMode,
     tools: list,
     custom_instructions: str,
+    skill_markdown: str,
 ) -> Any:
     """Return an async LangGraph-compatible node function for the LLM step."""
 
-    system_prompt = get_sub_agent_prompt(mode, custom_instructions)
+    system_prompt = get_sub_agent_prompt(mode, custom_instructions, skill_markdown)
 
     async def sub_agent_node(state: ChemState, config: RunnableConfig) -> dict:  # noqa: ARG001
-        llm = build_llm()
+        llm = build_llm(model=state.get("selected_model"))
         llm_bound = llm.bind_tools(tools) if tools else llm
 
         safe_messages = normalize_messages_for_api(state["messages"])
@@ -422,6 +423,7 @@ def build_sub_agent_graph(
     tools: list,
     checkpointer: Any,
     custom_instructions: str = "",
+    skill_markdown: str = "",
 ) -> Any:
     """Compile an isolated sub-agent ``StateGraph``.
 
@@ -441,6 +443,9 @@ def build_sub_agent_graph(
     custom_instructions:
         Only used for ``SubAgentMode.custom``; injected verbatim into the
         persona prompt.
+    skill_markdown:
+        Only used for ``SubAgentMode.custom``; local markdown skills injected
+        alongside custom instructions.
 
     Returns
     -------
@@ -460,7 +465,7 @@ def build_sub_agent_graph(
 
     graph: StateGraph = StateGraph(ChemState)
 
-    sub_agent_fn = _make_sub_agent_node(mode, runtime_tools, custom_instructions)
+    sub_agent_fn = _make_sub_agent_node(mode, runtime_tools, custom_instructions, skill_markdown)
     graph.add_node("sub_agent", sub_agent_fn)
 
     if runtime_tools:

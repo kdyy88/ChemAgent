@@ -17,7 +17,7 @@ async def task_router_node(state: ChemState, config: RunnableConfig) -> dict:
         "",
     )
 
-    llm = build_llm(RouteDecision)
+    llm = build_llm(RouteDecision, model=state.get("selected_model"))
     decision = await llm.ainvoke([
         SystemMessage(
             content=(

@@ -40,7 +40,7 @@ _SCRATCHPAD_RULE = (
 )
 
 _TERMINATION_RULE = (
-    "【终结协议】执行完成时调用一次 tool_task_complete，规划阶段完成时调用 tool_exit_plan_mode。"
+    "【终结协议】执行完成时调用一次 tool_task_complete，且必须提交 `<subagent_report>...</subagent_report>` XML 汇报；规划阶段完成时调用 tool_exit_plan_mode。"
     "如果方法无效、工具连续报错或前提不足，请调用 tool_report_failure 或 tool_task_stop，"
     "不要继续在错误路径上循环消耗 token。"
 )
@@ -119,13 +119,13 @@ def _general_prompt() -> str:
         "3. 只有在多个只读查询彼此完全独立时，才允许并行调用工具。\n"
         "4. 对每个工具结果做简短验证（is_valid, found 等标志位）再继续。\n"
         "5. 如果你发现方法无效或工具连续报错，应调用 tool_report_failure 或 tool_task_stop，而不是重复同一个失败调用。\n"
-        "6. 结束前必须调用 tool_task_complete，再用极简专业的自然语言汇报结果，引用关键数值并指出 artifact 指针。\n"
+        "6. 结束前必须调用 tool_task_complete，并在 `xml_report` 中只上报状态、artifact id、关键指标和简短总结；不要把原始坐标、SDF、PDBQT 或长日志塞进 XML。\n"
         "</identity>"
         + _CHEM_FOOTER
     )
 
 
-def _custom_prompt(custom_instructions: str) -> str:
+def _custom_prompt(custom_instructions: str, skill_markdown: str = "") -> str:
     if custom_instructions.strip():
         body = custom_instructions.strip()
     else:
@@ -133,10 +133,20 @@ def _custom_prompt(custom_instructions: str) -> str:
             "你是一个专项化学信息学子智能体。"
             "按照上下文中的任务描述执行，使用可用工具，返回简洁结论。"
         )
+    skill_block = ""
+    if skill_markdown.strip():
+        skill_block = (
+            "\n\n<loaded_skills>\n"
+            "以下本地 Skill Markdown 为当前 custom 子智能体的唯一专项操作指南。"
+            "仅在与任务相关时应用这些规则，且优先保持 artifact-only 汇报边界。\n"
+            f"{skill_markdown.strip()}\n"
+            "</loaded_skills>"
+        )
     return (
         "<identity>\n"
         f"{body}\n"
         "</identity>"
+        f"{skill_block}"
         + _CHEM_FOOTER
     )
 
@@ -147,6 +157,7 @@ def _custom_prompt(custom_instructions: str) -> str:
 def get_sub_agent_prompt(
     mode: SubAgentMode,
     custom_instructions: str = "",
+    skill_markdown: str = "",
 ) -> str:
     """Return the system prompt for a sub-agent of the given *mode*.
 
@@ -157,6 +168,9 @@ def get_sub_agent_prompt(
     custom_instructions:
         Only used when ``mode == SubAgentMode.custom``.  Replaces the default
         identity block with the caller's instructions.
+    skill_markdown:
+        Only used when ``mode == SubAgentMode.custom``. Injects local Markdown
+        skills loaded on demand for the custom sub-agent.
     """
     match mode:
         case SubAgentMode.explore:
@@ -166,6 +180,6 @@ def get_sub_agent_prompt(
         case SubAgentMode.general:
             return _general_prompt()
         case SubAgentMode.custom:
-            return _custom_prompt(custom_instructions)
+            return _custom_prompt(custom_instructions, skill_markdown)
         case _:
             return _general_prompt()

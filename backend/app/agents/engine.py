@@ -355,6 +355,26 @@ class ChemSessionEngine:
             "turn_id": self.turn_id,
         }
 
+    def _usage_dict(
+        self,
+        *,
+        node: str,
+        model: str | None,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+    ) -> dict[str, Any]:
+        return {
+            "type": "usage",
+            "node": node,
+            "model": model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "session_id": self.session_id,
+            "turn_id": self.turn_id,
+        }
+
     # ── Outer generator ────────────────────────────────────────────────────────
 
     async def submit_message(
@@ -362,6 +382,7 @@ class ChemSessionEngine:
         *,
         message: str,
         history: list[Any] | None = None,
+        model: str | None = None,
         active_smiles: str | None = None,
         interrupt_context: dict | None = None,
     ) -> AsyncGenerator[str, None]:
@@ -413,6 +434,7 @@ class ChemSessionEngine:
 
         initial_state: ChemState = {
             "messages": initial_messages,
+            "selected_model": model,
             "artifacts": [],
             "molecule_workspace": [],
             "tasks": [],
@@ -732,6 +754,34 @@ class ChemSessionEngine:
                             category="llm",
                             importance="high",
                             group_key="llm_reasoning",
+                        )
+                    )
+
+            usage_metadata = getattr(output_msg, "usage_metadata", None) or {}
+            if isinstance(usage_metadata, dict) and usage_metadata:
+                input_tokens = int(usage_metadata.get("input_tokens") or 0)
+                output_tokens = int(
+                    usage_metadata.get("output_tokens")
+                    or usage_metadata.get("completion_tokens")
+                    or 0
+                )
+                total_tokens = int(
+                    usage_metadata.get("total_tokens")
+                    or (input_tokens + output_tokens)
+                )
+                response_metadata = getattr(output_msg, "response_metadata", None) or {}
+                model_name = None
+                if isinstance(response_metadata, dict):
+                    model_name = response_metadata.get("model_name") or response_metadata.get("model")
+
+                if input_tokens or output_tokens or total_tokens:
+                    results.append(
+                        self._usage_dict(
+                            node=node_name,
+                            model=str(model_name) if model_name else None,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            total_tokens=total_tokens,
                         )
                     )
 

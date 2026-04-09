@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 from rdkit import Chem
 from tavily import TavilyClient
 
-from app.agents.decorators import safe_chem_tool
+from app.agents.decorators import chem_tool
 from app.agents.utils import strip_binary_fields
 from app.tools.babel.prep import ALL_BABEL_TOOLS
 from app.chem.rdkit_ops import (
@@ -108,8 +108,7 @@ async def _resolve_smiles_from_artifact(artifact_id: str, fallback_smiles: str) 
 
 # ── T1: Validate & Canonicalize SMILES ───────────────────────────────────────
 
-@tool
-@safe_chem_tool()
+@chem_tool(tier="L1")
 def tool_validate_smiles(smiles: Annotated[str, "SMILES string to validate"]) -> str:
     """Validate a SMILES string and return its RDKit canonical form, formula,
     and atom/bond statistics.  Returns JSON with is_valid flag."""
@@ -121,8 +120,7 @@ def tool_validate_smiles(smiles: Annotated[str, "SMILES string to validate"]) ->
 
 # ── T3: Comprehensive Molecular Descriptors ──────────────────────────────────
 
-@tool
-@safe_chem_tool()
+@chem_tool(tier="L1")
 async def tool_evaluate_molecule(
     smiles: Annotated[str | None, "SMILES string of the molecule (optional when artifact_id is provided)"] = None,
     name: Annotated[str, "Common or IUPAC name of the compound (optional)"] = "",
@@ -199,8 +197,7 @@ async def tool_evaluate_molecule(
 
 # ── T3: Comprehensive Molecular Descriptors ──────────────────────────────────
 
-@tool
-@safe_chem_tool()
+@chem_tool(tier="L1")
 async def tool_compute_descriptors(
     smiles: Annotated[str | None, "SMILES string of the molecule (optional when artifact_id is provided)"] = None,
     name: Annotated[str, "Common or IUPAC name of the compound (optional)"] = "",
@@ -246,8 +243,7 @@ async def tool_compute_descriptors(
 
 # ── T4: Tanimoto Similarity ───────────────────────────────────────────────────
 
-@tool
-@safe_chem_tool()
+@chem_tool(tier="L1")
 def tool_compute_similarity(
     smiles1: Annotated[str, "SMILES of the first molecule"],
     smiles2: Annotated[str, "SMILES of the second molecule"],
@@ -265,8 +261,7 @@ def tool_compute_similarity(
 
 # ── T5: Substructure Match + PAINS Screen ─────────────────────────────────────
 
-@tool
-@safe_chem_tool()
+@chem_tool(tier="L1")
 def tool_substructure_match(
     smiles: Annotated[str, "SMILES of the target molecule"],
     smarts_pattern: Annotated[str, "SMARTS pattern to search for (e.g. functional group)"],
@@ -296,8 +291,7 @@ def tool_substructure_match(
 
 # ── T6: Murcko Scaffold Extraction ───────────────────────────────────────────
 
-@tool
-@safe_chem_tool()
+@chem_tool(tier="L1")
 def tool_murcko_scaffold(
     smiles: Annotated[str, "SMILES of the molecule to decompose"],
 ) -> str:
@@ -312,8 +306,7 @@ def tool_murcko_scaffold(
 
 # ── T9: Salt Stripping & Neutralization ───────────────────────────────────────
 
-@tool
-@safe_chem_tool()
+@chem_tool(tier="L1")
 def tool_strip_salts(
     smiles: Annotated[str, "SMILES string possibly containing salt counterions"],
 ) -> str:
@@ -328,8 +321,7 @@ def tool_strip_salts(
 
 # ── T7: 2D Structure Rendering (returns bare base64 PNG) ─────────────────────
 
-@tool
-@safe_chem_tool()
+@chem_tool(tier="L1")
 def tool_render_smiles(
     smiles: Annotated[str, "Canonical SMILES to render as a 2D structure image"],
     highlight_atoms: Annotated[list[int], "Optional atom indices to highlight in the rendered image"] = [],
@@ -388,7 +380,7 @@ _TAVILY_MAX_RESULTS = 8
 _TAVILY_SEARCH_DEPTH = "advanced"
 
 
-@tool
+@chem_tool(tier="L1")
 async def tool_pubchem_lookup(
     name: Annotated[str, "Drug or compound name (e.g. 'azithromycin', 'aspirin')"],
 ) -> str:
@@ -481,7 +473,7 @@ async def _tool_web_search_serper(
     return json.dumps({"status": "success", "query": query, "results": results}, ensure_ascii=False)
 
 
-@tool
+@chem_tool(tier="L1")
 async def tool_web_search(
     query: Annotated[str, "Search query (e.g. 'azithromycin clinical trials 2024')"],
 ) -> str:

@@ -11,9 +11,9 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from app.agents.subagent_protocol import RecoveryAction
-from app.agents.lg_tools import ALL_CHEM_TOOLS
 from app.agents.postprocessors import TOOL_POSTPROCESSORS
 from app.agents.state import ChemState, MoleculeWorkspaceEntry, Task, TaskStatus
+from app.agents.tool_registry import get_root_tools
 from app.agents.utils import (
     apply_active_smiles_update,
     dispatch_task_update,
@@ -29,7 +29,7 @@ from app.agents.utils import (
 from app.core.plan_store import read_plan_file
 from app.core.artifact_store import get_engine_artifact
 
-_TOOL_LOOKUP = {tool.name: tool for tool in ALL_CHEM_TOOLS}
+_TOOL_LOOKUP = {tool.name: tool for tool in get_root_tools()}
 logger = logging.getLogger(__name__)
 _MAX_PARENT_ARTIFACT_IDS = 8
 _SUB_AGENT_VERBOSE_LOGS = os.environ.get("CHEMAGENT_SUB_AGENT_VERBOSE_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}

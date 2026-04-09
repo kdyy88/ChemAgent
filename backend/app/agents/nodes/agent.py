@@ -8,9 +8,9 @@ from langchain_core.messages import SystemMessage
 
 logger = logging.getLogger(__name__)
 
-from app.agents.lg_tools import ALL_CHEM_TOOLS
 from app.agents.prompts import get_system_prompt
 from app.agents.state import ChemState
+from app.agents.tool_registry import get_root_tools
 from app.agents.config import get_active_model_name, is_native_reasoning_model, _load_environment
 from app.agents.utils import build_llm, format_tasks_for_prompt, normalize_messages_for_api, sanitize_messages_for_state
 from app.agents.utils import format_molecule_workspace_for_prompt
@@ -68,8 +68,9 @@ def _log_response_summary(response: object) -> None:
 
 
 async def chem_agent_node(state: ChemState) -> dict:
-    llm = build_llm()
-    llm_with_tools = llm.bind_tools(ALL_CHEM_TOOLS)
+    selected_model = state.get("selected_model")
+    llm = build_llm(model=selected_model)
+    llm_with_tools = llm.bind_tools(get_root_tools())
 
     # ⚡ JIT normalization: fix any broken message sequences (e.g. dangling
     # tool_calls left by a user-interrupted request) in memory before the API
@@ -91,8 +92,8 @@ async def chem_agent_node(state: ChemState) -> dict:
             state.get("active_smiles"),
         ),
         "task_plan": format_tasks_for_prompt(state.get("tasks")),
-        "model_name": get_active_model_name(),
-        "is_native_reasoning_model": is_native_reasoning_model(get_active_model_name()),
+        "model_name": get_active_model_name(selected_model),
+        "is_native_reasoning_model": is_native_reasoning_model(get_active_model_name(selected_model)),
     }
 
     prompt_messages = [

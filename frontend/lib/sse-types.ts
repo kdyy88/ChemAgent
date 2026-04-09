@@ -74,6 +74,28 @@ export interface SSETaskItem {
   status: TaskStatus
 }
 
+export interface ChatModelOption {
+  id: string
+  label: string
+  is_default: boolean
+  is_reasoning: boolean
+  max_context_tokens: number
+}
+
+export interface ChatModelCatalogResponse {
+  source: 'provider' | 'fallback'
+  models: ChatModelOption[]
+  warning?: string | null
+}
+
+export interface SSEUsageSnapshot {
+  node: string
+  model?: string | null
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+}
+
 
 // ── SSE event union ───────────────────────────────────────────────────────────
 
@@ -97,6 +119,12 @@ export interface SSENodeStart {
 export interface SSENodeEnd {
   type: 'node_end'
   node: 'task_router' | 'planner_node' | 'chem_agent' | 'tools_executor'
+  session_id: string
+  turn_id: string
+}
+
+export interface SSEUsage extends SSEUsageSnapshot {
+  type: 'usage'
   session_id: string
   turn_id: string
 }
@@ -259,6 +287,7 @@ export interface InterruptContext {
 export interface SSESendMessageOptions {
   activeSmiles?: string | null
   interruptContext?: InterruptContext
+  model?: string | null
 }
 
 export interface SSEToolCall {
@@ -280,6 +309,7 @@ export type SSEEvent =
   | SSERunStarted
   | SSENodeStart
   | SSENodeEnd
+  | SSEUsage
   | SSEToken
   | SSEToolStart
   | SSEToolEnd
@@ -301,6 +331,7 @@ export type NodeStatus = 'idle' | 'running' | 'done'
 
 export interface SSETurn {
   turnId: string
+  modelId?: string | null
   userMessage: string
   /** Streaming / final assistant answer (assembled from token events). */
   assistantText: string
@@ -324,4 +355,5 @@ export interface SSETurn {
   pendingApproval?: SSEPendingApproval
   /** Unified reasoning stream shown in the chain-of-thought area. */
   thinkingSteps: SSEThinking[]
+  usage?: SSEUsageSnapshot
 }

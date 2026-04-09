@@ -6,7 +6,7 @@ import time
 import pytest
 from langchain_core.tools import tool
 
-from app.agents.decorators import safe_chem_tool
+from app.agents.decorators import CHEM_TIER_METADATA_KEY, chem_tool, safe_chem_tool
 
 
 def _mock_crash() -> str:
@@ -37,6 +37,12 @@ async def _safe_async_crash() -> str:
 @safe_chem_tool(timeout=1.0)
 def _tool_mock_crash(smiles: str) -> str:
     """Raise a deterministic error so the LangChain tool wrapper can be tested."""
+    raise ValueError(f"invalid smiles: {smiles}")
+
+
+@chem_tool(tier="L1", timeout=1.0)
+def _chem_tool_mock_crash(smiles: str) -> str:
+    """Raise a deterministic error so the unified chemistry tool can be tested."""
     raise ValueError(f"invalid smiles: {smiles}")
 
 
@@ -77,3 +83,20 @@ async def test_safe_chem_tool_preserves_langchain_tool_compatibility() -> None:
     assert payload["tool_name"] == "_tool_mock_crash"
     assert payload["error_type"] == "ValueError"
     assert "invalid smiles" in payload["details"].lower()
+
+
+@pytest.mark.asyncio
+async def test_chem_tool_wraps_safe_boundary_and_langchain_registration() -> None:
+    payload = json.loads(await _chem_tool_mock_crash.ainvoke({"smiles": "CCO"}))
+
+    assert payload["status"] == "error"
+    assert payload["tool_name"] == "_chem_tool_mock_crash"
+    assert _chem_tool_mock_crash.metadata[CHEM_TIER_METADATA_KEY] == "L1"
+
+
+def test_chem_tool_preserves_function_schema_metadata() -> None:
+    schema = _chem_tool_mock_crash.args_schema.model_json_schema()
+
+    assert _chem_tool_mock_crash.name == "_chem_tool_mock_crash"
+    assert schema["properties"]["smiles"]["type"] == "string"
+    assert CHEM_TIER_METADATA_KEY in _chem_tool_mock_crash.metadata

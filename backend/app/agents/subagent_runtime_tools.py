@@ -9,9 +9,11 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from app.agents.subagent_protocol import (
+    build_subagent_report_xml,
     ExitPlanModePayload,
     FailureCategory,
     PlanPointer,
+    parse_subagent_report_xml,
     RecoveryAction,
     ReportFailurePayload,
     ScratchpadKind,
@@ -64,6 +66,10 @@ class TaskCompleteArgs(BaseModel):
     produced_artifact_ids: list[str] = Field(default_factory=list, description="Artifact ids created or selected during execution.")
     metrics: dict[str, Any] = Field(default_factory=dict, description="Structured completion metrics.")
     advisory_active_smiles: str = Field(default="", description="Optional advisory active SMILES for the parent graph.")
+    xml_report: str = Field(
+        default="",
+        description="Canonical <subagent_report> XML payload. If omitted, the runtime will build one from the structured fields.",
+    )
 
 
 class WritePlanArgs(BaseModel):
@@ -152,6 +158,7 @@ def tool_task_complete(
     produced_artifact_ids: list[str] | None = None,
     metrics: dict[str, Any] | None = None,
     advisory_active_smiles: str = "",
+    xml_report: str = "",
 ) -> str:
     """Finalize the sub-agent run with a structured payload for the parent graph."""
     artifact_ids = [
@@ -159,20 +166,29 @@ def tool_task_complete(
         for artifact_id in (produced_artifact_ids or [])
         if str(artifact_id).strip()
     ]
+    canonical_xml = xml_report.strip() or build_subagent_report_xml(
+        status="completed",
+        summary=summary,
+        artifact_ids=artifact_ids,
+        metrics=metrics or {},
+        advisory_active_smiles=advisory_active_smiles.strip(),
+    )
+    payload = parse_subagent_report_xml(canonical_xml)
     logger.info(
         "[TASK COMPLETE] summary=%r artifacts=%s smiles=%r metrics_keys=%s",
-        (summary or "")[:120],
-        artifact_ids,
-        (advisory_active_smiles or "")[:60],
-        list((metrics or {}).keys()),
+        payload.summary[:120],
+        payload.produced_artifact_ids,
+        payload.advisory_active_smiles[:60],
+        list(payload.metrics.keys()),
     )
     return json.dumps(
         {
             "status": "completed",
-            "summary": summary,
-            "produced_artifact_ids": artifact_ids,
-            "metrics": metrics or {},
-            "advisory_active_smiles": advisory_active_smiles.strip(),
+            "summary": payload.summary,
+            "produced_artifact_ids": payload.produced_artifact_ids,
+            "metrics": payload.metrics,
+            "advisory_active_smiles": payload.advisory_active_smiles,
+            "xml_report": payload.xml_report,
         },
         ensure_ascii=False,
     )

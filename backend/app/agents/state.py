@@ -51,6 +51,7 @@ class SubtaskStatePointer(TypedDict):
 
 class ChemState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
+    selected_model: str | None
     active_smiles: str | None
     artifacts: Annotated[list[dict], operator.add]
     molecule_workspace: list[MoleculeWorkspaceEntry]

@@ -4,8 +4,6 @@ import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
 import { FlaskConical, Trash2 } from 'lucide-react'
 import { useSSEChemAgent } from '@/hooks/useSSEChemAgent'
-import { useWorkspaceStore } from '@/store/workspaceStore'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ModeToggle } from '@/components/ui/ModeToggle'
 import { SSEMessageList } from './SSEMessageList'
@@ -16,11 +14,7 @@ import '@/lib/i18n/client'
 export function CopilotSidebar() {
   const { t } = useTranslation('common')
   const { turns, isStreaming, sendMessage, clearTurns } = useSSEChemAgent()
-  const { currentSmiles, currentName } = useWorkspaceStore()
   const latestTasks = turns.at(-1)?.tasks ?? []
-
-  const hasSmiles = Boolean(currentSmiles)
-  const smilesLabel = currentName || (currentSmiles ? currentSmiles.slice(0, 22) + (currentSmiles.length > 22 ? '…' : '') : '')
 
   return (
     <div className="relative flex h-full flex-col border-l bg-muted/10 shadow-inner">
@@ -80,7 +74,6 @@ export function CopilotSidebar() {
           <SSEChatInput
             isStreaming={isStreaming}
             sendMessage={sendMessage}
-            clearTurns={clearTurns}
           />
         </div>
       </div>

@@ -14,6 +14,7 @@ import type {
   SSETaskItem,
   SSETaskUpdate,
   SSEThinking,
+  SSEUsage,
 } from '@/lib/sse-types'
 import { translateStreamError } from '@/lib/i18n/sse-interceptor'
 
@@ -40,6 +41,7 @@ interface SSEClientHandlers {
   updateTasks: (tasks: SSETaskItem[]) => void
   addShadowError: (error: SSEShadowError) => void
   appendThinking: (thinking: SSEThinking) => void
+  recordUsage: (usage: SSEUsage) => void
   setPendingInterrupt: (interrupt: SSEPendingInterrupt) => void
   setPendingApproval: (approval: SSEPendingApproval) => void
   completeTurn: () => void
@@ -104,6 +106,7 @@ export class SSEClient {
           message,
           session_id: this.sessionId,
           turn_id: turnId,
+          model: options.model ?? null,
           active_smiles: options.activeSmiles ?? null,
           interrupt_context: options.interruptContext ?? null,
         }),
@@ -188,6 +191,10 @@ export class SSEClient {
           return
         }
         handlers.appendAssistantText(ev.content)
+        return
+
+      case 'usage':
+        handlers.recordUsage(ev as SSEUsage)
         return
 
       case 'tool_start': {

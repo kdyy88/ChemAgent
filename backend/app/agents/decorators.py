@@ -9,7 +9,10 @@ import os
 import traceback
 from functools import wraps
 from queue import Empty
-from typing import Any, Callable, ParamSpec
+from typing import Any, Callable, Literal, ParamSpec
+
+from langchain_core.tools import tool
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +22,11 @@ DEFAULT_CHEM_TOOL_TIMEOUT_SECONDS = 30.0
 _TRACEBACK_LINE_LIMIT = 18
 _TRACEBACK_CHAR_LIMIT = 4000
 _SYNC_CALLABLE_REGISTRY: dict[str, Callable[..., Any]] = {}
+
+CHEM_TIER_METADATA_KEY = "chem_tier"
+CHEM_TIMEOUT_METADATA_KEY = "chem_timeout_seconds"
+CHEM_ROUTE_HINT_METADATA_KEY = "chem_route_hint"
+ChemToolTier = Literal["L1", "L2"]
 
 
 class TimeoutException(TimeoutError):
@@ -248,5 +256,40 @@ def safe_chem_tool(timeout: float = DEFAULT_CHEM_TOOL_TIMEOUT_SECONDS) -> Callab
                 )
 
         return sync_wrapper
+
+    return decorator
+
+
+def chem_tool(
+    *,
+    tier: ChemToolTier,
+    timeout: float = DEFAULT_CHEM_TOOL_TIMEOUT_SECONDS,
+    args_schema: type[BaseModel] | None = None,
+    metadata: dict[str, Any] | None = None,
+    route_hint: str | None = None,
+) -> Callable[[Callable[P, Any]], Any]:
+    """Register a chemistry tool with unified safety and tier metadata.
+
+    This keeps LangChain registration, timeout/error boundaries, and tool tier
+    metadata co-located so tool classification can be derived from the tool
+    object instead of scattered decorator stacks and side tables.
+    """
+
+    merged_metadata = dict(metadata or {})
+    merged_metadata[CHEM_TIER_METADATA_KEY] = tier
+    merged_metadata[CHEM_TIMEOUT_METADATA_KEY] = max(float(timeout), 0.1)
+    if route_hint:
+        merged_metadata[CHEM_ROUTE_HINT_METADATA_KEY] = route_hint
+
+    def decorator(func: Callable[P, Any]) -> Any:
+        safe_callable = safe_chem_tool(timeout=timeout)(func)
+        tool_kwargs: dict[str, Any] = {}
+        if args_schema is not None:
+            tool_kwargs["args_schema"] = args_schema
+
+        registered_tool = tool(**tool_kwargs)(safe_callable)
+        existing_metadata = getattr(registered_tool, "metadata", None) or {}
+        registered_tool.metadata = {**existing_metadata, **merged_metadata}
+        return registered_tool
 
     return decorator

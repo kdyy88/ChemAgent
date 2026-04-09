@@ -85,7 +85,7 @@ export default function Home() {
               <ToolSidebar />
             </ResizablePanel>
             <ResizableHandle withHandle />
-            <ResizablePanel defaultSize={60} minSize="40%">
+            <ResizablePanel defaultSize={60} minSize="30%">
               <div className="h-full w-full mx-auto max-w-4xl ">
                 <WorkspaceArea />
               </div>

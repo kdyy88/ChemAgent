@@ -17,7 +17,8 @@ import pytest
 
 from app.agents.subagent_protocol import ScratchpadKind, ScratchpadRef
 from app.agents.sub_agent_prompts import SubAgentMode, get_sub_agent_prompt
-from app.agents.tool_registry import ALWAYS_DENIED, get_tools_for_mode
+from app.agents.tool_registry import ALWAYS_DENIED, get_root_tools, get_tool_tier, get_tools_for_mode
+from app.agents.skills import load_required_skill_markdown
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -129,6 +130,21 @@ class TestToolRegistry:
         tools = get_tools_for_mode(SubAgentMode.custom, None)
         assert tools == []
 
+    def test_root_tools_are_resolved_via_registry(self) -> None:
+        tools = get_root_tools()
+        names = {t.name for t in tools}
+
+        assert "tool_validate_smiles" in names
+        assert "tool_run_sub_agent" in names
+        assert "tool_ask_human" in names
+
+    def test_tool_tier_reads_metadata_for_migrated_tools(self) -> None:
+        tools = get_root_tools()
+        tool_map = {tool.name: tool for tool in tools}
+
+        assert get_tool_tier(tool_map["tool_compute_descriptors"]) == "L1"
+        assert get_tool_tier(tool_map["tool_build_3d_conformer"]) == "L2"
+
 
 class TestWebSearchTool:
     async def test_web_search_uses_tavily(self) -> None:
@@ -220,6 +236,42 @@ class TestSubAgentPrompts:
     def test_custom_mode_fallback_without_instructions(self) -> None:
         prompt = get_sub_agent_prompt(SubAgentMode.custom, custom_instructions="")
         assert len(prompt) > 50  # Falls back to default body
+
+    def test_custom_mode_can_inject_loaded_skills(self) -> None:
+        prompt = get_sub_agent_prompt(
+            SubAgentMode.custom,
+            custom_instructions="专注 RDKit 描述符分析",
+            skill_markdown="<skill name=\"rdkit\">Use tool_evaluate_molecule</skill>",
+        )
+
+        assert "<loaded_skills>" in prompt
+        assert "Use tool_evaluate_molecule" in prompt
+
+    def test_builtin_modes_ignore_skill_markdown_argument(self) -> None:
+        prompt = get_sub_agent_prompt(
+            SubAgentMode.explore,
+            skill_markdown="<skill name=\"rdkit\">ignored</skill>",
+        )
+
+        assert "<loaded_skills>" not in prompt
+        assert "ignored" not in prompt
+
+
+class TestSkillLoader:
+    def test_load_required_skill_markdown_reads_local_skill(self) -> None:
+        markdown = load_required_skill_markdown(["rdkit"])
+
+        assert '<skill name="rdkit">' in markdown
+        assert "tool_evaluate_molecule" in markdown
+
+    def test_load_required_skill_markdown_deduplicates_names(self) -> None:
+        markdown = load_required_skill_markdown(["rdkit", "rdkit"])
+
+        assert markdown.count('<skill name="rdkit">') == 1
+
+    def test_load_required_skill_markdown_rejects_missing_skill(self) -> None:
+        with pytest.raises(FileNotFoundError, match="Skill markdown not found"):
+            load_required_skill_markdown(["missing_skill_xyz"])
 
     def test_explore_prompt_forces_chem_tools(self) -> None:
         prompt = get_sub_agent_prompt(SubAgentMode.explore)

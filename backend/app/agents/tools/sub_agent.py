@@ -71,6 +71,7 @@ from app.agents.subagent_protocol import (
     TaskStopPayload,
     format_delegation_prompt,
 )
+from app.agents.skills import load_required_skill_markdown
 from app.agents.tool_registry import SubAgentMode, get_tools_for_mode
 from app.core.scratchpad_store import create_scratchpad_entry
 
@@ -419,6 +420,13 @@ class RunSubAgentArgs(BaseModel):
             "non existent 或被永久禁用的工具会报错。"
         ),
     )
+    required_skills: list[str] = Field(
+        default_factory=list,
+        description=(
+            "仅 mode=custom 有效：按需加载的本地 Skill Markdown 名称列表（不带 .md 后缀），"
+            "例如 ['rdkit']。"
+        ),
+    )
     task_kind: str = Field(
         default=SubAgentTaskKind.extract_facts.value,
         description="结构化任务类型：extract_facts / compare_scaffolds / propose_scaffold / validate_candidate。",
@@ -444,6 +452,7 @@ async def tool_run_sub_agent(
     artifact_ids: list[str] | None = None,
     custom_instructions: str = "",
     custom_tools: list[str] | None = None,
+    required_skills: list[str] | None = None,
     task_kind: str = SubAgentTaskKind.extract_facts.value,
     output_contract: str = SubAgentOutputContract.bullet_summary.value,
     smiles_policy: str = SubAgentSmilesPolicy.forbid_new.value,
@@ -545,6 +554,13 @@ async def tool_run_sub_agent(
     except ValueError as exc:
         return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
 
+    skill_markdown = ""
+    if sub_agent_mode == SubAgentMode.custom:
+        try:
+            skill_markdown = load_required_skill_markdown(required_skills or None)
+        except (FileNotFoundError, ValueError) as exc:
+            return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
+
     # ── Shared checkpointer (MUST be the SQLite instance) ─────────────────────
     try:
         from app.agents.runtime import get_checkpointer  # noqa: PLC0415
@@ -558,6 +574,7 @@ async def tool_run_sub_agent(
         filtered_tools,
         checkpointer,
         custom_instructions=custom_instructions or "",
+        skill_markdown=skill_markdown,
     )
 
     # ── UUID-backed thread isolation ─────────────────────────────────────────
@@ -750,7 +767,7 @@ async def tool_run_sub_agent(
             {
                 key: value
                 for key, value in completion_payload.items()
-                if key in {"summary", "produced_artifact_ids", "metrics", "advisory_active_smiles"}
+                if key in {"summary", "produced_artifact_ids", "metrics", "advisory_active_smiles", "xml_report"}
             }
         )
 

@@ -8,6 +8,7 @@
 
 import { create } from 'zustand'
 import type {
+  ChatModelOption,
   SSEArtifactEvent,
   SSEPendingApproval,
   SSEPendingInterrupt,
@@ -15,8 +16,11 @@ import type {
   SSEShadowError,
   SSETaskItem,
   SSEThinking,
+  SSEUsage,
+  SSEUsageSnapshot,
   SSETurn,
 } from '@/lib/sse-types'
+import { fetchAvailableModels } from '@/lib/chat-api'
 import { sseClient } from '@/services/sse-client'
 import { useWorkspaceStore } from '@/store/workspaceStore'
 import {
@@ -143,6 +147,7 @@ function summarizeSubAgentCompletion(output: Record<string, unknown>): string {
 function createTurn(turnId: string, message: string, tasks: SSETaskItem[]): SSETurn {
   return {
     turnId,
+    modelId: null,
     userMessage: message,
     assistantText: '',
     isStreaming: true,
@@ -155,15 +160,49 @@ function createTurn(turnId: string, message: string, tasks: SSETaskItem[]): SSET
     pendingInterrupt: undefined,
     pendingApproval: undefined,
     thinkingSteps: [],
+    usage: undefined,
+  }
+}
+
+function createUsageSnapshot(usage: SSEUsage): SSEUsageSnapshot {
+  return {
+    node: usage.node,
+    model: usage.model ?? null,
+    input_tokens: usage.input_tokens,
+    output_tokens: usage.output_tokens,
+    total_tokens: usage.total_tokens,
+  }
+}
+
+function createEmptyUsageTotals() {
+  return {
+    input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    event_count: 0,
+    last_model: null as string | null,
   }
 }
 
 export interface SseState {
   turns: SSETurn[]
   isStreaming: boolean
+  availableModels: ChatModelOption[]
+  modelsStatus: 'idle' | 'loading' | 'ready' | 'error'
+  modelsError: string | null
+  selectedModelId: string | null
+  sessionUsage: {
+    input_tokens: number
+    output_tokens: number
+    total_tokens: number
+    event_count: number
+    last_model: string | null
+  }
   clearTurns: () => void
+  loadAvailableModels: () => Promise<void>
+  selectModel: (modelId: string) => void
   sendMessage: (message: string, options?: SSESendMessageOptions) => Promise<void>
-  startTurn: (turnId: string, message: string, tasks: SSETaskItem[]) => void
+  startTurn: (turnId: string, message: string, tasks: SSETaskItem[], modelId?: string | null) => void
   appendAssistantText: (text: string) => void
   replaceAssistantText: (text: string) => void
   setActiveNode: (node: string) => void
@@ -173,6 +212,7 @@ export interface SseState {
   addArtifact: (artifact: SSEArtifactEvent) => void
   updateTasks: (tasks: SSETaskItem[]) => void
   addShadowError: (error: SSEShadowError) => void
+  recordUsage: (usage: SSEUsage) => void
   setPendingInterrupt: (interrupt: SSEPendingInterrupt) => void
   setPendingApproval: (approval: SSEPendingApproval) => void
   approveToolCall: (action: 'approve' | 'reject' | 'modify', args?: Record<string, unknown>) => Promise<void>
@@ -210,25 +250,75 @@ export const useSseStore = create<SseState>((set, get) => {
   return {
     turns: [],
     isStreaming: false,
+    availableModels: [],
+    modelsStatus: 'idle',
+    modelsError: null,
+    selectedModelId: null,
+    sessionUsage: createEmptyUsageTotals(),
 
     clearTurns: () => {
       sseClient.clearConversation()
-      set({ turns: [], isStreaming: false })
+      set((state) => ({
+        turns: [],
+        isStreaming: false,
+        sessionUsage: createEmptyUsageTotals(),
+        selectedModelId:
+          state.selectedModelId && state.availableModels.some((model) => model.id === state.selectedModelId)
+            ? state.selectedModelId
+            : state.availableModels.find((model) => model.is_default)?.id ?? state.availableModels[0]?.id ?? null,
+      }))
       const workspace = useWorkspaceStore.getState()
       workspace.setSmiles('')
       workspace.setName('')
     },
 
+    loadAvailableModels: async () => {
+      if (get().modelsStatus === 'loading') return
+
+      set({ modelsStatus: 'loading', modelsError: null })
+      try {
+        const response = await fetchAvailableModels()
+        set((state) => {
+          const fallbackModelId = response.models.find((model) => model.is_default)?.id ?? response.models[0]?.id ?? null
+          const selectedModelId =
+            state.selectedModelId && response.models.some((model) => model.id === state.selectedModelId)
+              ? state.selectedModelId
+              : fallbackModelId
+          return {
+            availableModels: response.models,
+            modelsStatus: 'ready',
+            modelsError: response.warning ?? null,
+            selectedModelId,
+          }
+        })
+      } catch (error) {
+        set({
+          modelsStatus: 'error',
+          modelsError: error instanceof Error ? error.message : String(error),
+        })
+      }
+    },
+
+    selectModel: (modelId) => {
+      if (!get().availableModels.some((model) => model.id === modelId)) return
+      set({ selectedModelId: modelId })
+    },
+
     sendMessage: async (message, options = {}) => {
       if (get().isStreaming) return
+
+      const selectedModelId = options.model ?? get().selectedModelId ?? null
 
       await sseClient.sendMessage({
         message,
         previousTasks: get().turns.at(-1)?.tasks ?? [],
-        options,
+        options: {
+          ...options,
+          model: selectedModelId,
+        },
         handlers: {
           startTurn: (turnId, userMessage, tasks) => {
-            get().startTurn(turnId, userMessage, tasks)
+            get().startTurn(turnId, userMessage, tasks, selectedModelId)
           },
           activateNode: (node) => {
             get().setActiveNode(node)
@@ -261,6 +351,9 @@ export const useSseStore = create<SseState>((set, get) => {
           appendThinking: (thinking) => {
             get().appendThinking(thinking)
           },
+          recordUsage: (usage) => {
+            get().recordUsage(usage)
+          },
           setPendingInterrupt: (interrupt) => {
             get().setPendingInterrupt(interrupt)
           },
@@ -283,9 +376,9 @@ export const useSseStore = create<SseState>((set, get) => {
       })
     },
 
-    startTurn: (turnId, message, tasks) => {
+    startTurn: (turnId, message, tasks, modelId) => {
       set((state) => ({
-        turns: [...state.turns, createTurn(turnId, message, tasks)],
+        turns: [...state.turns, { ...createTurn(turnId, message, tasks), modelId: modelId ?? state.selectedModelId }],
         isStreaming: true,
       }))
     },
@@ -385,6 +478,21 @@ export const useSseStore = create<SseState>((set, get) => {
       }))
     },
 
+    recordUsage: (usage) => {
+      updateLastTurn(() => ({
+        usage: createUsageSnapshot(usage),
+      }))
+      set((state) => ({
+        sessionUsage: {
+          input_tokens: state.sessionUsage.input_tokens + usage.input_tokens,
+          output_tokens: state.sessionUsage.output_tokens + usage.output_tokens,
+          total_tokens: state.sessionUsage.total_tokens + usage.total_tokens,
+          event_count: state.sessionUsage.event_count + 1,
+          last_model: usage.model ?? state.sessionUsage.last_model,
+        },
+      }))
+    },
+
     setPendingInterrupt: (interrupt) => {
       stopStreamingTurn((turn) => ({
         statusLabel: translateStatusLabel('awaiting_reply'),
@@ -450,6 +558,7 @@ export const useSseStore = create<SseState>((set, get) => {
         updateTasks: (tasks: SSETaskItem[]) => { get().updateTasks(tasks) },
         addShadowError: (error: SSEShadowError) => { get().addShadowError(error) },
         appendThinking: (thinking: SSEThinking) => { get().appendThinking(thinking) },
+        recordUsage: (usage: SSEUsage) => { get().recordUsage(usage) },
         setPendingInterrupt: (interrupt: SSEPendingInterrupt) => { get().setPendingInterrupt(interrupt) },
         setPendingApproval: (approval: SSEPendingApproval) => { get().setPendingApproval(approval) },
         completeTurn: () => { get().completeStream() },

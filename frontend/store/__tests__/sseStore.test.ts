@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SSEEvent } from '@/lib/sse-types'
 
-const { fetchEventSourceMock } = vi.hoisted(() => ({
+const { fetchAvailableModelsMock, fetchEventSourceMock } = vi.hoisted(() => ({
+  fetchAvailableModelsMock: vi.fn(),
   fetchEventSourceMock: vi.fn(),
 }))
 
 vi.mock('@microsoft/fetch-event-source', () => ({
   fetchEventSource: fetchEventSourceMock,
+}))
+
+vi.mock('@/lib/chat-api', () => ({
+  fetchAvailableModels: fetchAvailableModelsMock,
 }))
 
 import { useSseStore } from '../sseStore'
@@ -19,6 +24,17 @@ describe('sseStore', () => {
     useSseStore.setState({
       turns: [],
       isStreaming: false,
+      availableModels: [],
+      modelsStatus: 'idle',
+      modelsError: null,
+      selectedModelId: null,
+      sessionUsage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        event_count: 0,
+        last_model: null,
+      },
     })
     useWorkspaceStore.setState({
       navMode: 'business',
@@ -26,6 +42,7 @@ describe('sseStore', () => {
       currentSmiles: '',
       currentName: '',
     })
+    fetchAvailableModelsMock.mockReset()
   })
 
   afterEach(() => {
@@ -62,6 +79,23 @@ describe('sseStore', () => {
     expect(useWorkspaceStore.getState().currentSmiles).toBe('OCC')
     expect(useWorkspaceStore.getState().currentName).toBe('Ethanol')
     expect(useSseStore.getState().isStreaming).toBe(false)
+  })
+
+  it('loads available models and selects the provider default', async () => {
+    fetchAvailableModelsMock.mockResolvedValue({
+      source: 'provider',
+      warning: null,
+      models: [
+        { id: 'gpt-5.2', label: 'gpt-5.2', is_default: true, is_reasoning: true, max_context_tokens: 400000 },
+        { id: 'gpt-5-mini', label: 'gpt-5-mini', is_default: false, is_reasoning: true, max_context_tokens: 400000 },
+      ],
+    })
+
+    await useSseStore.getState().loadAvailableModels()
+
+    expect(useSseStore.getState().modelsStatus).toBe('ready')
+    expect(useSseStore.getState().selectedModelId).toBe('gpt-5.2')
+    expect(useSseStore.getState().availableModels).toHaveLength(2)
   })
 
   it('resolves the latest unfinished tool call of the same name without reverse scanning assumptions', async () => {
@@ -197,6 +231,53 @@ describe('sseStore', () => {
       status: 'in_progress',
     })
     expect(turn.statusLabel).toBe('')
+  })
+
+  it('accumulates usage events into session token totals', async () => {
+    useSseStore.setState({ selectedModelId: 'gpt-5.2' })
+
+    fetchEventSourceMock.mockImplementation(async (_url: string, options?: { onmessage?: (msg: { data: string }) => void }) => {
+      const emit = (event: SSEEvent) => {
+        options?.onmessage?.({ data: JSON.stringify(event) })
+      }
+
+      emit({ type: 'run_started', session_id: 'session-1', turn_id: 'turn-1', message: 'token test' })
+      emit({
+        type: 'usage',
+        node: 'chem_agent',
+        model: 'gpt-5.2',
+        input_tokens: 16292,
+        output_tokens: 216,
+        total_tokens: 16508,
+        session_id: 'session-1',
+        turn_id: 'turn-1',
+      })
+      emit({
+        type: 'usage',
+        node: 'planner_node',
+        model: 'gpt-5.2',
+        input_tokens: 120,
+        output_tokens: 40,
+        total_tokens: 160,
+        session_id: 'session-1',
+        turn_id: 'turn-1',
+      })
+      emit({ type: 'done', session_id: 'session-1', turn_id: 'turn-1' })
+    })
+
+    await useSseStore.getState().sendMessage('token test')
+
+    expect(useSseStore.getState().sessionUsage).toMatchObject({
+      input_tokens: 16412,
+      output_tokens: 256,
+      total_tokens: 16668,
+      event_count: 2,
+      last_model: 'gpt-5.2',
+    })
+    expect(useSseStore.getState().turns[0].usage).toMatchObject({
+      node: 'planner_node',
+      total_tokens: 160,
+    })
   })
 
   it('filters low-value thinking logs while keeping meaningful tool actions', async () => {

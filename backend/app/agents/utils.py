@@ -1065,8 +1065,8 @@ def apply_active_smiles_update(
     return parsed.get(smiles_key) or current_smiles if parsed.get(status_key) else current_smiles
 
 
-def build_llm(structured_schema: type | None = None) -> Any:
-    config_dict = build_llm_config()
+def build_llm(structured_schema: type | None = None, model: str | None = None) -> Any:
+    config_dict = build_llm_config(model)
     config = config_dict["config_list"][0]
 
     llm = ChatOpenAI(**config)
