@@ -1,0 +1,63 @@
+{
+  "node": {
+    "task_router": "🧭 Determining task complexity…",
+    "planner_node": "🗂️ Generating task plan…",
+    "chem_agent": "🧠 Agent reasoning…",
+    "tools_executor": "🛠️ Executing tools…",
+    "unknown": "{{node}} running…"
+  },
+  "status": {
+    "tool_running": "🛠️ Executing tool…",
+    "integrating_results": "🧠 Integrating tool results…",
+    "task_running": "📋 Executing task {{id}}",
+    "task_list_updated": "📋 Task list updated",
+    "shadow_error": "⚠️ Correcting structure issue…",
+    "awaiting_reply": "🙋 Awaiting your reply…",
+    "reasoning": "🧠 Agent reasoning…"
+  },
+  "thinking_panel": {
+    "header_streaming": "Thinking",
+    "header_done": "Thinking log",
+    "processing": "Processing",
+    "caption_llm_reasoning": "Model summary",
+    "caption_tool": "Tool used",
+    "caption_other": "Action",
+    "status_running": "Status: running",
+    "outputting": "Outputting",
+    "subtitle_streaming": "Thinking in real time",
+    "subtitle_done": "Expand to view full reasoning and tool steps",
+    "stages": "{{count}} stages",
+    "tool_call_fallback": "Tool call",
+    "steps": "{{count}} steps",
+    "merged_short": "Merged {{count}}",
+    "merged_updates": "Merged {{count}} similar updates",
+    "running": "Running"
+  },
+  "thinking": {
+    "structure_issue": "Structure issue detected: {{error}}",
+    "needs_clarification": "Needs user clarification: {{question}}",
+    "no_reasoning_summary": "No model reasoning summary received this iteration"
+  },
+  "error": {
+    "stream_error": "\n\n> ❌ **Error**: {{error}}",
+    "connection_lost": "❌ Connection lost: {{message}}"
+  },
+  "event": {
+    "on_chain_start": "Chain started",
+    "on_chain_end": "Chain ended",
+    "on_tool_start": "Tool call started",
+    "on_tool_end": "Tool call ended",
+    "on_chat_model_stream": "Model streaming",
+    "on_custom_event": "Custom event"
+  },
+  "reasoning": {
+    "task_router_start": "Quickly determining whether explicit task planning is needed…",
+    "task_router_end": "Complexity assessment complete.",
+    "planner_start": "Complex task detected, generating executable task plan…",
+    "planner_end": "Task plan generated, ready to enter execution phase.",
+    "agent_start": "Entering agent brain, evaluating current information and planning next action…",
+    "agent_end": "Agent completed this reasoning iteration.",
+    "executor_start": "Preparing to enter tool execution pipeline…",
+    "executor_end": "Tool call chain executed, returning experimental data to agent brain."
+  }
+}

@@ -1,105 +1,101 @@
 'use client'
 
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   FlaskConical,
   LayoutDashboard,
   Box,
-  Sparkles,
   SlidersHorizontal,
   ChevronDown,
   ChevronRight,
   Search,
   Beaker,
-  Atom,
-  Layers,
-  ArrowLeftRight,
-  FileCheck,
   Droplets,
   Home,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useWorkspaceStore, type NavMode, type FunctionId } from '@/store/workspaceStore'
+import '@/lib/i18n/client'
 
+// Trees use translation keys instead of hardcoded labels
 const SOFTWARE_TREE = [
   {
-    title: 'RDKit (Python)',
+    titleKey: 'tool_category.rdkit',
     icon: <FlaskConical className="w-3.5 h-3.5" />,
     items: [
-      { id: 'validate',     label: 'SMILES 验证' },
-      { id: 'salt-strip',   label: '脱盐与中和' },
-      { id: 'descriptors',  label: '综合分子描述符' },
-      { id: 'similarity',   label: '分子相似性' },
-      { id: 'substructure', label: '子结构搜索 / PAINS' },
-      { id: 'scaffold',     label: 'Murcko 骨架' },
+      { id: 'validate',     labelKey: 'tool_label.validate' },
+      { id: 'salt-strip',   labelKey: 'tool_label.salt_strip' },
+      { id: 'descriptors',  labelKey: 'tool_label.descriptors' },
+      { id: 'similarity',   labelKey: 'tool_label.similarity' },
+      { id: 'substructure', labelKey: 'tool_label.substructure' },
+      { id: 'scaffold',     labelKey: 'tool_label.scaffold' },
     ]
   },
   {
-    title: 'Open Babel',
+    titleKey: 'tool_category.openbabel',
     icon: <Box className="w-3.5 h-3.5" />,
     items: [
-      { id: 'mol-properties', label: '分子物理属性' },
-      { id: 'partial-charge', label: '原子偏电荷分析' },
-      { id: 'convert',        label: '分子格式转换' },
-      { id: 'conformer',      label: '3D 构象生成' },
-      { id: 'pdbqt',          label: '对接预处理 (PDBQT)' },
-      { id: 'sdf-batch',      label: 'SDF 批量处理' },
+      { id: 'mol-properties', labelKey: 'tool_label.mol_properties' },
+      { id: 'partial-charge', labelKey: 'tool_label.partial_charge' },
+      { id: 'convert',        labelKey: 'tool_label.convert' },
+      { id: 'conformer',      labelKey: 'tool_label.conformer' },
+      { id: 'pdbqt',          labelKey: 'tool_label.pdbqt' },
+      { id: 'sdf-batch',      labelKey: 'tool_label.sdf_batch' },
     ]
   }
 ]
 
 const BUSINESS_TREE = [
   {
-    title: '数据清洗与准备',
+    titleKey: 'tool_category.data_cleaning',
     icon: <Droplets className="w-3.5 h-3.5" />,
     items: [
-      { id: 'validate',   label: 'SMILES 规范化与查错' },
-      { id: 'salt-strip',   label: '脱盐与分子中和' },
+      { id: 'validate',   labelKey: 'tool_label.validate_biz' },
+      { id: 'salt-strip', labelKey: 'tool_label.salt_strip_biz' },
     ]
   },
   {
-    title: '物理化学性质',
+    titleKey: 'tool_category.physical_chem',
     icon: <Beaker className="w-3.5 h-3.5" />,
     items: [
-      { id: 'descriptors',    label: '综合描述符 (含 Lipinski / QED / SA)' },
-      { id: 'mol-properties', label: '核心物理属性 (精确质量等)' },
+      { id: 'descriptors',    labelKey: 'tool_label.descriptors_biz' },
+      { id: 'mol-properties', labelKey: 'tool_label.mol_properties_biz' },
     ]
   },
   {
-    title: '结构分析与检索',
+    titleKey: 'tool_category.structural_analysis',
     icon: <Search className="w-3.5 h-3.5" />,
     items: [
-      { id: 'similarity',   label: '相似度比对 (Tanimoto)' },
-      { id: 'substructure', label: '药效团与毒性警示 (PAINS)' },
-      { id: 'scaffold',     label: '核心骨架提取 (Murcko)' },
-      { id: 'partial-charge', label: '原子偏电荷分析' },
+      { id: 'similarity',     labelKey: 'tool_label.similarity_biz' },
+      { id: 'substructure',   labelKey: 'tool_label.substructure_biz' },
+      { id: 'scaffold',       labelKey: 'tool_label.scaffold_biz' },
+      { id: 'partial-charge', labelKey: 'tool_label.partial_charge_biz' },
     ]
   },
   {
-    title: '3D 与对接处理',
+    titleKey: 'tool_category.docking_3d',
     icon: <SlidersHorizontal className="w-3.5 h-3.5" />,
     items: [
-      { id: 'convert',   label: '格式转换' },
-      { id: 'conformer', label: '3D 构象生成' },
-      { id: 'pdbqt',     label: 'PDBQT 预处理' },
-      { id: 'sdf-batch', label: 'SDF 库批量处理' },
+      { id: 'convert',   labelKey: 'tool_label.convert_biz' },
+      { id: 'conformer', labelKey: 'tool_label.conformer_biz' },
+      { id: 'pdbqt',     labelKey: 'tool_label.pdbqt_biz' },
+      { id: 'sdf-batch', labelKey: 'tool_label.sdf_batch_biz' },
     ]
   }
 ]
 
 export function ToolSidebar() {
+  const { t } = useTranslation('common')
   const { navMode, setNavMode, activeFunctionId, setActiveFunctionId } = useWorkspaceStore()
-  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
-    'RDKit (Python)': true,
-    'Open Babel': true,
-    '数据清洗与准备': true,
-    '物理化学性质': true,
-    '结构分析与检索': true,
-    '3D 与对接处理': true,
-  })
 
-  const toggleSection = (title: string) => {
-    setExpandedSections(prev => ({ ...prev, [title]: !prev[title] }))
+  const initialExpanded = Object.fromEntries(
+    [...SOFTWARE_TREE, ...BUSINESS_TREE].map((s) => [s.titleKey, true])
+  )
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(initialExpanded)
+
+  const toggleSection = (key: string) => {
+    setExpandedSections(prev => ({ ...prev, [key]: !prev[key] }))
   }
 
   const tree = navMode === 'software' ? SOFTWARE_TREE : BUSINESS_TREE
@@ -108,22 +104,22 @@ export function ToolSidebar() {
     <div className="flex h-full bg-background border-r">
       {/* Activity Bar */}
       <div className="w-[50px] shrink-0 border-r bg-muted/30 flex flex-col items-center py-4 gap-4">
-        <button 
+        <button
           type="button"
           onClick={() => setNavMode('software')}
           className={`p-2.5 rounded-lg transition-colors ${navMode === 'software' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
-          title="按软件组件视角"
-          aria-label="软件组件视角"
+          title={t('sidebar.software_aria')}
+          aria-label={t('sidebar.software_aria')}
           aria-pressed={navMode === 'software'}
         >
           <Box className="w-5 h-5" aria-hidden="true" />
         </button>
-        <button 
+        <button
           type="button"
           onClick={() => setNavMode('business')}
           className={`p-2.5 rounded-lg transition-colors ${navMode === 'business' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
-          title="按业务场景视角"
-          aria-label="业务场景视角"
+          title={t('sidebar.business_aria')}
+          aria-label={t('sidebar.business_aria')}
           aria-pressed={navMode === 'business'}
         >
           <LayoutDashboard className="w-5 h-5" aria-hidden="true" />
@@ -134,14 +130,14 @@ export function ToolSidebar() {
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="px-4 py-3 border-b shrink-0 flex items-center justify-between h-[49px]">
           <h2 className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
-            {navMode === 'software' ? '软件组件库' : '业务场景流'}
+            {navMode === 'software' ? t('sidebar.software_header') : t('sidebar.business_header')}
           </h2>
-          <button 
+          <button
             type="button"
             onClick={() => setActiveFunctionId(null)}
             className="p-1.5 hover:bg-muted/80 rounded-md text-muted-foreground hover:text-foreground transition-colors"
-            title="回首页"
-            aria-label="回首页"
+            title={t('sidebar.home_button')}
+            aria-label={t('sidebar.home_button')}
           >
             <Home className="w-3.5 h-3.5" aria-hidden="true" />
           </button>
@@ -156,27 +152,28 @@ export function ToolSidebar() {
               transition={{ duration: 0.15, ease: "easeInOut" }}
             >
               {tree.map(section => {
-                const isExpanded = expandedSections[section.title]
+                const isExpanded = expandedSections[section.titleKey]
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const title = t(section.titleKey as any) as string
                 return (
-                  <div key={section.title} className="mb-2">
-                    <button 
+                  <div key={section.titleKey} className="mb-2">
+                    <button
                       type="button"
-                      onClick={() => toggleSection(section.title)}
+                      onClick={() => toggleSection(section.titleKey)}
                       className="flex items-center w-full px-1.5 py-1.5 text-sm font-medium text-foreground hover:bg-muted/50 rounded-md transition-colors"
                       aria-expanded={isExpanded}
-                      aria-controls={`section-${section.title}`}
+                      aria-controls={`section-${section.titleKey}`}
                     >
                       <span className="mr-1 text-muted-foreground" aria-hidden="true">
                         {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                       </span>
                       <span className="mr-1.5 text-muted-foreground" aria-hidden="true">{section.icon}</span>
-                      <span className="truncate flex-1 text-left">{section.title}</span>
+                      <span className="truncate flex-1 text-left">{title}</span>
                     </button>
-                    {/* Collapsible content animation */}
                     <AnimatePresence initial={false}>
                       {isExpanded && (
-                        <motion.div 
-                          id={`section-${section.title}`}
+                        <motion.div
+                          id={`section-${section.titleKey}`}
                           initial={{ height: 0, opacity: 0 }}
                           animate={{ height: "auto", opacity: 1 }}
                           exit={{ height: 0, opacity: 0 }}
@@ -190,7 +187,10 @@ export function ToolSidebar() {
                               onClick={() => setActiveFunctionId(item.id as FunctionId)}
                               className={`flex items-center w-full pl-6 pr-2 py-1.5 text-xs rounded-md transition-colors ${activeFunctionId === item.id ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:bg-muted text-foreground'}`}
                             >
-                              <span className="truncate flex-1 text-left">{item.label}</span>
+                              <span className="truncate flex-1 text-left">
+                               {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                                {t(item.labelKey as any) as string}
+                              </span>
                             </button>
                           ))}
                         </motion.div>

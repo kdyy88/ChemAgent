@@ -15,15 +15,21 @@ the Shadow Lab intercepts the result SMILES and runs RDKit valence checks.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
+import uuid
+from datetime import datetime, timezone
 from typing import Annotated, Literal
 from urllib.parse import quote
 
 import httpx
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
+from tavily import TavilyClient
 
+from app.agents.utils import strip_binary_fields
 from app.tools.babel.prep import ALL_BABEL_TOOLS
 from app.chem.rdkit_ops import (
     _mol_to_highlighted_png_b64,
@@ -37,13 +43,15 @@ from app.chem.rdkit_ops import (
 )
 from rdkit import Chem
 
+logger = logging.getLogger(__name__)
+
 
 # ── Helper: pretty-print dict results for LLM consumption ────────────────────
 
 def _to_text(data: dict) -> str:
     """Convert a rdkit_ops result dict to a compact JSON string for the LLM."""
-    # Remove bulky base64 image fields before handing to LLM text response
-    cleaned = {k: v for k, v in data.items() if "image" not in k and "structure" not in k}
+    # Remove bulky image/binary fields, including nested molecule previews.
+    cleaned = strip_binary_fields(data)
     return json.dumps(cleaned, ensure_ascii=False, indent=2)
 
 
@@ -61,6 +69,42 @@ def _check_smiles_input(smiles: str) -> str | None:
     return None
 
 
+def _input_missing_error() -> str:
+    return json.dumps(
+        {
+            "is_valid": False,
+            "error": "必须至少提供 `smiles` 或 `artifact_id` 之一。",
+        },
+        ensure_ascii=False,
+    )
+
+
+def _normalize_optional_text(value: str | None) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+async def _resolve_smiles_from_artifact(artifact_id: str, fallback_smiles: str) -> tuple[str, bool]:
+    """Resolve canonical SMILES from an artifact record.
+
+    Returns (smiles, from_artifact) where ``from_artifact`` is True when the
+    artifact lookup succeeded.  Falls back to ``fallback_smiles`` on miss/error
+    and logs a WARNING so the caller can audit the degraded path.
+    """
+    from app.core.artifact_store import get_engine_artifact  # noqa: PLC0415
+    try:
+        record = await get_engine_artifact(artifact_id)
+        if record and isinstance(record, dict) and record.get("canonical_smiles"):
+            logger.debug("Resolved SMILES from artifact %s", artifact_id)
+            return record["canonical_smiles"], True
+        logger.warning(
+            "artifact_id=%s not found or has no canonical_smiles — falling back to raw SMILES input",
+            artifact_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to resolve artifact %s: %s — falling back to raw SMILES input", artifact_id, exc)
+    return fallback_smiles, False
+
+
 # ── T1: Validate & Canonicalize SMILES ───────────────────────────────────────
 
 @tool
@@ -76,16 +120,123 @@ def tool_validate_smiles(smiles: Annotated[str, "SMILES string to validate"]) ->
 # ── T3: Comprehensive Molecular Descriptors ──────────────────────────────────
 
 @tool
-def tool_compute_descriptors(
-    smiles: Annotated[str, "SMILES string of the molecule"],
+async def tool_evaluate_molecule(
+    smiles: Annotated[str | None, "SMILES string of the molecule (optional when artifact_id is provided)"] = None,
     name: Annotated[str, "Common or IUPAC name of the compound (optional)"] = "",
+    artifact_id: Annotated[str | None, "Optional artifact pointer; when set, canonical_smiles is resolved from ArtifactStore"] = None,
+) -> str:
+    """Evaluate a molecule atomically via validate -> descriptors pipeline.
+
+    This tool is the preferred entrypoint for new molecule assessment because it
+    guarantees sequential execution and canonical SMILES handoff, avoiding race
+    conditions between separate validate/descriptor calls.
+    """
+    raw_smiles = _normalize_optional_text(smiles)
+    raw_artifact_id = _normalize_optional_text(artifact_id)
+    if not raw_smiles and not raw_artifact_id:
+        return _input_missing_error()
+
+    input_smiles = raw_smiles
+    from_artifact = False
+    if raw_artifact_id:
+        input_smiles, from_artifact = await _resolve_smiles_from_artifact(raw_artifact_id, raw_smiles)
+
+    if err := _check_smiles_input(input_smiles):
+        return err
+
+    validation = validate_smiles(input_smiles)
+    if not validation.get("is_valid"):
+        return _to_text(
+            {
+                "type": "evaluation",
+                "is_valid": False,
+                "artifact_id": None,
+                "parent_artifact_id": raw_artifact_id or None,
+                "from_artifact": from_artifact,
+                "validation": validation,
+                "error": validation.get("error", "SMILES validation failed"),
+            }
+        )
+
+    canonical = validation.get("canonical_smiles", input_smiles)
+    descriptors = compute_descriptors(canonical, name)
+
+    # Immutable lineage: every chemistry state transition gets a fresh artifact
+    # id.  When derived from an existing artifact, preserve provenance via
+    # parent_artifact_id instead of overwriting prior state.
+    created_artifact_id = f"art_{uuid.uuid4().hex[:8]}"
+    from app.core.artifact_store import store_engine_artifact  # noqa: PLC0415
+    record = {
+        "type": "molecule",
+        "canonical_smiles": canonical,
+        "formula": validation.get("formula") or descriptors.get("formula"),
+        "name": name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if raw_artifact_id:
+        record["parent_artifact_id"] = raw_artifact_id
+    await store_engine_artifact(created_artifact_id, record)
+
+    return _to_text(
+        {
+            "type": "evaluation",
+            "is_valid": bool(descriptors.get("is_valid", False)),
+            "artifact_id": created_artifact_id,
+            "parent_artifact_id": raw_artifact_id or None,
+            "from_artifact": from_artifact,
+            "validation": validation,
+            "descriptors": descriptors.get("descriptors"),
+            "lipinski": descriptors.get("lipinski"),
+            "formula": descriptors.get("formula") or validation.get("formula"),
+            "smiles": canonical,
+            "name": name,
+        }
+    )
+
+
+# ── T3: Comprehensive Molecular Descriptors ──────────────────────────────────
+
+@tool
+async def tool_compute_descriptors(
+    smiles: Annotated[str | None, "SMILES string of the molecule (optional when artifact_id is provided)"] = None,
+    name: Annotated[str, "Common or IUPAC name of the compound (optional)"] = "",
+    artifact_id: Annotated[str | None, "Optional artifact pointer; when set, canonical_smiles is resolved from ArtifactStore"] = None,
 ) -> str:
     """Compute comprehensive molecular descriptors including Lipinski Rule-of-5
     (MW, LogP, HBD, HBA), TPSA, QED drug-likeness score, synthetic accessibility
-    (SA Score), ring count, fraction sp3, and heavy atom count.  Returns JSON."""
-    if err := _check_smiles_input(smiles):
+    (SA Score), ring count, fraction sp3, and heavy atom count.
+
+    Prefer ``tool_evaluate_molecule`` for new molecules (atomic validate->compute).
+    This tool remains useful for incremental descriptor updates and supports
+    artifact pointers to avoid SMILES copy drift.
+    """
+    raw_smiles = _normalize_optional_text(smiles)
+    raw_artifact_id = _normalize_optional_text(artifact_id)
+    if not raw_smiles and not raw_artifact_id:
+        return _input_missing_error()
+
+    resolved_smiles = raw_smiles
+    if raw_artifact_id:
+        resolved_smiles, _ = await _resolve_smiles_from_artifact(raw_artifact_id, raw_smiles)
+
+    if err := _check_smiles_input(resolved_smiles):
         return err
-    result = compute_descriptors(smiles, name)
+    result = compute_descriptors(resolved_smiles, name)
+
+    created_artifact_id = f"art_{uuid.uuid4().hex[:8]}"
+    from app.core.artifact_store import store_engine_artifact  # noqa: PLC0415
+    record = {
+        "type": "molecule",
+        "canonical_smiles": result.get("smiles") or resolved_smiles,
+        "formula": result.get("formula"),
+        "name": name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if raw_artifact_id:
+        record["parent_artifact_id"] = raw_artifact_id
+        result["parent_artifact_id"] = raw_artifact_id
+    await store_engine_artifact(created_artifact_id, record)
+    result["artifact_id"] = created_artifact_id
     return _to_text(result)
 
 
@@ -224,6 +375,8 @@ def tool_render_smiles(
 _PUBCHEM_BASE = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
 _PUBCHEM_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 _SERPER_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+_TAVILY_MAX_RESULTS = 8
+_TAVILY_SEARCH_DEPTH = "advanced"
 
 
 @tool
@@ -286,14 +439,10 @@ async def tool_pubchem_lookup(
 _SERPER_URL = "https://google.serper.dev/search"
 
 
-@tool
-async def tool_web_search(
+async def _tool_web_search_serper(
     query: Annotated[str, "Search query (e.g. 'azithromycin clinical trials 2024')"],
 ) -> str:
-    """Search the web and medical literature for recent drug approvals, clinical
-    trial results, mechanism of action, safety data, and pharmacology news.
-    Returns a list of results with titles, URLs, and snippets.
-    Use this to find up-to-date information that may not be in training data."""
+    """Legacy Serper implementation kept for future fallback/revival."""
     api_key = os.environ.get("SERPER_API_KEY", "").strip()
     if not api_key:
         return json.dumps({
@@ -321,6 +470,68 @@ async def tool_web_search(
         results.append({"title": item.get("title", ""), "url": item.get("link", ""), "snippet": item.get("snippet", "")})
 
     return json.dumps({"status": "success", "query": query, "results": results}, ensure_ascii=False)
+
+
+@tool
+async def tool_web_search(
+    query: Annotated[str, "Search query (e.g. 'azithromycin clinical trials 2024')"],
+) -> str:
+    """Search the web and medical literature for recent drug approvals, clinical
+    trial results, mechanism of action, safety data, and pharmacology news.
+    Returns a list of results with titles, URLs, and snippets.
+    Use this to find up-to-date information that may not be in training data."""
+    api_key = os.environ.get("TAVILY_API_KEY", "").strip()
+    if not api_key:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "TAVILY_API_KEY not set — web search unavailable.",
+            },
+            ensure_ascii=False,
+        )
+
+    def _run_tavily_search() -> dict:
+        client = TavilyClient(api_key=api_key)
+        return client.search(
+            query=query,
+            search_depth=_TAVILY_SEARCH_DEPTH,
+            max_results=_TAVILY_MAX_RESULTS,
+        )
+
+    try:
+        data = await asyncio.to_thread(_run_tavily_search)
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": str(exc), "query": query}, ensure_ascii=False)
+
+    results = []
+    answer = data.get("answer") or ""
+    if answer:
+        results.append(
+            {
+                "title": "Tavily Answer",
+                "url": "",
+                "snippet": answer,
+            }
+        )
+
+    for item in data.get("results", []):
+        results.append(
+            {
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "snippet": item.get("content", "") or item.get("raw_content", "") or "",
+            }
+        )
+
+    return json.dumps(
+        {
+            "status": "success",
+            "query": query,
+            "provider": "tavily",
+            "results": results,
+        },
+        ensure_ascii=False,
+    )
 
 
 # ── Human-in-the-loop pause tool ─────────────────────────────────────────────
@@ -394,17 +605,28 @@ def tool_update_task_status(
         Literal["in_progress", "completed", "failed"],
         "New execution status for the task",
     ],
+    summary: Annotated[
+        str | None,
+        "Optional one-sentence summary of the task outcome or blocking reason",
+    ] = None,
 ) -> str:
     """Report task execution progress for planner-generated task lists.
 
-    Call this tool before starting a planned task and again after finishing it.
-    Only use task ids that already exist in the current plan.
+    Call this tool before starting a planned task only when the task spans
+    multiple rounds or needs explicit long-running UI feedback. For short tasks
+    that will complete in the current work span, you may skip the initial
+    ``in_progress`` update and report only the final ``completed``/``failed``
+    status.
+    When marking a task completed or failed, provide a short summary whenever
+    there is a concrete stage result worth carrying forward. Only use task ids
+    that already exist in the current plan.
     """
     return json.dumps(
         {
             "status": "success",
             "task_id": task_id,
             "task_status": status,
+            "summary": summary,
         },
         ensure_ascii=False,
     )
@@ -412,6 +634,7 @@ def tool_update_task_status(
 
 ALL_RDKIT_TOOLS = [
     tool_validate_smiles,
+    tool_evaluate_molecule,
     tool_compute_descriptors,
     tool_compute_similarity,
     tool_substructure_match,
@@ -424,7 +647,15 @@ ALL_RDKIT_TOOLS = [
     tool_update_task_status,
 ]
 
+# Lazy import to avoid circular dependency:
+# lg_tools → tools/sub_agent → tool_registry → lg_tools
+def _get_sub_agent_tool() -> list:
+    from app.agents.tools.sub_agent import tool_run_sub_agent  # noqa: PLC0415
+    return [tool_run_sub_agent]
+
+
 ALL_CHEM_TOOLS = [
     *ALL_RDKIT_TOOLS,
     *ALL_BABEL_TOOLS,
+    *_get_sub_agent_tool(),
 ]

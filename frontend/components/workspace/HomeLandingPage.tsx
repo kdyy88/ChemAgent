@@ -1,9 +1,12 @@
 'use client'
 
+import { useTranslation } from 'react-i18next'
 import { motion, type Variants } from 'framer-motion'
 import { Beaker, BrainCircuit, Network } from 'lucide-react'
+import '@/lib/i18n/client'
 
 export function HomeLandingPage() {
+  const { t } = useTranslation('common')
   const containerVariants: Variants = {
     hidden: { opacity: 0 },
     visible: {
@@ -84,10 +87,10 @@ export function HomeLandingPage() {
             variants={itemVariants}
             className="text-base md:text-lg text-muted-foreground font-light max-w-xl mb-12 leading-relaxed text-pretty"
           >
-            权威检索 · 结构化工具调用 · 可解释流式过程展示
+            {t('home.subtitle')}
             <br />
             <span className="text-xs tracking-widest font-mono text-muted-foreground/60 uppercase mt-1 block">
-              Authoritative · Structured · Explainable
+              {t('home.subtitle_tagline')}
             </span>
           </motion.p>
 
@@ -98,18 +101,18 @@ export function HomeLandingPage() {
           >
             <FeatureCard 
               icon={<Beaker className="h-5 w-5" />}
-              title="12+ 专业计算工具"
-              description="集成 RDKit 与 Open Babel 的结构清理、药效团分析与高通量 3D 构象优化。"
+              title={t('home.feature1_title')}
+              description={t('home.feature1_desc')}
             />
             <FeatureCard 
               icon={<BrainCircuit className="h-5 w-5" />}
-              title="Agentic 深度穿透"
-              description="对话中的上下文与侧边栏参数完美衔接，AI 可直接接管您的分子输入与参数编排。"
+              title={t('home.feature2_title')}
+              description={t('home.feature2_desc')}
             />
             <FeatureCard 
               icon={<Network className="h-5 w-5" />}
-              title="SDF 高通量处理"
-              description="百万级结构库的拆分、合并与力场打分，内存流式处理，零落盘损耗。"
+              title={t('home.feature3_title')}
+              description={t('home.feature3_desc')}
             />
           </motion.div>
         </motion.div>

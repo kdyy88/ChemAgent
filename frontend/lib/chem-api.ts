@@ -539,3 +539,30 @@ export function getSdfSplitDownloadUrl(resultId: string): string {
 export function getSdfMergeDownloadUrl(resultId: string): string {
   return `${BASE_URL}/api/babel/sdf-merge-download?result_id=${encodeURIComponent(resultId)}`
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Scratchpad
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export type ScratchpadEntry = {
+  scratchpad_id: string
+  kind: 'context' | 'report' | 'note'
+  summary: string
+  size_bytes: number
+  created_by: string
+  content: string
+}
+
+export async function fetchScratchpad(
+  scratchpadId: string,
+  sessionId: string,
+  subThreadId: string,
+): Promise<ScratchpadEntry> {
+  const url = `${BASE_URL}/api/scratchpad/${encodeURIComponent(scratchpadId)}?session_id=${encodeURIComponent(sessionId)}&sub_thread_id=${encodeURIComponent(subThreadId)}`
+  const res = await fetch(url)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body?.detail ?? `HTTP ${res.status}`)
+  }
+  return res.json() as Promise<ScratchpadEntry>
+}

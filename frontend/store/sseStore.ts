@@ -9,6 +9,7 @@
 import { create } from 'zustand'
 import type {
   SSEArtifactEvent,
+  SSEPendingApproval,
   SSEPendingInterrupt,
   SSESendMessageOptions,
   SSEShadowError,
@@ -18,6 +19,17 @@ import type {
 } from '@/lib/sse-types'
 import { sseClient } from '@/services/sse-client'
 import { useWorkspaceStore } from '@/store/workspaceStore'
+import {
+  translateNodeLabel,
+  translateStatusLabel,
+  translateConnectionError,
+  isLowValueReasoningText,
+  translateReasoningText,
+} from '@/lib/i18n/sse-interceptor'
+
+function makeApprovalStatusLabel(approval: SSEPendingApproval): string {
+  return approval.kind === 'plan' ? '⏸️ 等待计划审批' : '⏸️ 等待工具审批'
+}
 
 const WORKSPACE_SMILES_KEYS = [
   'cleaned_smiles',
@@ -25,24 +37,6 @@ const WORKSPACE_SMILES_KEYS = [
   'scaffold_smiles',
   'smiles',
 ] as const
-
-const NODE_LABELS: Record<string, string> = {
-  task_router: '🧭 正在判断任务复杂度…',
-  planner_node: '🗂️ 正在生成任务清单…',
-  chem_agent: '🧠 智能体推理中…',
-  tools_executor: '🛠️ 工具执行中…',
-}
-
-const IGNORED_LOW_VALUE_THINKING = new Set([
-  '正在快速判断这次请求是否需要显式任务规划...',
-  '复杂度判断完成。',
-  '检测到复杂任务，正在生成可执行任务清单...',
-  '任务清单已生成，准备进入执行阶段。',
-  '进入智能体大脑，正在评估当前信息并规划下一步行动...',
-  '智能体本轮思考完毕。',
-  '准备转入工具执行流水线...',
-  '工具调用链执行完毕，正在将实验数据交回给智能体大脑。',
-])
 
 function normalizeThinkingText(text: string): string {
   return text
@@ -54,8 +48,9 @@ function normalizeThinkingText(text: string): string {
 function shouldIgnoreThinking(entry: SSEThinking, text: string): boolean {
   if (!text) return true
   if (entry.importance === 'low') return true
-  if (IGNORED_LOW_VALUE_THINKING.has(text.trim())) return true
+  if (isLowValueReasoningText(text)) return true
   if (text.includes('本轮未收到可展示的模型 reasoning 摘要')) return true
+  if (text.includes('No model reasoning summary received')) return true
   return false
 }
 
@@ -69,7 +64,8 @@ function updateWorkspaceFromPayload(payload: Record<string, unknown>) {
 }
 
 function appendThinkingStep(steps: SSEThinking[], entry: SSEThinking): SSEThinking[] {
-  const text = normalizeThinkingText(entry.text)
+  // Translate any known backend reasoning strings to the user's active locale
+  const text = normalizeThinkingText(translateReasoningText(entry.text))
   if (shouldIgnoreThinking(entry, text)) return steps
 
   const next = [...steps]
@@ -116,6 +112,34 @@ function appendThinkingStep(steps: SSEThinking[], entry: SSEThinking): SSEThinki
   return next
 }
 
+function modeToChineseLabel(mode: unknown): string {
+  const value = String(mode || '').trim().toLowerCase()
+  if (value === 'explore') return '调研'
+  if (value === 'plan') return '规划'
+  if (value === 'general') return '执行'
+  if (value === 'custom') return '自定义'
+  return '任务'
+}
+
+function summarizeSubAgentCompletion(output: Record<string, unknown>): string {
+  const completion = typeof output.completion === 'object' && output.completion !== null
+    ? output.completion as Record<string, unknown>
+    : null
+  const ref = typeof output.scratchpad_report_ref === 'object' && output.scratchpad_report_ref !== null
+    ? output.scratchpad_report_ref as Record<string, unknown>
+    : null
+  const summary = [
+    typeof completion?.summary === 'string' ? completion.summary : '',
+    typeof output.summary === 'string' ? output.summary : '',
+    typeof output.response === 'string' ? output.response : '',
+    typeof output.result === 'string' ? output.result : '',
+    typeof ref?.summary === 'string' ? ref.summary : '',
+  ].find((value) => value.trim().length > 0)?.trim()
+
+  const prefix = `子智能体${modeToChineseLabel(output.mode)}完成`
+  return summary ? `${prefix}：${summary}` : `${prefix}，结果已返回主流程。`
+}
+
 function createTurn(turnId: string, message: string, tasks: SSETaskItem[]): SSETurn {
   return {
     turnId,
@@ -127,8 +151,9 @@ function createTurn(turnId: string, message: string, tasks: SSETaskItem[]): SSET
     artifacts: [],
     tasks,
     shadowErrors: [],
-    statusLabel: '🧠 智能体推理中…',
+    statusLabel: translateStatusLabel('reasoning'),
     pendingInterrupt: undefined,
+    pendingApproval: undefined,
     thinkingSteps: [],
   }
 }
@@ -149,6 +174,8 @@ export interface SseState {
   updateTasks: (tasks: SSETaskItem[]) => void
   addShadowError: (error: SSEShadowError) => void
   setPendingInterrupt: (interrupt: SSEPendingInterrupt) => void
+  setPendingApproval: (approval: SSEPendingApproval) => void
+  approveToolCall: (action: 'approve' | 'reject' | 'modify', args?: Record<string, unknown>) => Promise<void>
   appendThinking: (thinking: SSEThinking) => void
   completeStream: () => void
   failStream: (message: string) => void
@@ -156,7 +183,7 @@ export interface SseState {
 }
 
 export function nodeLabel(node: string): string {
-  return NODE_LABELS[node] ?? `${node} 执行中…`
+  return translateNodeLabel(node)
 }
 
 export const useSseStore = create<SseState>((set, get) => {
@@ -187,6 +214,9 @@ export const useSseStore = create<SseState>((set, get) => {
     clearTurns: () => {
       sseClient.clearConversation()
       set({ turns: [], isStreaming: false })
+      const workspace = useWorkspaceStore.getState()
+      workspace.setSmiles('')
+      workspace.setName('')
     },
 
     sendMessage: async (message, options = {}) => {
@@ -233,6 +263,9 @@ export const useSseStore = create<SseState>((set, get) => {
           },
           setPendingInterrupt: (interrupt) => {
             get().setPendingInterrupt(interrupt)
+          },
+          setPendingApproval: (approval) => {
+            get().setPendingApproval(approval)
           },
           completeTurn: () => {
             get().completeStream()
@@ -287,25 +320,44 @@ export const useSseStore = create<SseState>((set, get) => {
       const index = get().turns.at(-1)?.toolCalls.length ?? 0
       updateLastTurn((turn) => ({
         toolCalls: [...turn.toolCalls, { tool, input, output: undefined, done: false }],
-        statusLabel: '🛠️ 工具执行中…',
+        statusLabel: translateStatusLabel('tool_running'),
       }))
       return index
     },
 
     completeToolCall: (index, output) => {
       updateLastTurn((turn) => {
-        if (index < 0 || index >= turn.toolCalls.length) return { statusLabel: '🧠 正在整合工具结果…' }
+        if (index < 0 || index >= turn.toolCalls.length)
+          return { statusLabel: translateStatusLabel('integrating_results') }
 
         const toolCalls = [...turn.toolCalls]
+        const currentCall = toolCalls[index]
         toolCalls[index] = {
-          ...toolCalls[index],
+          ...currentCall,
           output,
           done: true,
         }
 
+        const thinkingSteps =
+          currentCall?.tool === 'tool_run_sub_agent'
+            ? appendThinkingStep(turn.thinkingSteps, {
+                type: 'thinking',
+                text: summarizeSubAgentCompletion(output),
+                iteration: 0,
+                done: true,
+                source: `sub_agent_report:${index}`,
+                category: 'tool',
+                importance: 'high',
+                group_key: `sub_agent_report:${index}`,
+                session_id: '',
+                turn_id: turn.turnId,
+              })
+            : turn.thinkingSteps
+
         return {
           toolCalls,
-          statusLabel: '🧠 正在整合工具结果…',
+          thinkingSteps,
+          statusLabel: translateStatusLabel('integrating_results'),
         }
       })
     },
@@ -320,24 +372,26 @@ export const useSseStore = create<SseState>((set, get) => {
       const activeTask = tasks.find((task) => task.status === 'in_progress')
       updateLastTurn(() => ({
         tasks,
-        statusLabel: activeTask ? `📋 正在执行任务 ${activeTask.id}` : '📋 任务清单已更新',
+        statusLabel: activeTask
+          ? translateStatusLabel('task_running', { id: activeTask.id })
+          : translateStatusLabel('task_list_updated'),
       }))
     },
 
     addShadowError: (error) => {
       updateLastTurn((turn) => ({
         shadowErrors: [...turn.shadowErrors, error],
-        statusLabel: '⚠️ 正在修正结构问题…',
+        statusLabel: translateStatusLabel('shadow_error'),
       }))
     },
 
     setPendingInterrupt: (interrupt) => {
       stopStreamingTurn((turn) => ({
-        statusLabel: '🙋 等待您的回复…',
+        statusLabel: translateStatusLabel('awaiting_reply'),
         pendingInterrupt: interrupt,
         thinkingSteps: appendThinkingStep(turn.thinkingSteps, {
           type: 'thinking',
-          text: `需要用户澄清：${interrupt.question}`,
+          text: `${translateStatusLabel('awaiting_reply').replace(/^🙋 /, '')} ${interrupt.question}`,
           iteration: 0,
           done: true,
           source: 'chem_agent',
@@ -345,6 +399,76 @@ export const useSseStore = create<SseState>((set, get) => {
           turn_id: turn.turnId,
         }),
       }))
+    },
+
+    setPendingApproval: (approval) => {
+      stopStreamingTurn(() => ({
+        statusLabel: makeApprovalStatusLabel(approval),
+        pendingApproval: approval,
+      }))
+    },
+
+    approveToolCall: async (action, args) => {
+      if (get().isStreaming) return
+      const sessionId = sseClient.sessionId
+      if (!sessionId) return
+
+      const turnId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2) + Date.now().toString(36)
+
+      const pendingApproval = get().turns.at(-1)?.pendingApproval
+      if (!pendingApproval) return
+
+      const approvalTarget = pendingApproval.kind === 'plan'
+        ? `plan ${pendingApproval.plan_id.slice(0, 8)}`
+        : pendingApproval.tool_name.replace('tool_', '')
+      const actionLabel = action === 'approve' ? '✅ 批准' : action === 'reject' ? '❌ 拒绝' : '✏️ 修改并保存'
+      const approvalLabel = `${actionLabel}: ${approvalTarget}`
+
+      // Clear the pendingApproval badge on the last turn before starting the new one
+      updateLastTurn(() => ({ pendingApproval: undefined }))
+
+      const handlers = {
+        startTurn: (tId: string, message: string, tasks: SSETaskItem[]) => {
+          get().startTurn(tId, message, tasks)
+        },
+        activateNode: (node: string) => { get().setActiveNode(node) },
+        clearNode: (node: string) => { get().clearActiveNode(node) },
+        appendAssistantText: (text: string) => { get().appendAssistantText(text) },
+        addToolCall: (tool: string, input: Record<string, unknown>) => get().addToolCall(tool, input),
+        completeToolCall: (index: number, output: Record<string, unknown>) => {
+          updateWorkspaceFromPayload(output)
+          get().completeToolCall(index, output)
+        },
+        addArtifact: (artifact: SSEArtifactEvent) => {
+          if ('smiles' in artifact && typeof artifact.smiles === 'string') {
+            updateWorkspaceFromPayload({ smiles: artifact.smiles })
+          }
+          get().addArtifact(artifact)
+        },
+        updateTasks: (tasks: SSETaskItem[]) => { get().updateTasks(tasks) },
+        addShadowError: (error: SSEShadowError) => { get().addShadowError(error) },
+        appendThinking: (thinking: SSEThinking) => { get().appendThinking(thinking) },
+        setPendingInterrupt: (interrupt: SSEPendingInterrupt) => { get().setPendingInterrupt(interrupt) },
+        setPendingApproval: (approval: SSEPendingApproval) => { get().setPendingApproval(approval) },
+        completeTurn: () => { get().completeStream() },
+        failTurn: (message: string) => { get().failStream(message) },
+        handleHttpError: (status: number, text: string) => {
+          get().replaceAssistantText(`❌ HTTP ${status}: ${text}`)
+        },
+        handleConnectionError: (message: string) => { get().handleConnectionError(message) },
+      }
+
+      await sseClient.sendApproval({
+        sessionId,
+        turnId,
+        approvalLabel,
+        action,
+        args,
+        planId: pendingApproval.kind === 'plan' ? pendingApproval.plan_id : undefined,
+        handlers,
+      })
     },
 
     appendThinking: (thinking) => {
@@ -365,7 +489,7 @@ export const useSseStore = create<SseState>((set, get) => {
 
     handleConnectionError: (message) => {
       stopStreamingTurn(() => ({
-        assistantText: `❌ 连接中断: ${message}`,
+        assistantText: translateConnectionError(message),
       }))
     },
   }

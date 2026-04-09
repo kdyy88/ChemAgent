@@ -1,8 +1,60 @@
+import logging
+import logging.config
+import os
 import warnings
+
 warnings.filterwarnings(
     "ignore",
     message="Pydantic serializer warnings",
     category=UserWarning,
+)
+
+_LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+_LOG_FILE = os.environ.get("LOG_FILE", "")  # empty → stdout only
+
+_handlers: dict = {
+    "console": {
+        "class": "logging.StreamHandler",
+        "formatter": "verbose",
+        "stream": "ext://sys.stderr",
+    }
+}
+if _LOG_FILE:
+    _handlers["file"] = {
+        "class": "logging.FileHandler",
+        "formatter": "verbose",
+        "filename": _LOG_FILE,
+        "encoding": "utf-8",
+    }
+
+logging.config.dictConfig(
+    {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "verbose": {
+                "format": "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+                "datefmt": "%Y-%m-%d %H:%M:%S",
+            }
+        },
+        "handlers": _handlers,
+        "root": {
+            "level": _LOG_LEVEL,
+            "handlers": list(_handlers.keys()),
+        },
+        "loggers": {
+            # Keep noisy libraries at WARNING unless debug mode
+            "httpx": {"level": "WARNING"},
+            "httpcore": {"level": "WARNING"},
+            "openai": {"level": "WARNING"},
+            "langchain": {"level": "WARNING"},
+            "langgraph": {"level": "WARNING"},
+            # SQLite checkpoint I/O — always suppress, not useful for LLM debugging
+            "aiosqlite": {"level": "WARNING"},
+            # Our own code always at configured level
+            "app": {"level": _LOG_LEVEL, "propagate": True},
+        },
+    }
 )
 
 from contextlib import asynccontextmanager
@@ -15,6 +67,7 @@ from app.agents.runtime import initialize_graph_runtime, shutdown_graph_runtime
 from app.api.sse_chat import router as sse_chat_router
 from app.api.rdkit_api import router as rdkit_router
 from app.api.babel_api import router as babel_router
+from app.api.scratchpad_api import router as scratchpad_router
 from app.core.network import get_allowed_origins
 
 
@@ -47,6 +100,7 @@ app.add_middleware(
 app.include_router(sse_chat_router, prefix="/api/chat")
 app.include_router(rdkit_router, prefix="/api")
 app.include_router(babel_router, prefix="/api")
+app.include_router(scratchpad_router, prefix="/api/scratchpad")
 
 
 @app.get("/")

@@ -29,7 +29,7 @@ export function SSEMessageList({ turns }: SSEMessageListProps) {
                   Ask me about any chemical compound
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  Try entering a name like &ldquo;Aspirin&rdquo; or &ldquo;扑热息痛&rdquo;
+                  Try entering a name like &ldquo;Aspirin&rdquo; or &ldquo;Ibuprofen&rdquo;
                 </p>
               </div>
             </div>

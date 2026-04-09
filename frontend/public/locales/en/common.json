@@ -1,0 +1,110 @@
+{
+  "app": {
+    "title": "ChemAgent",
+    "description": "AI Chemistry Expert"
+  },
+  "chat": {
+    "placeholder": "Ask a chemistry question, e.g. Calculate the molecular weight of aspirin…",
+    "send": "Send",
+    "clear": "Clear conversation",
+    "thinking": "Thinking…",
+    "streaming": "Generating…",
+    "new_conversation": "New conversation",
+    "empty_state": "Ask ChemAgent a question to start exploring chemistry"
+  },
+  "nav": {
+    "chat": "Chat",
+    "software": "Software view",
+    "business": "Business view"
+  },
+  "workspace": {
+    "molecule_viewer": "Molecule viewer",
+    "no_molecule": "No molecule loaded",
+    "smiles_label": "SMILES",
+    "copy_smiles": "Copy SMILES"
+  },
+  "interrupt": {
+    "clarification_needed": "Clarification needed",
+    "submit_reply": "Submit reply",
+    "quick_replies": "Quick replies"
+  },
+  "errors": {
+    "connection_lost": "Connection lost",
+    "http_error": "HTTP error {{status}}",
+    "generic": "An unknown error occurred"
+  },
+  "theme": {
+    "toggle": "Toggle theme",
+    "light": "Light",
+    "dark": "Dark"
+  },
+  "language": {
+    "toggle": "Switch language",
+    "zh": "中文",
+    "en": "English"
+  },
+  "copilot": {
+    "turns": "{{count}} turns",
+    "clear_history": "Clear history"
+  },
+  "input": {
+    "add_datasource": "Add data source to chat",
+    "add_smiles": "Add current SMILES",
+    "upload_file": "Upload file",
+    "specify_website": "Specify website",
+    "coming_soon": "Coming soon",
+    "send": "Send",
+    "streaming": "Generating…"
+  },
+  "home": {
+    "subtitle": "Authoritative retrieval · Structured tool calls · Explainable streaming",
+    "subtitle_tagline": "Authoritative · Structured · Explainable",
+    "feature1_title": "12+ Professional tools",
+    "feature1_desc": "RDKit & Open Babel powered structure cleanup, pharmacophore analysis, and high-throughput 3D conformer optimization.",
+    "feature2_title": "Agentic deep integration",
+    "feature2_desc": "Chat context and sidebar parameters work seamlessly — AI can take over your molecule input and parameter orchestration directly.",
+    "feature3_title": "SDF high-throughput",
+    "feature3_desc": "Split, merge, and force-field score million-compound libraries with in-memory streaming and zero disk overhead."
+  },
+  "sidebar": {
+    "software_header": "Software Library",
+    "business_header": "Business Workflows",
+    "home_button": "Home",
+    "software_aria": "Software component view",
+    "business_aria": "Business scenario view"
+  },
+  "tool_category": {
+    "rdkit": "RDKit (Python)",
+    "openbabel": "Open Babel",
+    "data_cleaning": "Data Cleaning & Preparation",
+    "physical_chem": "Physical Chemistry",
+    "structural_analysis": "Structural Analysis & Search",
+    "docking_3d": "3D & Docking"
+  },
+  "tool_label": {
+    "validate": "SMILES Validation",
+    "salt_strip": "Desalting & Neutralization",
+    "descriptors": "Molecular Descriptors",
+    "similarity": "Molecular Similarity",
+    "substructure": "Substructure Search / PAINS",
+    "scaffold": "Murcko Scaffold",
+    "mol_properties": "Physical Properties",
+    "partial_charge": "Partial Charge Analysis",
+    "convert": "Format Conversion",
+    "conformer": "3D Conformer Generation",
+    "pdbqt": "Docking Prep (PDBQT)",
+    "sdf_batch": "SDF Batch Processing",
+    "validate_biz": "SMILES Normalization & Validation",
+    "salt_strip_biz": "Desalting & Neutralization",
+    "descriptors_biz": "Descriptors (Lipinski / QED / SA)",
+    "mol_properties_biz": "Core Physical Properties",
+    "similarity_biz": "Similarity (Tanimoto)",
+    "substructure_biz": "Pharmacophore & PAINS Alerts",
+    "scaffold_biz": "Core Scaffold (Murcko)",
+    "partial_charge_biz": "Partial Charge Analysis",
+    "convert_biz": "Format Conversion",
+    "conformer_biz": "3D Conformer Generation",
+    "pdbqt_biz": "PDBQT Preparation",
+    "sdf_batch_biz": "SDF Library Batch"
+  }
+}

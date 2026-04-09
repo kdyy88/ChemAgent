@@ -1,24 +1,34 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
-import { Beaker, Brain, FlaskConical, Hammer, Sparkles } from 'lucide-react'
-import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/components/ui/reasoning'
-import { Steps, StepsBar, StepsContent, StepsItem, StepsTrigger } from '@/components/ui/steps'
-import { Source, SourceContent, SourceTrigger } from '@/components/ui/source'
+import { useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { SSEThinking, WebSearchSourcesArtifact } from '@/lib/sse-types'
+import '@/lib/i18n/client'
 
-function MetaBadge({ children, highlight }: { children: React.ReactNode; highlight?: boolean }) {
-  return (
-    <span
-      className={`rounded-full px-1.5 py-0.5 text-[10px] leading-none ${
-        highlight
-          ? 'bg-primary/10 text-primary/70'
-          : 'bg-muted/70 text-muted-foreground/70'
-      }`}
-    >
-      {children}
-    </span>
-  )
+type TFn = (key: string, opts?: Record<string, unknown>) => string
+
+type StageKind = 'research' | 'analysis' | 'validation' | 'coordination' | 'wrapup' | 'error'
+
+interface ThinkingGroup {
+  id: string
+  rawText: string
+  detail: string
+  category?: SSEThinking['category']
+  source?: string
+  count: number
+  isStreaming: boolean
+}
+
+interface DisplayEntry {
+  id: string
+  title: string
+  summary: string
+  reasoningText: string
+  isStreaming: boolean
+  isSubAgent: boolean
+  count: number
+  sourceQuery?: string
+  sourceLinks: Array<{ title: string; url: string }>
 }
 
 interface ResearchThinkingProps {
@@ -27,69 +37,67 @@ interface ResearchThinkingProps {
   webSources?: WebSearchSourcesArtifact[]
 }
 
-interface ThinkingGroup {
-  id: string
-  detail: string
-  title: string
-  caption: string
-  count: number
-  kind: 'tool' | 'llm' | 'other'
-  isStreaming: boolean
+function summarizeHeaderTitle(isStreaming: boolean, t: TFn): string {
+  return isStreaming ? t('thinking_panel.header_streaming') : t('thinking_panel.header_done')
 }
 
-type TimelineBlock =
-  | { kind: 'single'; id: string; item: ThinkingGroup }
-  | { kind: 'tool_sequence'; id: string; items: ThinkingGroup[] }
-
-function summarizeHeaderTitle(isStreaming: boolean): string {
-  return isStreaming ? '思考中' : '思考记录'
+function toPlainText(raw: string): string {
+  return raw
+    .replace(/^\*\*[^*]+\*\*\s*/m, '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`(.+?)`/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
-function summarizeGroupTitle(step: SSEThinking): string {
-  const raw = step.text.trim()
-  if (!raw) return '处理中'
-
-  if (step.category === 'llm') {
-    // If the text starts with **Title** ... extract only the bold part as the title.
-    // This prevents leaking raw LLM inner monologue ("**Processing drug data** I'm thinking...").
-    const leadingBold = raw.match(/^\*\*(.+?)\*\*/)
-    if (leadingBold) return leadingBold[1]
-    // No leading bold — strip inline markdown and truncate
-    const plain = raw.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').trim()
-    return plain.length > 56 ? `${plain.slice(0, 56).trimEnd()}…` : plain
-  }
-
-  // Strip markdown for tool/other categories
-  const text = raw.replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').trim()
-  if (!text) return '处理中'
-
-  if (step.category === 'tool') {
-    return text.replace(/^正在调用：/, '').replace(/^工具完成：/, '')
-  }
-
-  return text.length > 42 ? `${text.slice(0, 42).trimEnd()}…` : text
+function toDisplayText(raw: string): string {
+  return raw
+    .replace(/^\*\*(.+?)\*\*\s*$/gm, '$1')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`(.+?)`/g, '$1')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
-function stripLeadingTitle(raw: string): string {
-  // Remove a leading **Title** or **Title**\n from content so it doesn't show twice.
-  return raw.replace(/^\*\*[^*]+\*\*\s*\n?/, '').trim()
+function clipText(value: string, limit: number): string {
+  if (value.length <= limit) return value
+  return `${value.slice(0, limit).trimEnd()}…`
 }
 
-function groupThinkingSteps(steps: SSEThinking[]): ThinkingGroup[] {
+function summarizeGroupTitle(step: SSEThinking, t: TFn): string {
+  const raw = toPlainText(step.text || '')
+  if (!raw) return t('thinking_panel.processing')
+  return clipText(raw, step.category === 'llm' ? 72 : 52)
+}
+
+function normalizeDetail(step: SSEThinking): string {
+  const text = toPlainText(step.text || '')
+  if (!text) return ''
+  return text
+    .replace(/^正在调用：/, '')
+    .replace(/^工具完成：/, '')
+    .replace(/^Preparing response in Chinese/i, '正在整理最终回答')
+    .replace(/^Clarifying .*$/i, '正在澄清并核对结构约束')
+    .replace(/^Computing descriptors/i, '正在核对候选分子的性质')
+    .replace(/^Updating task statuses/i, '正在整理已经确认的阶段结论')
+}
+
+function groupThinkingSteps(steps: SSEThinking[], t: TFn): ThinkingGroup[] {
   const timeline: ThinkingGroup[] = []
 
   for (const step of steps) {
-    const kind: ThinkingGroup['kind'] =
-      step.category === 'tool' ? 'tool' : step.category === 'llm' ? 'llm' : 'other'
-    const groupId = `${kind}:${step.group_key || step.source || step.category || summarizeGroupTitle(step)}`
-    const latestText = summarizeGroupTitle(step)
-    const cleanDetail = step.category === 'llm' ? stripLeadingTitle(step.text.trim()) : step.text.trim()
+    const groupId = `${step.group_key || step.source || step.category || summarizeGroupTitle(step, t)}`
+    const latestText = summarizeGroupTitle(step, t)
+    const cleanDetail = normalizeDetail(step)
     const lastGroup = timeline[timeline.length - 1]
 
     if (lastGroup && lastGroup.id === groupId) {
       lastGroup.detail = cleanDetail || lastGroup.detail
-      lastGroup.title = latestText || lastGroup.title
-      lastGroup.caption = step.source === 'llm_reasoning' ? '模型摘要' : lastGroup.caption
+      lastGroup.rawText = `${lastGroup.rawText}\n${step.text || ''}`.trim()
+      lastGroup.category = step.category
+      lastGroup.source = step.source
       lastGroup.count += 1
       lastGroup.isStreaming = step.done !== true
       continue
@@ -97,17 +105,15 @@ function groupThinkingSteps(steps: SSEThinking[]): ThinkingGroup[] {
 
     timeline.push({
       id: groupId,
+      rawText: step.text || '',
       detail: cleanDetail || latestText,
-      title: latestText,
-      caption: step.source === 'llm_reasoning' ? '模型摘要' : kind === 'tool' ? '使用工具' : '执行动态',
+      category: step.category,
+      source: step.source,
       count: 1,
-      kind,
       isStreaming: step.done !== true,
     })
   }
 
-  // Any group that is not the last is definitively done —
-  // a newer group having started proves the previous finished.
   for (let i = 0; i < timeline.length - 1; i++) {
     timeline[i].isStreaming = false
   }
@@ -115,251 +121,215 @@ function groupThinkingSteps(steps: SSEThinking[]): ThinkingGroup[] {
   return timeline
 }
 
-function groupIcon(kind: ThinkingGroup['kind']) {
-  if (kind === 'tool') return FlaskConical
-  if (kind === 'llm') return Brain
-  return Sparkles
+function inferStageKind(raw: string): StageKind {
+  const text = raw.toLowerCase()
+
+  if (/(error|失败|异常|中断)/.test(text)) return 'error'
+  if (/(response|最终回答|输出给用户|preparing response|中文)/.test(text)) return 'wrapup'
+  if (/(sub[_ -]?agent|子智能体|parallel|delegat)/.test(text)) return 'coordination'
+  if (/(web[_ -]?search|搜索|pubchem|公开资料|来源)/.test(text)) return 'research'
+  if (/(substructure|smarts|咪唑|约束|descriptor|property|lipinski|pains|validate|验证|核对性质)/.test(text)) return 'validation'
+  if (/(planner|task_router|复杂度|规划|清单|任务状态|update task|update_task_status)/.test(text)) return 'coordination'
+  return 'analysis'
 }
 
-function stepStatusText(group: ThinkingGroup): string | null {
-  return group.isStreaming ? '状态：进行中' : null
+function inferStageTitle(kind: StageKind): string {
+  switch (kind) {
+    case 'research':
+      return '补充背景资料'
+    case 'analysis':
+      return '整理线索与方案'
+    case 'validation':
+      return '核对关键限制'
+    case 'coordination':
+      return '同步中间进展'
+    case 'wrapup':
+      return '整理最终表达'
+    case 'error':
+      return '处理中遇到问题'
+  }
 }
 
-function buildTimelineBlocks(timeline: ThinkingGroup[]): TimelineBlock[] {
-  const blocks: TimelineBlock[] = []
+function inferStageSummary(kind: StageKind, isStreaming: boolean, count: number): string {
+  const multi = count > 1
 
-  for (const group of timeline) {
-    const lastBlock = blocks[blocks.length - 1]
-
-    if (group.kind === 'tool') {
-      if (lastBlock?.kind === 'tool_sequence') {
-        lastBlock.items.push(group)
-      } else {
-        blocks.push({
-          kind: 'tool_sequence',
-          id: `tools:${group.id}`,
-          items: [group],
-        })
-      }
-      continue
+  if (isStreaming) {
+    switch (kind) {
+      case 'research':
+        return multi ? '正在持续补充资料并交叉核对。' : '正在补充资料并确认关键事实。'
+      case 'analysis':
+        return '正在整合线索，收敛成判断。'
+      case 'validation':
+        return '正在核对结构限制和候选条件。'
+      case 'coordination':
+        return '正在同步阶段结果，准备衔接下一步。'
+      case 'wrapup':
+        return '正在把已确认内容整理成最终回答。'
+      case 'error':
+        return '这里出现了阻塞，正在判断是否继续。'
     }
-
-    blocks.push({
-      kind: 'single',
-      id: `single:${group.id}`,
-      item: group,
-    })
   }
 
-  return blocks
+  switch (kind) {
+    case 'research':
+      return multi ? '已补充多轮背景资料。' : '已补充一轮背景资料。'
+    case 'analysis':
+      return '已整理出当前阶段的关键判断。'
+    case 'validation':
+      return '已完成关键核对。'
+    case 'coordination':
+      return '已把中间结果接回主流程。'
+    case 'wrapup':
+      return '已进入最终表述整理。'
+    case 'error':
+      return '这一段流程出现了问题。'
+  }
+}
+
+function isSubAgentStep(group: ThinkingGroup): boolean {
+  const source = String(group.source || '').toLowerCase()
+  return source.includes('sub_agent')
+}
+
+function isSubAgentReportStep(group: ThinkingGroup): boolean {
+  const source = String(group.source || '').toLowerCase()
+  return source.includes('sub_agent_report')
+}
+
+function looksLikeSearchStep(raw: string): boolean {
+  const text = raw.toLowerCase()
+  return /(web[_ -]?search|搜索|searching|looking up|查找|检索)/.test(text)
+}
+
+function buildDisplayEntries(
+  timeline: ThinkingGroup[],
+  webSources?: WebSearchSourcesArtifact[],
+): DisplayEntry[] {
+  let sourceCursor = 0
+
+  return timeline.map((group) => {
+    const raw = `${group.rawText}\n${group.detail}`.trim()
+    const kind = inferStageKind(raw)
+    const reasoningText =
+      group.category === 'llm' || group.source === 'llm_reasoning' || isSubAgentReportStep(group)
+        ? toDisplayText(group.rawText)
+        : ''
+    const matchedSourceArtifact =
+      kind === 'research' && looksLikeSearchStep(raw) ? webSources?.[sourceCursor] : undefined
+
+    if (matchedSourceArtifact) {
+      sourceCursor += 1
+    }
+
+    const sourceLinks = (matchedSourceArtifact?.sources || []).map((source) => ({
+      title: source.title || source.url,
+      url: source.url,
+    }))
+
+    return {
+      id: group.id,
+      title: isSubAgentReportStep(group) ? '子任务结果返回' : inferStageTitle(kind),
+      summary: isSubAgentReportStep(group)
+        ? (group.isStreaming ? '子智能体正在整理本轮结果。' : '子智能体已返回本轮结论。')
+        : inferStageSummary(kind, group.isStreaming, group.count),
+      reasoningText,
+      isStreaming: group.isStreaming,
+      isSubAgent: isSubAgentStep(group),
+      count: group.count,
+      sourceQuery: matchedSourceArtifact?.query,
+      sourceLinks,
+    }
+  })
+}
+
+function statusLabel(isStreaming: boolean): string {
+  return isStreaming ? '进行中' : '已完成'
+}
+
+function statusTone(isStreaming: boolean): string {
+  return isStreaming ? 'text-foreground/72' : 'text-muted-foreground/62'
 }
 
 export function ResearchThinking({ steps, isStreaming, webSources }: ResearchThinkingProps) {
-  const [openSteps, setOpenSteps] = useState<Record<string, boolean>>({})
-  const timeline = useMemo(() => groupThinkingSteps(steps), [steps])
-  const blocks = useMemo(() => buildTimelineBlocks(timeline), [timeline])
-  const headerTitle = summarizeHeaderTitle(isStreaming)
+  const { t } = useTranslation('agent')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tFn: TFn = (key, opts) => t(key as any, opts as any) as string
+  const timeline = useMemo(() => groupThinkingSteps(steps, tFn), [steps, tFn])
+  const entries = useMemo(() => buildDisplayEntries(timeline, webSources), [timeline, webSources])
+  const headerTitle = summarizeHeaderTitle(isStreaming, tFn)
 
-  // Derive the key of the currently streaming block (always the last one).
-  const activeBlockKey = useMemo(() => {
-    for (let i = blocks.length - 1; i >= 0; i--) {
-      const block = blocks[i]
-      const streaming =
-        block.kind === 'tool_sequence'
-          ? block.items.some((item) => item.isStreaming)
-          : block.item.isStreaming
-      if (streaming) return `${block.id}-${i}`
-    }
-    return null
-  }, [blocks])
-
-  // When the active block changes, clear user overrides so the auto-open logic takes effect.
-  useEffect(() => {
-    if (!activeBlockKey) return
-    setOpenSteps({})
-  }, [activeBlockKey])
-
-  if (timeline.length === 0) return null
+  if (entries.length === 0) return null
 
   return (
-    <div className="w-full space-y-2">
-      {/* Header: icon + stacked title/hint on left, stage count on right */}
-      <div className="flex items-start justify-between gap-2 px-1">
-        <div className="flex items-start gap-1.5">
-          <Beaker className="mt-0.5 size-4 shrink-0 text-muted-foreground/70" />
-          <div className="space-y-0.5">
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs font-medium text-foreground/80">{headerTitle}</span>
-              {isStreaming && (
-                <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] leading-none text-primary/70">
-                  输出中
-                </span>
-              )}
-            </div>
-            <p className="text-[10px] leading-tight text-muted-foreground/55">
-              {isStreaming ? '思考内容正在实时输出' : '展开可查看完整思考与工具步骤'}
-            </p>
-          </div>
-        </div>
-        <span className="shrink-0 pt-0.5 text-[10px] tabular-nums text-muted-foreground/60">
-          {timeline.length} 个阶段
-        </span>
+    <div className="w-full px-1 pt-0.5 text-xs">
+      <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground/62">
+        <span className="font-medium text-muted-foreground/72">{headerTitle}</span>
+        <span className="text-muted-foreground/45">/</span>
+        <span>{isStreaming ? '中间过程持续追加中' : '按发生顺序保留'}</span>
       </div>
 
-      <div className="w-full space-y-1.5">
-        {blocks.map((block, blockIndex) => {
-          if (block.kind === 'tool_sequence') {
-            const stepKey = `${block.id}-${blockIndex}`
-            const stepOpen = openSteps[stepKey] ?? (stepKey === activeBlockKey)
-            const activeTitle = block.items.find((item) => item.isStreaming)?.title ?? block.items.at(-1)?.title ?? '工具调用'
+      <div className="space-y-3">
+        {entries.map((entry, index) => (
+          <div
+            key={`${entry.id}-${index}`}
+            className={`relative ${entry.isSubAgent ? 'ml-5 pl-5' : 'pl-4'}`}
+          >
+            <span
+              className={`absolute top-[0.45rem] size-1.5 rounded-full ${entry.isSubAgent ? 'left-1 bg-foreground/28' : 'left-0'} ${entry.isStreaming ? 'bg-foreground/45' : 'bg-border'}`}
+              aria-hidden="true"
+            />
+            {index < entries.length - 1 && (
+              <span
+                className={`absolute top-[0.95rem] bottom-[-0.9rem] w-px bg-border/65 ${entry.isSubAgent ? 'left-[0.42rem]' : 'left-[0.18rem]'}`}
+                aria-hidden="true"
+              />
+            )}
 
-            // Detect web search block by id or title
-            const isWebSearch =
-              block.id.toLowerCase().includes('web_search') ||
-              block.id.toLowerCase().includes('web search') ||
-              block.items.some((item) => item.title.includes('搜索') || item.id.toLowerCase().includes('web'))
-            const blockSources = isWebSearch && webSources && webSources.length > 0 ? webSources[0] : null
-
-            return (
-              <div key={stepKey} className="w-full space-y-1.5">
-                <Steps
-                  open={stepOpen}
-                  onOpenChange={(nextOpen) => {
-                    setOpenSteps((current) => ({ ...current, [stepKey]: nextOpen }))
-                  }}
-                  className="w-full px-3 py-2 shadow-none"
-                >
-                  <StepsTrigger leftIcon={<Hammer className="size-4" />} className="text-xs">
-                    <span className="flex min-w-0 flex-1 items-center gap-2">
-                      <span className="min-w-0 flex-1 truncate text-foreground/80">
-                        {activeTitle}
-                        {blockSources?.query && (
-                          <span className="ml-1.5 text-muted-foreground/50 font-normal">
-                            · {blockSources.query}
-                          </span>
-                        )}
-                      </span>
-                      <span className="shrink-0 rounded-full bg-muted/80 px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground/70">
-                        {block.items.length} 步
-                      </span>
-                    </span>
-                  </StepsTrigger>
-
-                  {/* StepsContent: sources if available, otherwise step list */}
-                  <StepsContent className="w-full" bar={blockSources ? null : <StepsBar className="mr-2 ml-1.5" />}>
-                    {blockSources ? (
-                      <div className="flex flex-wrap gap-1.5 pt-1 pb-0.5">
-                        {blockSources.sources.map((src, i) => (
-                          <Source key={`${src.url}-${i}`} href={src.url}>
-                            <SourceTrigger showFavicon />
-                            <SourceContent title={src.title || src.url} description={src.snippet} />
-                          </Source>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="space-y-0.5 pt-0.5">
-                        {block.items.map((item, itemIndex) => {
-                          const mergedText = item.count > 1 ? `合并 ${item.count} 条` : null
-                          return (
-                            <StepsItem key={`${item.id}-${itemIndex}`} className="text-xs">
-                              <div className="flex items-center justify-between gap-2 py-0.5">
-                                <div className="flex items-center gap-1.5 min-w-0 text-foreground/75">
-                                  <FlaskConical className="h-3 w-3 shrink-0 text-muted-foreground/50" aria-hidden="true" />
-                                  <span className="min-w-0 truncate">{item.title}</span>
-                                </div>
-                                <div className="flex items-center gap-1 shrink-0">
-                                  <MetaBadge>{item.caption}</MetaBadge>
-                                  {mergedText && <MetaBadge>{mergedText}</MetaBadge>}
-                                  {isStreaming && item.isStreaming && <MetaBadge highlight>进行中</MetaBadge>}
-                                </div>
-                              </div>
-                            </StepsItem>
-                          )
-                        })}
-                      </div>
-                    )}
-                  </StepsContent>
-                </Steps>
+            <div className={`space-y-1 ${entry.isSubAgent ? 'border-l border-border/55 pl-3' : ''}`}>
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] leading-relaxed">
+                {entry.isSubAgent && <span className="text-muted-foreground/48">子智能体</span>}
+                <span className="font-medium text-foreground/74">{entry.title}</span>
+                <span className={statusTone(entry.isStreaming)}>{statusLabel(entry.isStreaming)}</span>
+                {entry.count > 1 && <span className="text-muted-foreground/52">更新 {entry.count} 次</span>}
               </div>
-            )
-          }
 
-          const group = block.item
-          const Icon = groupIcon(group.kind)
-          const stepKey = `${block.id}-${blockIndex}`
-          const stepOpen = openSteps[stepKey] ?? (stepKey === activeBlockKey)
-          const mergedText = group.count > 1 ? `已合并 ${group.count} 条同类更新` : null
-          const statusText = stepStatusText(group)
+              <p className="text-[11px] leading-relaxed text-muted-foreground/76">{entry.summary}</p>
 
-          if (group.kind === 'llm') {
-            return (
-              <Reasoning
-                key={stepKey}
-                open={stepOpen}
-                onOpenChange={(nextOpen) => {
-                  setOpenSteps((current) => ({ ...current, [stepKey]: nextOpen }))
-                }}
-                className="w-full px-3 py-2 shadow-none"
-                isStreaming={isStreaming && group.isStreaming}
-              >
-                <ReasoningTrigger className="w-full text-left text-xs text-muted-foreground/90 hover:text-foreground">
-                  <span className="flex min-w-0 flex-1 items-center gap-2">
-                    <Icon className="size-3.5 shrink-0 text-muted-foreground/60" />
-                    <span className="min-w-0 flex-1 truncate text-foreground/80">{group.title}</span>
-                    {isStreaming && group.isStreaming && (
-                      <span className="shrink-0 text-[10px] text-primary/60">进行中</span>
-                    )}
-                  </span>
-                </ReasoningTrigger>
-
-                <ReasoningContent
-                  className="mt-2 w-full"
-                  contentClassName="w-full max-w-none space-y-2 border-l border-border/40 pl-3 text-xs leading-relaxed"
-                >
-                  <div className="whitespace-pre-wrap break-words text-foreground/75">{group.detail}</div>
-                  <div className="flex flex-wrap items-center gap-1">
-                    <MetaBadge>{group.caption}</MetaBadge>
-                    {mergedText && <MetaBadge>{mergedText}</MetaBadge>}
-                    {isStreaming && statusText && <MetaBadge highlight>{statusText}</MetaBadge>}
+              {entry.reasoningText && (
+                <div className="border-l border-border/70 pl-3 pt-0.5">
+                  <div className="whitespace-pre-wrap break-words text-[11px] leading-6 text-foreground/70">
+                    {entry.reasoningText}
                   </div>
-                </ReasoningContent>
-              </Reasoning>
-            )
-          }
-
-          return (
-            <Reasoning
-              key={stepKey}
-              open={stepOpen}
-              onOpenChange={(nextOpen) => {
-                setOpenSteps((current) => ({ ...current, [stepKey]: nextOpen }))
-              }}
-              className="w-full px-3 py-2 shadow-none"
-            >
-              <ReasoningTrigger className="w-full text-left text-xs text-muted-foreground/90 hover:text-foreground">
-                <span className="flex min-w-0 flex-1 items-center gap-2">
-                  <Icon className="size-3.5 shrink-0 text-muted-foreground/60" />
-                  <span className="min-w-0 flex-1 truncate text-foreground/80">{group.title}</span>
-                  {isStreaming && group.isStreaming && (
-                    <span className="shrink-0 text-[10px] text-primary/60">进行中</span>
-                  )}
-                </span>
-              </ReasoningTrigger>
-
-              <ReasoningContent
-                className="mt-2 w-full"
-                contentClassName="w-full max-w-none space-y-2 border-l border-border/40 pl-3 text-xs leading-relaxed"
-              >
-                <div className="whitespace-pre-wrap break-words text-foreground/75">{group.detail}</div>
-                <div className="flex flex-wrap items-center gap-1">
-                  <MetaBadge>{group.caption}</MetaBadge>
-                  {mergedText && <MetaBadge>{mergedText}</MetaBadge>}
-                  {isStreaming && statusText && <MetaBadge highlight>{statusText}</MetaBadge>}
                 </div>
-              </ReasoningContent>
-            </Reasoning>
-          )
-        })}
+              )}
+
+              {entry.sourceQuery && (
+                <p className="text-[10px] leading-relaxed text-muted-foreground/55">
+                  检索主题：{entry.sourceQuery}
+                </p>
+              )}
+
+              {entry.sourceLinks.length > 0 && (
+                <div className="text-[10px] leading-5 text-muted-foreground/58">
+                  <span className="mr-1 text-muted-foreground/48">参考来源：</span>
+                  {entry.sourceLinks.map((source, sourceIndex) => (
+                    <span key={`${source.url}-${sourceIndex}`}>
+                      <a
+                        href={source.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline decoration-border underline-offset-2 transition-colors hover:text-foreground/76"
+                      >
+                        {clipText(source.title, 42)}
+                      </a>
+                      {sourceIndex < entry.sourceLinks.length - 1 ? <span className="text-muted-foreground/38">，</span> : null}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   )

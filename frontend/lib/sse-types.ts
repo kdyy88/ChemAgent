@@ -115,6 +115,7 @@ export interface SSEToken {
   node: string
   session_id: string
   turn_id: string
+  source?: 'sub_agent'
   content: string       // partial text — append to the current bubble
 }
 
@@ -160,6 +161,65 @@ export interface SSEInterrupt {
   session_id: string
   turn_id: string
 }
+
+/** Heavy-tool Hard Breakpoint — user must approve/reject/modify before execution. */
+export interface SSEApprovalRequired {
+  type: 'approval_required'
+  /** The tool name that requires approval (e.g. "tool_build_3d_conformer"). */
+  tool_name: string
+  /** The arguments the LLM wants to pass to the tool (user may edit these). */
+  args: Record<string, unknown>
+  /** Correlates back to the AIMessage tool_call that triggered the breakpoint. */
+  tool_call_id: string
+  /** Opaque LangGraph interrupt ID used to resume the frozen graph. */
+  interrupt_id: string
+  session_id: string
+  turn_id: string
+}
+
+export interface SSEPlanApprovalRequest {
+  type: 'plan_approval_request'
+  plan_id: string
+  plan_file_ref: string
+  summary: string
+  status: string
+  mode: string
+  interrupt_id: string
+  session_id: string
+  turn_id: string
+}
+
+export interface SSEPlanModified {
+  type: 'plan_modified'
+  plan_id: string
+  plan_file_ref: string
+  summary: string
+  status: string
+  session_id: string
+  turn_id: string
+}
+
+/** Stored in SSETurn.pendingApproval while the graph awaits a user decision. */
+export interface SSEPendingToolApproval {
+  kind: 'tool'
+  tool_name: string
+  args: Record<string, unknown>
+  tool_call_id: string
+  interrupt_id: string
+}
+
+export interface SSEPendingPlanApproval {
+  kind: 'plan'
+  plan_id: string
+  plan_file_ref: string
+  summary: string
+  status: string
+  mode: string
+  interrupt_id: string
+  content?: string
+}
+
+export type SSEPendingApproval = SSEPendingToolApproval | SSEPendingPlanApproval
 
 /** Researcher intermediate reasoning step — emitted before each tool call batch. */
 export interface SSEThinking {
@@ -227,6 +287,9 @@ export type SSEEvent =
   | SSETaskUpdate
   | SSEShadowError
   | SSEInterrupt
+  | SSEApprovalRequired
+  | SSEPlanApprovalRequest
+  | SSEPlanModified
   | SSEThinking
   | SSEDone
   | SSEError
@@ -257,6 +320,8 @@ export interface SSETurn {
   statusLabel: string
   /** Set when researcher pauses for user clarification (HITL). Cleared on next send. */
   pendingInterrupt?: SSEPendingInterrupt
+  /** Set when a heavy tool requires explicit user approval before execution. */
+  pendingApproval?: SSEPendingApproval
   /** Unified reasoning stream shown in the chain-of-thought area. */
   thinkingSteps: SSEThinking[]
 }

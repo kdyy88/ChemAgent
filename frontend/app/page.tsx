@@ -2,10 +2,10 @@
 
 import { useSyncExternalStore } from 'react'
 import Link from 'next/link'
-import { PlusCircle, FlaskConical, LayoutTemplate } from 'lucide-react'
+import { PlusCircle, FlaskConical, ScrollText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useSseStore } from '@/store/sseStore'
+import { useUIStore } from '@/store/uiStore'
 import {
   ResizableHandle,
   ResizablePanel,
@@ -15,8 +15,10 @@ import { useMediaQuery } from '@/hooks/use-media-query'
 import { ToolSidebar } from '@/components/workspace/ToolSidebar'
 import { WorkspaceArea } from '@/components/workspace/WorkspaceArea'
 import { CopilotSidebar } from '@/components/chat/CopilotSidebar'
+import { AgentLayout } from '@/components/agent/AgentLayout'
 import GlobalLoading from './loading'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
+import { LanguageSwitcher } from '@/components/ui/LanguageSwitcher'
 
 function useHasMounted() {
   return useSyncExternalStore(
@@ -30,6 +32,7 @@ export default function Home() {
   const clearTurns = useSseStore((s) => s.clearTurns)
   const isDesktop = useMediaQuery('(min-width: 768px)')
   const isMounted = useHasMounted()
+  const { appMode } = useUIStore()
 
   if (!isMounted) {
     return <GlobalLoading />
@@ -59,37 +62,40 @@ export default function Home() {
             <PlusCircle className="h-4 w-4" aria-hidden="true" />
             <span className="hidden sm:inline text-xs">New Chat</span>
           </Button>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground" aria-label="Workflow Editor" asChild>
-                <Link href="/workflow">
-                  <LayoutTemplate className="h-4 w-4" aria-hidden="true" />
-                </Link>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Workflow Editor</TooltipContent>
-          </Tooltip>
+          <Link
+            href="/changelog"
+            className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+            aria-label="更新日志"
+          >
+            <ScrollText className="h-3.5 w-3.5" aria-hidden="true" />
+            <span className="hidden sm:inline">更新日志</span>
+          </Link>
+          <LanguageSwitcher />
           <ThemeToggle />
         </div>
       </header>
 
-      {/* Main Content Resizable Split */}
+      {/* ── Main content: mode-driven layout ── */}
       <div className="flex-1 overflow-hidden">
-        <ResizablePanelGroup orientation={isDesktop ? 'horizontal' : 'vertical'}>
-          <ResizablePanel defaultSize={15} minSize={10}>
-            <ToolSidebar />
-          </ResizablePanel>
-          <ResizableHandle withHandle />
-          <ResizablePanel defaultSize={60} minSize={40}>
-            <div className="h-full w-full mx-auto max-w-4xl ">
-              <WorkspaceArea />
-            </div>
-          </ResizablePanel>
-          <ResizableHandle withHandle />
-          <ResizablePanel defaultSize={15} minSize={10}>
-            <CopilotSidebar />
-          </ResizablePanel>
-        </ResizablePanelGroup>
+        {appMode === 'agent' ? (
+          <AgentLayout />
+        ) : (
+          <ResizablePanelGroup orientation={isDesktop ? 'horizontal' : 'vertical'}>
+            <ResizablePanel defaultSize={15} minSize="12%">
+              <ToolSidebar />
+            </ResizablePanel>
+            <ResizableHandle withHandle />
+            <ResizablePanel defaultSize={60} minSize="40%">
+              <div className="h-full w-full mx-auto max-w-4xl ">
+                <WorkspaceArea />
+              </div>
+            </ResizablePanel>
+            <ResizableHandle withHandle />
+            <ResizablePanel defaultSize={15} minSize="12%">
+              <CopilotSidebar />
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        )}
       </div>
 
       {/* Footer */}
