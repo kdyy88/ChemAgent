@@ -5,7 +5,9 @@ from typing import Any, Annotated, Literal
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, ConfigDict, Field
+# Pydantic schemas are defined in domain/schemas/agent.py and re-exported here
+# for backward compatibility.
+from app.domain.schemas.agent import PlannedTaskItem, PlanStructure, RouteDecision  # noqa: F401
 from typing_extensions import NotRequired
 from typing_extensions import TypedDict
 
@@ -64,21 +66,5 @@ class ChemState(TypedDict):
     subtask_control: dict[str, Any] | None
 
 
-class RouteDecision(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    is_complex: bool = Field(
-        description="任务是否包含多个子目标、明显的顺序依赖，或通常需要至少三次工具调用。",
-    )
-
-
-class PlannedTaskItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    description: str = Field(description="单个可执行子任务的简短标签。要求具体明确，但必须非常精炼，建议 4-12 个中文字符，避免长句和细节。")
-
-
-class PlanStructure(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    tasks: list[PlannedTaskItem] = Field(description="按顺序排列的 3-5 个子任务，每项都必须是简短标签式描述。")
+# RouteDecision, PlannedTaskItem, PlanStructure are defined in
+# app.domain.schemas.agent and imported above.

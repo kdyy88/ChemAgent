@@ -5,8 +5,8 @@ from collections.abc import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.agents.config import is_parameter_compatible_model
-from app.api import sse_chat
+from app.core.config import is_parameter_compatible_model
+from app.api.sse import chat as sse_chat
 
 
 def _build_client() -> TestClient:

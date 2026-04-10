@@ -15,10 +15,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.agents.subagent_protocol import ScratchpadKind, ScratchpadRef
-from app.agents.sub_agent_prompts import SubAgentMode, get_sub_agent_prompt
-from app.agents.tool_registry import ALWAYS_DENIED, get_root_tools, get_tool_tier, get_tools_for_mode
-from app.agents.skills import load_required_skill_markdown
+from app.agents.sub_agents.protocol import ScratchpadKind, ScratchpadRef
+from app.agents.sub_agents.prompts import SubAgentMode, get_sub_agent_prompt
+from app.tools.registry import ALWAYS_DENIED, get_root_tools, get_tool_tier, get_tools_for_mode
+from app.agents.sub_agents.skills import load_required_skill_markdown
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -27,7 +27,7 @@ from app.agents.skills import load_required_skill_markdown
 @pytest.fixture()
 def all_tool_names() -> set[str]:
     """Return the set of all available tool names from ALL_CHEM_TOOLS."""
-    from app.agents.lg_tools import ALL_CHEM_TOOLS
+    from app.tools.chem import ALL_CHEM_TOOLS
     return {t.name for t in ALL_CHEM_TOOLS}
 
 
@@ -148,7 +148,7 @@ class TestToolRegistry:
 
 class TestWebSearchTool:
     async def test_web_search_uses_tavily(self) -> None:
-        from app.agents.lg_tools import tool_web_search
+        from app.tools.interaction.web_search import tool_web_search
 
         tavily_payload = {
             "answer": "Azithromycin remains approved for several bacterial infections.",
@@ -162,7 +162,7 @@ class TestWebSearchTool:
         }
 
         with patch.dict("os.environ", {"TAVILY_API_KEY": "tvly-test-key"}, clear=False):
-            with patch("app.agents.lg_tools.TavilyClient") as client_cls:
+            with patch("app.tools.interaction.web_search.TavilyClient") as client_cls:
                 client_cls.return_value.search.return_value = tavily_payload
 
                 raw = await tool_web_search.ainvoke({"query": "azithromycin 2026"})
@@ -180,7 +180,7 @@ class TestWebSearchTool:
         assert parsed["results"][1]["url"] == "https://example.com/fda"
 
     async def test_web_search_requires_tavily_api_key(self) -> None:
-        from app.agents.lg_tools import tool_web_search
+        from app.tools.interaction.web_search import tool_web_search
 
         with patch.dict("os.environ", {}, clear=True):
             raw = await tool_web_search.ainvoke({"query": "aspirin approval news"})
@@ -287,14 +287,14 @@ class TestSubGraphBuilder:
     """Graph topology and safety guards."""
 
     def test_raises_without_checkpointer(self) -> None:
-        from app.agents.sub_graph import build_sub_agent_graph
+        from app.agents.sub_agents.graph import build_sub_agent_graph
 
         tools = get_tools_for_mode(SubAgentMode.explore)
         with pytest.raises(ValueError, match="persistent checkpointer"):
             build_sub_agent_graph(SubAgentMode.explore, tools, checkpointer=None)
 
     def test_plan_mode_has_runtime_tools_executor(self) -> None:
-        from app.agents.sub_graph import build_sub_agent_graph
+        from app.agents.sub_agents.graph import build_sub_agent_graph
         from langgraph.checkpoint.memory import MemorySaver
 
         mem_checkpointer = MemorySaver()
@@ -306,7 +306,7 @@ class TestSubGraphBuilder:
         assert "sub_tools_executor" in graph.get_graph().nodes
 
     def test_explore_mode_has_two_nodes(self) -> None:
-        from app.agents.sub_graph import build_sub_agent_graph
+        from app.agents.sub_agents.graph import build_sub_agent_graph
         from langgraph.checkpoint.memory import MemorySaver
 
         mem_checkpointer = MemorySaver()
@@ -319,7 +319,7 @@ class TestSubGraphBuilder:
         assert "sub_tools_executor" in node_names
 
     def test_general_mode_has_two_nodes(self) -> None:
-        from app.agents.sub_graph import build_sub_agent_graph
+        from app.agents.sub_agents.graph import build_sub_agent_graph
         from langgraph.checkpoint.memory import MemorySaver
 
         mem_checkpointer = MemorySaver()
@@ -337,7 +337,7 @@ class TestSubAgentToolHelpers:
     """UUID-backed runtime ids and typed delegation normalization."""
 
     def test_resolve_runtime_ids_uses_plan_id_for_plan_mode(self) -> None:
-        from app.agents.tools.sub_agent import _resolve_runtime_ids
+        from app.agents.sub_agents.dispatcher import _resolve_runtime_ids
 
         sub_thread_id, plan_id, execution_task_id = _resolve_runtime_ids(
             mode="plan",
@@ -349,7 +349,7 @@ class TestSubAgentToolHelpers:
         assert execution_task_id is None
 
     def test_resolve_runtime_ids_uses_execution_id_for_non_plan_mode(self) -> None:
-        from app.agents.tools.sub_agent import _resolve_runtime_ids
+        from app.agents.sub_agents.dispatcher import _resolve_runtime_ids
 
         sub_thread_id, plan_id, execution_task_id = _resolve_runtime_ids(
             mode="general",
@@ -361,7 +361,7 @@ class TestSubAgentToolHelpers:
         assert plan_id is None
 
     def test_normalize_artifact_pointers_prefers_explicit_then_parent(self) -> None:
-        from app.agents.tools.sub_agent import _normalize_artifact_pointers
+        from app.agents.sub_agents.dispatcher import _normalize_artifact_pointers
 
         assert _normalize_artifact_pointers(["art_a", "art_b"], ["art_c"], "art_d") == ["art_a", "art_b"]
         assert _normalize_artifact_pointers([], ["art_c", "art_d"], "art_e") == ["art_c", "art_d"]
@@ -369,7 +369,7 @@ class TestSubAgentToolHelpers:
 
     def test_normalize_delegation_keeps_short_context_inline(self) -> None:
         """Without a context param the delegation always starts with empty inline_context."""
-        from app.agents.tools.sub_agent import _normalize_delegation_payload
+        from app.agents.sub_agents.dispatcher import _normalize_delegation_payload
 
         delegation = _normalize_delegation_payload(
             mode="explore",
@@ -390,9 +390,9 @@ class TestSubAgentToolHelpers:
 
     def test_normalize_delegation_writes_long_context_to_scratchpad(self) -> None:
         """Without a context param, no scratchpad entry is created during delegation build."""
-        from app.agents.tools.sub_agent import _normalize_delegation_payload
+        from app.agents.sub_agents.dispatcher import _normalize_delegation_payload
 
-        with patch("app.agents.tools.sub_agent.create_scratchpad_entry") as create_entry:
+        with patch("app.agents.sub_agents.dispatcher.create_scratchpad_entry") as create_entry:
             delegation = _normalize_delegation_payload(
                 mode="explore",
                 task="提取共同骨架特征",
@@ -411,7 +411,7 @@ class TestSubAgentToolHelpers:
         assert delegation.scratchpad_refs == []
 
     def test_preflight_rejects_explore_design_with_forbid_new_smiles(self) -> None:
-        from app.agents.tools.sub_agent import (
+        from app.agents.sub_agents.dispatcher import (
             _preflight_sub_agent_request,
             SubAgentOutputContract,
             SubAgentSmilesPolicy,
@@ -432,7 +432,7 @@ class TestSubAgentToolHelpers:
         assert payload["recommended_mode"] == "general"
 
     def test_preflight_allows_fact_only_scaffold_analysis_in_explore_mode(self) -> None:
-        from app.agents.tools.sub_agent import (
+        from app.agents.sub_agents.dispatcher import (
             _preflight_sub_agent_request,
             SubAgentOutputContract,
             SubAgentSmilesPolicy,
@@ -452,7 +452,7 @@ class TestSubAgentToolHelpers:
 
     def test_tool_schema_excludes_always_denied(self) -> None:
         """The tool's schema description should not expose denied tool names."""
-        from app.agents.tools.sub_agent import tool_run_sub_agent
+        from app.agents.sub_agents.dispatcher import tool_run_sub_agent
 
         schema_model = tool_run_sub_agent.args_schema
         assert schema_model is not None
@@ -462,7 +462,7 @@ class TestSubAgentToolHelpers:
         assert "tool_run_sub_agent" not in schema_text
 
     def test_infer_required_mode(self) -> None:
-        from app.agents.tools.sub_agent import _infer_required_mode
+        from app.agents.sub_agents.dispatcher import _infer_required_mode
 
         assert _infer_required_mode("please build 3D conformer for this ligand") == SubAgentMode.general
         assert _infer_required_mode("extract the scaffold and compare similarity") == SubAgentMode.explore
@@ -479,7 +479,7 @@ class TestRunSubAgentToolIntegration:
     async def test_plan_mode_returns_pending_approval_status(self) -> None:
         from langchain_core.messages import AIMessage
 
-        from app.agents.tools.sub_agent import tool_run_sub_agent
+        from app.agents.sub_agents.dispatcher import tool_run_sub_agent
 
         fake_ref = ScratchpadRef(
             scratchpad_id="sp_abcdef123456",
@@ -516,9 +516,9 @@ class TestRunSubAgentToolIntegration:
         mock_checkpointer = MagicMock()
 
         with (
-            patch("app.agents.tools.sub_agent.build_sub_agent_graph", return_value=mock_graph),
+            patch("app.agents.sub_agents.dispatcher.build_sub_agent_graph", return_value=mock_graph),
             patch("app.agents.runtime.get_checkpointer", return_value=mock_checkpointer),
-            patch("app.agents.tools.sub_agent.create_scratchpad_entry", return_value=fake_ref),
+            patch("app.agents.sub_agents.dispatcher.create_scratchpad_entry", return_value=fake_ref),
         ):
             result_str = await tool_run_sub_agent.ainvoke(
                 {
@@ -542,7 +542,7 @@ class TestRunSubAgentToolIntegration:
     async def test_run_sub_agent_returns_produced_artifacts_and_suggested_smiles(self) -> None:
         from langchain_core.messages import AIMessage
 
-        from app.agents.tools.sub_agent import tool_run_sub_agent
+        from app.agents.sub_agents.dispatcher import tool_run_sub_agent
 
         fake_ref = ScratchpadRef(
             scratchpad_id="sp_111111aaaaaa",
@@ -574,11 +574,11 @@ class TestRunSubAgentToolIntegration:
         mock_checkpointer = MagicMock()
 
         with (
-            patch("app.agents.tools.sub_agent.build_sub_agent_graph", return_value=mock_graph),
+            patch("app.agents.sub_agents.dispatcher.build_sub_agent_graph", return_value=mock_graph),
             patch("app.agents.runtime.get_checkpointer", return_value=mock_checkpointer),
-            patch("app.agents.tools.sub_agent.create_scratchpad_entry", return_value=fake_ref),
+            patch("app.agents.sub_agents.dispatcher.create_scratchpad_entry", return_value=fake_ref),
             patch(
-                "app.agents.tools.sub_agent._lg_get_config",
+                "app.agents.sub_agents.dispatcher._lg_get_config",
                 create=True,
                 return_value={
                     "configurable": {
@@ -607,7 +607,7 @@ class TestRunSubAgentToolIntegration:
 
     @pytest.mark.asyncio
     async def test_structured_completion_generates_report_content_without_placeholder(self) -> None:
-        from app.agents.tools.sub_agent import tool_run_sub_agent
+        from app.agents.sub_agents.dispatcher import tool_run_sub_agent
 
         fake_ref = ScratchpadRef(
             scratchpad_id="sp_structured123",
@@ -638,9 +638,9 @@ class TestRunSubAgentToolIntegration:
         create_entry = MagicMock(return_value=fake_ref)
 
         with (
-            patch("app.agents.tools.sub_agent.build_sub_agent_graph", return_value=mock_graph),
+            patch("app.agents.sub_agents.dispatcher.build_sub_agent_graph", return_value=mock_graph),
             patch("app.agents.runtime.get_checkpointer", return_value=MagicMock()),
-            patch("app.agents.tools.sub_agent.create_scratchpad_entry", create_entry),
+            patch("app.agents.sub_agents.dispatcher.create_scratchpad_entry", create_entry),
         ):
             result_str = await tool_run_sub_agent.ainvoke(
                 {
@@ -663,7 +663,7 @@ class TestRunSubAgentToolIntegration:
     async def test_structured_completion_wins_over_conflicting_free_text(self) -> None:
         from langchain_core.messages import AIMessage
 
-        from app.agents.tools.sub_agent import tool_run_sub_agent
+        from app.agents.sub_agents.dispatcher import tool_run_sub_agent
 
         fake_ref = ScratchpadRef(
             scratchpad_id="sp_alignment123",
@@ -701,9 +701,9 @@ class TestRunSubAgentToolIntegration:
         create_entry = MagicMock(return_value=fake_ref)
 
         with (
-            patch("app.agents.tools.sub_agent.build_sub_agent_graph", return_value=mock_graph),
+            patch("app.agents.sub_agents.dispatcher.build_sub_agent_graph", return_value=mock_graph),
             patch("app.agents.runtime.get_checkpointer", return_value=MagicMock()),
-            patch("app.agents.tools.sub_agent.create_scratchpad_entry", create_entry),
+            patch("app.agents.sub_agents.dispatcher.create_scratchpad_entry", create_entry),
         ):
             result_str = await tool_run_sub_agent.ainvoke(
                 {
@@ -726,7 +726,7 @@ class TestRunSubAgentToolIntegration:
     async def test_missing_task_complete_returns_protocol_error(self) -> None:
         from langchain_core.messages import AIMessage
 
-        from app.agents.tools.sub_agent import tool_run_sub_agent
+        from app.agents.sub_agents.dispatcher import tool_run_sub_agent
 
         fake_ref = ScratchpadRef(
             scratchpad_id="sp_deadbeefcafe",
@@ -750,9 +750,9 @@ class TestRunSubAgentToolIntegration:
         mock_graph.aget_state = AsyncMock(return_value=MagicMock(interrupts=[]))
 
         with (
-            patch("app.agents.tools.sub_agent.build_sub_agent_graph", return_value=mock_graph),
+            patch("app.agents.sub_agents.dispatcher.build_sub_agent_graph", return_value=mock_graph),
             patch("app.agents.runtime.get_checkpointer", return_value=MagicMock()),
-            patch("app.agents.tools.sub_agent.create_scratchpad_entry", return_value=fake_ref),
+            patch("app.agents.sub_agents.dispatcher.create_scratchpad_entry", return_value=fake_ref),
         ):
             result_str = await tool_run_sub_agent.ainvoke(
                 {
@@ -770,7 +770,7 @@ class TestRunSubAgentToolIntegration:
     async def test_report_failure_payload_is_preserved(self) -> None:
         from langchain_core.messages import AIMessage
 
-        from app.agents.tools.sub_agent import tool_run_sub_agent
+        from app.agents.sub_agents.dispatcher import tool_run_sub_agent
 
         fake_ref = ScratchpadRef(
             scratchpad_id="sp_failure1234",
@@ -803,9 +803,9 @@ class TestRunSubAgentToolIntegration:
         mock_graph.aget_state = AsyncMock(return_value=MagicMock(interrupts=[]))
 
         with (
-            patch("app.agents.tools.sub_agent.build_sub_agent_graph", return_value=mock_graph),
+            patch("app.agents.sub_agents.dispatcher.build_sub_agent_graph", return_value=mock_graph),
             patch("app.agents.runtime.get_checkpointer", return_value=MagicMock()),
-            patch("app.agents.tools.sub_agent.create_scratchpad_entry", return_value=fake_ref),
+            patch("app.agents.sub_agents.dispatcher.create_scratchpad_entry", return_value=fake_ref),
         ):
             result_str = await tool_run_sub_agent.ainvoke(
                 {
@@ -822,7 +822,7 @@ class TestRunSubAgentToolIntegration:
 
     @pytest.mark.asyncio
     async def test_explore_design_request_with_forbid_new_smiles_returns_policy_conflict(self) -> None:
-        from app.agents.tools.sub_agent import tool_run_sub_agent
+        from app.agents.sub_agents.dispatcher import tool_run_sub_agent
 
         result_str = await tool_run_sub_agent.ainvoke(
             {
@@ -841,7 +841,7 @@ class TestRunSubAgentToolIntegration:
 
     @pytest.mark.asyncio
     async def test_unknown_mode_returns_error(self) -> None:
-        from app.agents.tools.sub_agent import tool_run_sub_agent
+        from app.agents.sub_agents.dispatcher import tool_run_sub_agent
 
         result_str = await tool_run_sub_agent.ainvoke(
             {
@@ -857,7 +857,7 @@ class TestRunSubAgentToolIntegration:
     async def test_timeout_returns_timeout_status(self) -> None:
         import asyncio
 
-        from app.agents.tools.sub_agent import tool_run_sub_agent
+        from app.agents.sub_agents.dispatcher import tool_run_sub_agent
 
         async def slow_ainvoke(*args: object, **kwargs: object) -> dict:  # noqa: ARG001
             await asyncio.sleep(999)
@@ -870,9 +870,9 @@ class TestRunSubAgentToolIntegration:
         mock_checkpointer = MagicMock()
 
         with (
-            patch("app.agents.tools.sub_agent.build_sub_agent_graph", return_value=mock_graph),
+            patch("app.agents.sub_agents.dispatcher.build_sub_agent_graph", return_value=mock_graph),
             patch("app.agents.runtime.get_checkpointer", return_value=mock_checkpointer),
-            patch("app.agents.tools.sub_agent._SUB_AGENT_TIMEOUT", 0.05),
+            patch("app.agents.sub_agents.dispatcher._SUB_AGENT_TIMEOUT", 0.05),
         ):
             result_str = await tool_run_sub_agent.ainvoke(
                 {
@@ -886,7 +886,7 @@ class TestRunSubAgentToolIntegration:
 
     @pytest.mark.asyncio
     async def test_custom_invalid_tool_returns_error(self) -> None:
-        from app.agents.tools.sub_agent import tool_run_sub_agent
+        from app.agents.sub_agents.dispatcher import tool_run_sub_agent
 
         mock_checkpointer = MagicMock()
 

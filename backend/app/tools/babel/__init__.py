@@ -1,11 +1,11 @@
 """
-Open Babel LangGraph tool wrappers.
+Backward-compatibility shim for app.tools.babel.
 
-All tools are implemented in ``app/tools/babel/prep.py`` and re-exported here
-for ergonomic imports from ``app.tools.babel``.
+Babel tools have moved to ``app.tools.chem.babel_tools``.
+This package re-exports everything from the new location.
 """
 
-from app.tools.babel.prep import (  # noqa: F401
+from app.tools.chem.babel_tools import (  # noqa: F401
     ALL_BABEL_TOOLS,
     tool_build_3d_conformer,
     tool_compute_mol_properties,

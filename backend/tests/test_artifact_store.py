@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.core import artifact_store
-from app.core.artifact_store import (
+from app.domain.stores import artifacts as artifact_store
+from app.domain.stores.artifacts import (
     get_engine_artifact,
     get_engine_artifact_metadata,
     get_engine_artifact_warning,
@@ -48,7 +48,7 @@ async def test_temp_artifact_warning_and_expiry_signal() -> None:
     artifact_id = "temp_art_test"
     key = artifact_store._artifact_key(artifact_id)
 
-    with patch("app.core.artifact_store.get_redis_pool", new=AsyncMock(return_value=redis)), \
+    with patch("app.domain.stores.artifacts.get_redis_pool", new=AsyncMock(return_value=redis)), \
          patch.object(artifact_store, "_EXPIRY_WARNING_SECONDS", 5):
         await store_engine_artifact(artifact_id, {"payload": "x"}, tier="temp", ttl=5)
         metadata = await get_engine_artifact_metadata(artifact_id)
@@ -73,7 +73,7 @@ async def test_promote_artifact_clears_ttl_and_preserves_payload() -> None:
     artifact_id = "temp_art_promote"
     key = artifact_store._artifact_key(artifact_id)
 
-    with patch("app.core.artifact_store.get_redis_pool", new=AsyncMock(return_value=redis)):
+    with patch("app.domain.stores.artifacts.get_redis_pool", new=AsyncMock(return_value=redis)):
         await store_engine_artifact(artifact_id, {"canonical_smiles": "CCO"}, tier="temp", ttl=5)
         assert await promote_artifact(artifact_id) is True
 

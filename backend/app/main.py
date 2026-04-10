@@ -64,10 +64,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.agents.runtime import initialize_graph_runtime, shutdown_graph_runtime
-from app.api.sse_chat import router as sse_chat_router
-from app.api.rdkit_api import router as rdkit_router
-from app.api.babel_api import router as babel_router
-from app.api.scratchpad_api import router as scratchpad_router
+from app.api.sse.chat import router as sse_chat_router
+from app.api.rest.rdkit import router as rdkit_router
+from app.api.rest.babel import router as babel_router
+from app.api.rest.scratchpad import router as scratchpad_router
 from app.core.network import get_allowed_origins
 
 

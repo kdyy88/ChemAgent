@@ -67,7 +67,8 @@ def test_sanitize_message_bus_payload_strips_nested_binary_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_summary_tool_message_is_compacted_without_artifact_redaction() -> None:
+async def test_summary_tool_message_passes_through_unchanged() -> None:
+    """Context Firewall removed: sanitize_message_for_state is now a no-op."""
     message = ToolMessage(
         content=json.dumps(
             {
@@ -110,20 +111,13 @@ async def test_summary_tool_message_is_compacted_without_artifact_redaction() ->
         name="tool_evaluate_molecule",
     )
 
-    with patch("app.agents.utils.store_engine_artifact", new=AsyncMock()) as store_mock:
-        sanitized = await sanitize_message_for_state(message, source="tools_executor[0]")
-
-    compact = json.loads(cast(str, sanitized.content))
-    assert compact["content_compacted"] is True
-    assert compact["artifact_id"] == "art_eval_1"
-    assert compact["source_tool"] == "tool_evaluate_molecule"
-    assert len(sanitized.content) < len(message.content)
-    assert "temp_art_" not in sanitized.content
-    store_mock.assert_not_awaited()
+    sanitized = await sanitize_message_for_state(message, source="tools_executor[0]")
+    assert sanitized.content == message.content
 
 
 @pytest.mark.asyncio
-async def test_sub_agent_tool_message_is_exempt_from_firewall() -> None:
+async def test_sub_agent_tool_message_passes_through_via_noop_sanitize() -> None:
+    """Context Firewall removed: all tool messages pass through without modification."""
     message = ToolMessage(
         content=json.dumps(
             {
@@ -141,11 +135,8 @@ async def test_sub_agent_tool_message_is_exempt_from_firewall() -> None:
         name="tool_run_sub_agent",
     )
 
-    with patch("app.agents.utils.store_engine_artifact", new=AsyncMock()) as store_mock:
-        sanitized = await sanitize_message_for_state(message, source="tools_executor[0]")
-
+    sanitized = await sanitize_message_for_state(message, source="tools_executor[0]")
     assert sanitized.content == message.content
-    store_mock.assert_not_awaited()
 
 
 def test_normalize_messages_aggregates_omitted_tool_placeholders_across_rounds() -> None:
@@ -541,7 +532,8 @@ async def test_failed_sub_agent_with_continue_retries_same_execution_context() -
 
 
 @pytest.mark.asyncio
-async def test_tools_executor_redacts_large_biostructure_messages_to_temp_artifact(caplog: pytest.LogCaptureFixture) -> None:
+async def test_tools_executor_passes_large_biostructure_messages_unchanged(caplog: pytest.LogCaptureFixture) -> None:
+    """Context Firewall removed: large tool outputs are no longer redacted to artifacts."""
     state = cast(ChemState, {
         "messages": [
             AIMessage(
@@ -571,24 +563,17 @@ async def test_tools_executor_redacts_large_biostructure_messages_to_temp_artifa
         async def ainvoke(self, args: dict, config: dict | None = None):
             return huge_pdb
 
-    caplog.set_level(logging.WARNING)
-
-    with patch.dict("app.agents.nodes.executor._TOOL_LOOKUP", {"tool_bulk_structure": _FakeTool()}), \
-         patch("app.agents.utils.store_engine_artifact", new_callable=AsyncMock) as store_mock:
+    with patch.dict("app.agents.nodes.executor._TOOL_LOOKUP", {"tool_bulk_structure": _FakeTool()}):
         result = await tools_executor_node(state, {"configurable": {}})
 
     tool_message = result["messages"][0]
-    assert len(str(tool_message.content)) < 1000
-    assert "Data Redacted due to size" in str(tool_message.content)
-    artifact_id = str(tool_message.content).split("Artifact ID: ", 1)[1].rstrip("]")
-    assert artifact_id.startswith("temp_art_")
-    store_mock.assert_awaited_once_with(artifact_id, huge_pdb, tier="temp")
-    assert artifact_id in caplog.text
-    assert "Context firewall redacted message before state write" in caplog.text
+    # Context Firewall removed: full content is preserved in state
+    assert str(tool_message.content) == huge_pdb
 
 
 @pytest.mark.asyncio
-async def test_chem_agent_redacts_large_model_message_before_state_write() -> None:
+async def test_chem_agent_preserves_large_model_message_in_state() -> None:
+    """Context Firewall removed: large AI messages are no longer redacted."""
     state = cast(ChemState, {
         "messages": [AIMessage(content="prior turn")],
         "active_smiles": None,
@@ -608,15 +593,11 @@ async def test_chem_agent_redacts_large_model_message_before_state_write() -> No
         async def ainvoke(self, prompt_messages):
             return AIMessage(content=huge_response)
 
-    with patch("app.agents.nodes.agent.build_llm", return_value=_FakeBoundLlm()), \
-         patch("app.agents.utils.store_engine_artifact", new_callable=AsyncMock) as store_mock:
+    with patch("app.agents.nodes.agent.build_llm", return_value=_FakeBoundLlm()):
         result = await chem_agent_node(state)
 
     ai_message = result["messages"][0]
-    assert len(str(ai_message.content)) < 1000
-    assert "Data Redacted due to size" in str(ai_message.content)
-    artifact_id = str(ai_message.content).split("Artifact ID: ", 1)[1].rstrip("]")
-    store_mock.assert_awaited_once_with(artifact_id, huge_response, tier="temp")
+    assert ai_message.content == huge_response
 
 
 @pytest.mark.asyncio
@@ -640,37 +621,33 @@ async def test_chem_agent_preserves_long_natural_language_report_in_state() -> N
         async def ainvoke(self, prompt_messages):
             return AIMessage(content=report)
 
-    with patch("app.agents.nodes.agent.build_llm", return_value=_FakeBoundLlm()), \
-         patch("app.agents.utils.store_engine_artifact", new_callable=AsyncMock) as store_mock:
+    with patch("app.agents.nodes.agent.build_llm", return_value=_FakeBoundLlm()):
         result = await chem_agent_node(state)
 
     ai_message = result["messages"][0]
     assert ai_message.content == report
-    store_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_sanitize_ai_tool_call_args_redacts_large_raw_chemistry_inputs() -> None:
+async def test_sanitize_ai_tool_call_args_passes_through_unchanged() -> None:
+    """Context Firewall removed: tool call args are no longer redacted to artifacts."""
     huge_sdf = "HEADER    PROTEIN\n" + ("ATOM      1  C   LIG A   1      10.000  10.000  10.000\n" * 200)
+    original_args = {"molecule_str": huge_sdf, "input_fmt": "sdf", "output_fmt": "pdb"}
     message = AIMessage(
         content="Convert this structure",
         tool_calls=[
             {
                 "name": "tool_convert_format",
                 "id": "call-convert",
-                "args": {"molecule_str": huge_sdf, "input_fmt": "sdf", "output_fmt": "pdb"},
+                "args": original_args,
             }
         ],
     )
 
-    with patch("app.agents.utils.store_engine_artifact", new_callable=AsyncMock) as store_mock:
-        sanitized = await sanitize_message_for_state(message, source="chem_agent")
-
+    sanitized = await sanitize_message_for_state(message, source="chem_agent")
     sanitized_ai = cast(AIMessage, sanitized)
-    assert sanitized_ai.tool_calls[0]["args"]["__redacted__"] is True
-    artifact_id = sanitized_ai.tool_calls[0]["args"]["__artifact_id__"]
-    assert artifact_id.startswith("temp_art_")
-    store_mock.assert_awaited_once()
+    assert sanitized_ai.tool_calls[0]["args"] == original_args
+    assert "__redacted__" not in sanitized_ai.tool_calls[0]["args"]
 
 
 @pytest.mark.asyncio
@@ -924,8 +901,7 @@ async def test_murcko_scaffold_keeps_minimal_structured_fields_before_firewall()
             )
 
     with patch.dict("app.agents.nodes.executor._TOOL_LOOKUP", {"tool_murcko_scaffold": _FakeMurckoTool()}), \
-         patch("app.agents.utils.store_engine_artifact", new=AsyncMock()) as store_mock, \
-         patch("app.agents.postprocessors.adispatch_custom_event", new=AsyncMock()):
+         patch("app.agents.middleware.postprocessors.adispatch_custom_event", new=AsyncMock()):
         result = await tools_executor_node(state, {"configurable": {}})
 
     content = json.loads(result["messages"][0].content)
@@ -936,4 +912,3 @@ async def test_murcko_scaffold_keeps_minimal_structured_fields_before_firewall()
     assert "molecule_image" not in content
     assert "scaffold_image" not in content
     assert len(result["artifacts"]) == 2
-    store_mock.assert_not_awaited()

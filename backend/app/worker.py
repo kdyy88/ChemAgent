@@ -5,7 +5,7 @@ import os
 import re
 from typing import Any
 
-from app.core.task_queue import (
+from app.core.redis import (
     build_redis_settings,
     get_default_artifact_ttl_seconds,
     get_default_result_ttl_seconds,
@@ -15,7 +15,7 @@ from app.core.task_queue import (
     store_task_result,
 )
 
-from app.core.task_registry import TASK_DISPATCH, TaskFn
+from app.services.task_runner.dispatch import TASK_DISPATCH, TaskFn
 
 _TASK_DISPATCH = TASK_DISPATCH  # keep the local alias so rest of file is unchanged
 

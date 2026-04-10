@@ -7,7 +7,7 @@
 控制面 / 数据面分离
 ────────────────────
 - **控制面**：流向前端的 SSE 事件流；只携带轻量级元数据与工件指针。
-- **数据面**：Redis artifact store（``app.core.artifact_store``）；挂载大体积 SDF/PDB/图像等计算结果，
+- **数据面**：Redis artifact store（``app.domain.stores.artifacts``）；挂载大体积 SDF/PDB/图像等计算结果，
   避免原始内容撑爆 LLM 上下文窗口或 SSE 帧。
 
 错误扣留 (Error Withholding)
@@ -32,8 +32,8 @@ from langgraph.types import Command
 
 from app.agents.runtime import get_compiled_graph, has_persisted_session
 from app.agents.state import ChemState
-from app.core.artifact_store import store_engine_artifact
-from app.core.plan_store import update_plan_file
+from app.domain.stores.artifacts import store_engine_artifact
+from app.domain.stores.plans import update_plan_file
 
 logger = logging.getLogger(__name__)
 
