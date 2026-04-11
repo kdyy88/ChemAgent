@@ -1,4 +1,6 @@
-FROM node:20-alpine AS deps
+ARG NODE_IMAGE=node:20-alpine
+
+FROM ${NODE_IMAGE} AS deps
 
 WORKDIR /app
 
@@ -6,7 +8,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN corepack enable && pnpm install --frozen-lockfile
 
 
-FROM node:20-alpine AS builder
+FROM ${NODE_IMAGE} AS builder
 
 WORKDIR /app
 
@@ -23,7 +25,7 @@ ENV NODE_OPTIONS="--max-old-space-size=1024"
 RUN corepack enable && pnpm build
 
 
-FROM node:20-alpine AS runner
+FROM ${NODE_IMAGE} AS runner
 
 ARG NEXT_PUBLIC_WS_URL
 

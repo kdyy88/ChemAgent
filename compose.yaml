@@ -1,6 +1,6 @@
 services:
   redis:
-    image: redis:7-alpine
+    image: ${REDIS_IMAGE:-redis:7-alpine}
     container_name: chemagent-redis
     restart: unless-stopped
     command: >
@@ -108,6 +108,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:20-alpine}
         NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-}
     container_name: chemagent-frontend
     restart: unless-stopped
@@ -134,7 +135,7 @@ services:
       start_period: 20s
 
   gateway:
-    image: nginx:1.27-alpine
+    image: ${NGINX_IMAGE:-nginx:1.27-alpine}
     container_name: chemagent-gateway
     restart: unless-stopped
     depends_on:

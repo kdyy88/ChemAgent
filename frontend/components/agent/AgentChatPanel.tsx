@@ -67,7 +67,6 @@ export function AgentChatPanel() {
           <SSEChatInput
             isStreaming={isStreaming}
             sendMessage={sendMessage}
-            clearTurns={clearTurns}
           />
         </div>
       </div>
