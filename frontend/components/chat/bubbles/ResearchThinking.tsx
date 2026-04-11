@@ -92,7 +92,17 @@ function groupThinkingSteps(steps: SSEThinking[], t: TFn): ThinkingGroup[] {
   const timeline: ThinkingGroup[] = []
 
   for (const step of steps) {
-    const groupId = `${step.group_key || step.source || step.category || summarizeGroupTitle(step, t)}`
+    const rawId = step.group_key || step.source || step.category || summarizeGroupTitle(step, t)
+    // Sub-agent steps without an explicit group_key all share the same source ('sub_agent'),
+    // which would collapse every tool call and reasoning thought into one group entry.
+    // Give each sub-agent tool call a unique ID (source::toolName) and each LLM thought
+    // a unique ID (source::llm::summary) so they appear as separate timeline entries.
+    const isSubAgentSrc = !step.group_key && (step.source ?? '').includes('sub_agent') && !(step.source ?? '').includes('report')
+    const groupId = isSubAgentSrc
+      ? step.category === 'tool'
+        ? `${rawId}::${extractToolName(step.text || '') ?? 'tool'}`
+        : `${rawId}::${step.category || 'llm'}::${summarizeGroupTitle(step, t)}`
+      : rawId
     const latestText = summarizeGroupTitle(step, t)
     const cleanDetail = normalizeDetail(step)
     const lastGroup = timeline[timeline.length - 1]
@@ -374,7 +384,12 @@ function buildDisplayEntries(
     const raw = `${group.rawText}\n${group.detail}`.trim()
     const kind = inferStageKind(raw)
     const reasoningText =
-      group.category === 'llm' || group.source === 'llm_reasoning' || isSubAgentReportStep(group)
+      group.category === 'llm' ||
+      group.source === 'llm_reasoning' ||
+      isSubAgentReportStep(group) ||
+      // Sub-agent steps whose category is not 'tool' carry reasoning text (llm thinking,
+      // summaries, etc.) even if their category/source fields differ from the main agent.
+      (isSubAgentStep(group) && group.category !== 'tool')
         ? toDisplayText(group.rawText)
         : ''
     const matchedSourceArtifact =
@@ -393,8 +408,15 @@ function buildDisplayEntries(
     // group.id == group_key == tool_name (e.g. "tool_validate_smiles") — use it directly.
     let toolLabel: string | undefined
     let toolResult: string | undefined
-    if (group.category === 'tool' && !isSubAgentReportStep(group)) {
-      const toolName = group.id.startsWith('tool_') ? group.id : extractToolName(group.rawText)
+    // Also match tool calls for sub-agent tool steps — their group.id is 'sub_agent::tool_foo'
+    // so we need additional fallbacks beyond just checking group.id.startsWith('tool_').
+    if ((group.category === 'tool' || (isSubAgentStep(group) && group.id.includes('::tool'))) && !isSubAgentReportStep(group)) {
+      const toolName =
+        group.id.startsWith('tool_')
+          ? group.id
+          : (extractToolName(group.rawText)
+              ?? extractToolName(group.id)
+              ?? extractToolName(group.detail))
       if (toolName && !TOOL_DISPLAY_SKIP.has(toolName)) {
         const matched = dequeueToolCall(toolQueue, toolName)
         if (matched?.output) {

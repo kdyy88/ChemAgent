@@ -2,7 +2,7 @@
 
 import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowUpRight, BookOpen, FlaskConical, GitBranch, Layers, Scale, Trash2 } from 'lucide-react'
+import { ArrowUpRight, Box, FlaskConical, Network, Shuffle, ShieldAlert, Trash2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useSSEChemAgent } from '@/hooks/useSSEChemAgent'
 import { ModeToggle } from '@/components/ui/ModeToggle'
@@ -22,12 +22,12 @@ const itemVariants = {
   visible: {
     opacity: 1,
     y: 0,
-    transition: { duration: 0.4, ease: [0.23, 1, 0.32, 1] },
+    transition: { duration: 0.4, ease: [0.23, 1, 0.32, 1] as [number, number, number, number] },
   },
 }
 
 // ── Starter prompt icon map ───────────────────────────────────────────────────
-const STARTER_ICONS: LucideIcon[] = [Scale, Layers, BookOpen, GitBranch]
+const STARTER_ICONS: LucideIcon[] = [Shuffle, Network, Box, ShieldAlert]
 
 export function CopilotSidebar() {
   const { t } = useTranslation('common')

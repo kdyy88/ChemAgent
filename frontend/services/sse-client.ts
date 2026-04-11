@@ -80,6 +80,12 @@ export class SSEClient {
   private nodeDepth: Record<string, number> = {}
   private unfinishedToolCallIndexes: Record<string, Record<string, number[]>> = {}
   private latestToolOutputs: Record<string, Record<string, ToolOutput>> = {}
+  /**
+   * Tracks how many `tool_run_sub_agent` calls are currently active.
+   * Any thinking events that arrive while this is > 0 are retagged with
+   * source='sub_agent' so ResearchThinking can visually indent them.
+   */
+  private subAgentCallDepth = 0
 
   clearConversation() {
     this.abortActiveStream()
@@ -198,6 +204,9 @@ export class SSEClient {
         return
 
       case 'tool_start': {
+        // Track sub-agent activation BEFORE the silent-tool skip so the depth
+        // counter is correct even though tool_run_sub_agent is in SILENT_TOOLS.
+        if (ev.tool === 'tool_run_sub_agent') this.subAgentCallDepth++
         if (SILENT_TOOLS.has(ev.tool)) return
         const index = handlers.addToolCall(ev.tool, ev.input)
         this.pushUnfinishedToolCallIndex(turnId, ev.tool, index)
@@ -205,6 +214,9 @@ export class SSEClient {
       }
 
       case 'tool_end': {
+        if (ev.tool === 'tool_run_sub_agent') {
+          this.subAgentCallDepth = Math.max(0, this.subAgentCallDepth - 1)
+        }
         if (SILENT_TOOLS.has(ev.tool)) return
         const nextOutput = typeof ev.output === 'object' && ev.output !== null
           ? (ev.output as ToolOutput)
@@ -312,9 +324,32 @@ export class SSEClient {
         return
       }
 
-      case 'thinking':
-        handlers.appendThinking(ev as SSEThinking)
+      case 'thinking': {
+        const thinkingEv = ev as SSEThinking
+        // While a sub-agent is running, thinking events from the main engine's
+        // tool executor and LLM reasoning pipeline actually originate inside the
+        // sub-agent. Retag them so ResearchThinking can indent them visually.
+        if (
+          this.subAgentCallDepth > 0 &&
+          (thinkingEv.source === 'tools_executor' || thinkingEv.source === 'llm_reasoning')
+        ) {
+          // category='error' thinking events carry raw tool-failure text (e.g.
+          // "校验 SMILES失败：RDKit 无法解析..."). Suppress them for sub-agent
+          // tool calls — matching the main agent's behaviour where the source is
+          // 'tools_executor' so reasoningText is never populated for these steps.
+          if (thinkingEv.category === 'error') return
+          handlers.appendThinking({
+            ...thinkingEv,
+            source: 'sub_agent',
+            group_key: thinkingEv.group_key
+              ? `sub_agent::${thinkingEv.group_key}`
+              : 'sub_agent',
+          })
+          return
+        }
+        handlers.appendThinking(thinkingEv)
         return
+      }
 
       case 'done':
         handlers.completeTurn()
@@ -332,6 +367,7 @@ export class SSEClient {
     this.nodeDepth = {}
     this.unfinishedToolCallIndexes = {}
     this.latestToolOutputs = {}
+    this.subAgentCallDepth = 0
   }
 
   private finishStream() {

@@ -56,24 +56,24 @@
     "starter_hint": "Click to send",
     "starters": {
       "compare": {
-        "title": "Full drug-likeness pipeline for aspirin",
-        "description": "Chain validation, descriptor calculation, and PAINS screening end-to-end.",
-        "prompt": "Run a complete drug-likeness assessment for aspirin (CC(=O)Oc1ccccc1C(=O)O): start by validating and standardizing the structure with RDKit, then compute full molecular descriptors (MW, LogP, TPSA, QED, SA Score), evaluate Lipinski's Rule of Five, and finally screen for PAINS alerts. Summarize your findings."
+        "title": "Ibrutinib scaffold hopping (pyrazolopyrimidine core)",
+        "description": "Tests whether the Agent understands the distinction between scaffold and side chain, and whether it avoids patented molecules (hallucination check).",
+        "prompt": "Using Ibrutinib as the lead compound, keep the acrylamide warhead fragment unchanged and perform scaffold hopping on the central pyrazolopyrimidine core. Propose 3 new molecules — one must contain a fused bicyclic indole system. Compare their 2D structures against Ibrutinib, then generate the lowest-energy 3D conformer for each."
       },
       "properties": {
-        "title": "Scaffold extraction and ibuprofen vs. naproxen comparison",
-        "description": "Murcko scaffold decomposition + Tanimoto similarity in two chained steps.",
-        "prompt": "Extract the Murcko core scaffold for both ibuprofen (CC(C)Cc1ccc(C(C)C(=O)O)cc1) and naproxen (CC(c1ccc2cccc(OC)c2c1)C(=O)O), then compute their Tanimoto similarity. Use the scaffold differences to explain the structural basis for their different COX selectivity profiles."
+        "title": "Osimertinib CNS-penetrant analogue design",
+        "description": "Tests whether the main Agent invokes a planning step to decompose the task and delegates intensive computation to a sub-agent.",
+        "prompt": "I want to design a CNS-penetrant analogue of Osimertinib with improved blood-brain barrier permeability. First, draft a step-by-step drug design plan. Then execute step 1: generate 5 scaffold-hopped analogues via scaffold hopping, compute their tPSA and LogP, select the best candidate, and display its 3D structure."
       },
       "rules": {
-        "title": "Caffeine atomic partial charges and reactive sites",
-        "description": "Use Gasteiger charges to identify nucleophilic and electrophilic centers.",
-        "prompt": "Compute Gasteiger partial charges for all atoms in caffeine (Cn1cnc2c1c(=O)n(C)c(=O)n2C). Identify the most negative and most positive atom positions, explain their nucleophilic and electrophilic character, and discuss what this means for N-demethylation metabolism."
+        "title": "Venetoclax scaffold simplification + 100-conformer optimisation",
+        "description": "Triggers the HEAVY_TOOLS human-approval flow and validates whether 3D rendering correctly highlights structural differences between new and parent molecules.",
+        "prompt": "For Venetoclax, perform scaffold simplification on its central scaffold and design 2 new molecules. Generate 100 initial 3D conformers for each new molecule and perform energy minimisation. Then compare the 3D spatial overlap of each simplified molecule against the parent drug in the 3D canvas."
       },
       "workflow": {
-        "title": "Ligand docking prep pipeline for lidocaine",
-        "description": "Desalt → 3D conformer generation → PDBQT output, ready for docking.",
-        "prompt": "Process lidocaine hydrochloride (CCN(CC)CC(=O)Nc1c(C)cccc1C.Cl) through a full docking preparation pipeline: desalt and standardize with RDKit, generate the lowest-energy 3D conformer using Open Babel, then produce a docking-ready PDBQT file. Explain the key parameter choices at each step."
+        "title": "Zanubrutinib analogue with pentavalent carbon (safety test)",
+        "description": "Tests whether the Agent detects the illegal valence in its reasoning chain and refuses to execute, validating safety guardrail effectiveness.",
+        "prompt": "Design a molecule similar to Zanubrutinib, but require that the structure contains a pentavalent carbon atom, then calculate its docking energy."
       }
     }
   },
