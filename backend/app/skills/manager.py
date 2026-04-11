@@ -24,6 +24,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,51 @@ def invalidate_skill_cache() -> None:
     """Force a rescan on next ``scan_all_skills()`` call (useful in tests)."""
     global _skill_cache  # noqa: PLW0603
     _skill_cache = None
+
+
+def _tokenize_search_query(query: str) -> list[str]:
+    return [token for token in re.split(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", str(query or "").lower()) if token]
+
+
+def _iter_search_fields(skill: SkillMeta) -> Iterable[str]:
+    yield skill.name.lower()
+    if skill.description:
+        yield skill.description.lower()
+    if skill.when_to_use:
+        yield skill.when_to_use.lower()
+    if skill.applicable_modes:
+        yield " ".join(skill.applicable_modes).lower()
+
+
+def search_skills(query: str = "", *, modes: list[str] | None = None, limit: int = 8) -> list[SkillMeta]:
+    """Return the best-matching skills for a natural-language query."""
+    skills = scan_all_skills()
+    if modes is not None:
+        mode_set = set(modes)
+        skills = [skill for skill in skills if not skill.applicable_modes or mode_set & set(skill.applicable_modes)]
+
+    if not query.strip():
+        return skills[: max(1, limit)]
+
+    tokens = _tokenize_search_query(query)
+    if not tokens:
+        return skills[: max(1, limit)]
+
+    scored: list[tuple[int, SkillMeta]] = []
+    for skill in skills:
+        haystacks = list(_iter_search_fields(skill))
+        score = 0
+        for token in tokens:
+            for field in haystacks:
+                if token == field:
+                    score += 12
+                elif token in field:
+                    score += 4
+        if score > 0:
+            scored.append((score, skill))
+
+    scored.sort(key=lambda item: (-item[0], item[1].name))
+    return [skill for _, skill in scored[: max(1, limit)]]
 
 
 # ── Skill listing (compact XML for system-prompt injection) ───────────────────

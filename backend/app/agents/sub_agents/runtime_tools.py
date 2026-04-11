@@ -300,6 +300,10 @@ class LoadSkillArgs(BaseModel):
     skill_name: str = Field(description="Name of the skill to load (e.g. 'database-lookup'). Check <available_skills> for valid names.")
 
 
+class SearchAvailableSkillsArgs(BaseModel):
+    query: str = Field(default="", description="Natural-language search query such as 'docking', '格式转换', or 'ADMET Caco-2'. Leave empty to list baseline available skills.")
+
+
 @tool(args_schema=LoadSkillArgs)
 def tool_load_skill(skill_name: str) -> str:
     """Load the full content of a skill document by name. Use this to get detailed API endpoints, query formats, and examples for a specific skill listed in <available_skills>."""
@@ -312,9 +316,35 @@ def tool_load_skill(skill_name: str) -> str:
     return json.dumps({"status": "ok", "skill_name": skill_name, "content": content}, ensure_ascii=False)
 
 
+@tool("search_available_skills", args_schema=SearchAvailableSkillsArgs)
+def tool_search_available_skills(query: str = "") -> str:
+    """Search the mounted skill catalog and return a compact planning-friendly manifest."""
+    from app.skills.manager import search_skills  # noqa: PLC0415
+
+    matches = search_skills(query, modes=["plan", "explore", "general"])
+    if not matches:
+        return (
+            f"### Skill Search Results (query: '{query}')\n\n"
+            "No directly matching skills were found. Broaden the query or fall back to baseline built-in chemistry tools."
+        )
+
+    lines = [f"### Skill Search Results (query: '{query or 'core capabilities'}')", ""]
+    for skill in matches:
+        lines.append(f"#### Tool Name: `{skill.name}`")
+        lines.append(f"- Core Capability: {skill.description or 'No description provided.'}")
+        lines.append(f"- Planning Hint: {skill.when_to_use or 'Use when the pipeline needs this domain capability.'}")
+        lines.append(
+            "- Applicable Modes: "
+            + (", ".join(skill.applicable_modes) if skill.applicable_modes else "all")
+        )
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
 INTERNAL_SUB_AGENT_TOOLS = [
     tool_read_scratchpad,
     tool_write_scratchpad,
+    tool_search_available_skills,
     tool_read_plan,
     tool_write_plan,
     tool_exit_plan_mode,

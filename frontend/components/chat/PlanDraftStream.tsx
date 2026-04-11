@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react'
 import { Workflow } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
+import { parsePlanPreview } from '@/lib/plan-preview'
 
 interface PlanDraftStreamProps {
   text: string
@@ -11,6 +11,7 @@ interface PlanDraftStreamProps {
 
 export function PlanDraftStream({ text, isStreaming }: PlanDraftStreamProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
+  const preview = parsePlanPreview(text)
 
   // Auto-scroll to bottom as tokens stream in
   useEffect(() => {
@@ -47,10 +48,44 @@ export function PlanDraftStream({ text, isStreaming }: PlanDraftStreamProps) {
         )}
       </div>
 
-      {/* Streaming Markdown content */}
+      {/* Streaming summary content */}
       <div className="max-h-[420px] overflow-y-auto px-4 py-3.5">
-        <div className="prose prose-sm max-w-none dark:prose-invert prose-headings:font-semibold prose-headings:text-amber-900 dark:prose-headings:text-amber-200 prose-strong:text-amber-800 dark:prose-strong:text-amber-300 prose-code:text-[11px] prose-pre:bg-amber-50/80 dark:prose-pre:bg-amber-950/40 prose-li:my-0.5 prose-p:my-1">
-          <ReactMarkdown>{text}</ReactMarkdown>
+        <div className="flex flex-col gap-3">
+          {preview.goal && (
+            <div className="rounded-2xl border border-amber-200/70 bg-amber-50/70 px-3 py-2 dark:border-amber-800/40 dark:bg-amber-950/20">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">
+                总体目标
+              </p>
+              <p className="mt-1 text-sm leading-relaxed text-foreground/85">{preview.goal}</p>
+            </div>
+          )}
+
+          {preview.stages.length > 0 ? (
+            <div className="flex flex-col gap-2.5">
+              {preview.stages.map((stage, index) => (
+                <section
+                  key={stage.id}
+                  className="rounded-2xl border border-amber-200/70 bg-white/70 px-3 py-3 dark:border-amber-800/40 dark:bg-black/15"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-amber-200/80 text-[11px] font-semibold text-amber-800 dark:bg-amber-800/40 dark:text-amber-200">
+                      {index + 1}
+                    </div>
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <h4 className="text-sm font-semibold leading-tight text-amber-950 dark:text-amber-100">
+                        {stage.title}
+                      </h4>
+                      <p className="text-sm leading-relaxed text-foreground/80">
+                        {stage.intent || '动作意图生成中。'}
+                      </p>
+                    </div>
+                  </div>
+                </section>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">正在整理阶段结构…</p>
+          )}
         </div>
         <div ref={bottomRef} className="h-px" />
       </div>

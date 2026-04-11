@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronDown, ClipboardPenLine, Cpu, Eye, FilePenLine, Pencil, ShieldAlert } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -15,6 +14,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Textarea } from '@/components/ui/textarea'
 import { fetchPlanDocument } from '@/lib/artifact-api'
+import { parsePlanPreview } from '@/lib/plan-preview'
 import type { SSEPendingApproval } from '@/lib/sse-types'
 import { sseClient } from '@/services/sse-client'
 import { useSseStore } from '@/store/sseStore'
@@ -50,12 +50,9 @@ export function ApprovalCard({ approval }: ApprovalCardProps) {
 
   const isDisabled = isStreaming || submitted
 
-  // Count steps parsed from plan Markdown (looks for **步骤 N** or numbered list patterns)
-  const stepCount = useMemo(() => {
-    if (!planContent) return 0
-    const matches = planContent.match(/^\s*\*\*步骤\s*\d+/gm) ?? planContent.match(/^\s*\d+\.\s+\*\*/gm) ?? []
-    return matches.length
-  }, [planContent])
+  const planPreview = useMemo(() => parsePlanPreview(planContent), [planContent])
+
+  const stepCount = planPreview.stages.length
 
   useEffect(() => {
     setSubmitted(false)
@@ -187,7 +184,7 @@ export function ApprovalCard({ approval }: ApprovalCardProps) {
               )}
             </div>
             <p className="text-sm leading-relaxed text-foreground/90">
-              子智能体已提交执行计划。您可以先改写 Markdown 计划，再决定是否批准执行。
+              子智能体已提交执行计划。默认只展示阶段标题与动作意图；如需改写原文，再进入编辑态。
             </p>
             <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
               <span className="rounded-full border border-amber-300/70 bg-white/70 px-2 py-0.5 dark:border-amber-700/50 dark:bg-black/20">plan_id: {approval.plan_id.slice(0, 8)}</span>
@@ -196,15 +193,15 @@ export function ApprovalCard({ approval }: ApprovalCardProps) {
           </div>
         </div>
 
-        {approval.summary && (
+        {(approval.summary || planPreview.goal) && (
           <div className="rounded-2xl border border-amber-200/80 bg-white/60 px-3 py-2 text-sm text-foreground/80 dark:border-amber-800/40 dark:bg-black/20">
-            {approval.summary}
+            {approval.summary ?? planPreview.goal}
           </div>
         )}
 
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">计划 Markdown</span>
+            <span className="text-xs text-muted-foreground">计划摘要</span>
             {!isDisabled && !isLoadingPlan && planContent && (
               <button
                 type="button"
@@ -237,8 +234,42 @@ export function ApprovalCard({ approval }: ApprovalCardProps) {
               {isLoadingPlan ? (
                 <p className="text-xs text-muted-foreground">正在加载计划正文…</p>
               ) : planContent ? (
-                <div className="prose prose-sm max-w-none dark:prose-invert prose-headings:font-semibold prose-headings:text-amber-900 dark:prose-headings:text-amber-200 prose-strong:text-amber-800 dark:prose-strong:text-amber-300 prose-code:text-[11px] prose-li:my-0.5 prose-p:my-1">
-                  <ReactMarkdown>{planContent}</ReactMarkdown>
+                <div className="flex flex-col gap-3">
+                  {planPreview.goal && (
+                    <div className="rounded-2xl border border-amber-200/70 bg-amber-50/70 px-3 py-2 dark:border-amber-800/40 dark:bg-amber-950/20">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">
+                        总体目标
+                      </p>
+                      <p className="mt-1 text-sm leading-relaxed text-foreground/85">{planPreview.goal}</p>
+                    </div>
+                  )}
+
+                  {planPreview.stages.length > 0 ? (
+                    <div className="flex flex-col gap-2.5">
+                      {planPreview.stages.map((stage, index) => (
+                        <section
+                          key={stage.id}
+                          className="rounded-2xl border border-amber-200/70 bg-white/70 px-3 py-3 dark:border-amber-800/40 dark:bg-black/15"
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-amber-200/80 text-[11px] font-semibold text-amber-800 dark:bg-amber-800/40 dark:text-amber-200">
+                              {index + 1}
+                            </div>
+                            <div className="flex min-w-0 flex-col gap-1">
+                              <h4 className="text-sm font-semibold leading-tight text-amber-950 dark:text-amber-100">
+                                {stage.title}
+                              </h4>
+                              <p className="text-sm leading-relaxed text-foreground/80">
+                                {stage.intent || '动作意图生成中。'}
+                              </p>
+                            </div>
+                          </div>
+                        </section>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">暂未识别到完整阶段，继续生成后会显示摘要。</p>
+                  )}
                 </div>
               ) : null}
             </div>

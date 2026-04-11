@@ -57,6 +57,7 @@ class TestToolRegistry:
 
     def test_plan_runtime_tools_include_read_and_write_plan(self) -> None:
         names = {tool.name for tool in INTERNAL_SUB_AGENT_TOOLS}
+        assert "search_available_skills" in names
         assert "tool_read_plan" in names
         assert "tool_write_plan" in names
         assert "tool_exit_plan_mode" in names
@@ -135,9 +136,15 @@ class TestSubAgentPrompts:
     def test_plan_prompt_contains_revision_rules(self) -> None:
         prompt = get_sub_agent_prompt(SubAgentMode.plan)
         assert "<revision_rules>" in prompt
+        assert "<domain_boundary>" in prompt
+        assert "<output_schema>" in prompt
+        assert "<terminal_protocol>" in prompt
         assert "绝对禁止输出‘我将如何修改’" in prompt
+        assert "search_available_skills" in prompt
         assert "tool_read_plan" in prompt
         assert "tool_write_plan" in prompt
+        assert "描述结果内容与用途，而不是内部 artifact 名称" in prompt
+        assert "禁止把 Outputs 写成内部实现细节或存储对象名" in prompt
 
     def test_custom_mode_no_tools_returns_empty(self) -> None:
         tools = get_tools_for_mode(SubAgentMode.custom, [])
@@ -414,12 +421,28 @@ class TestDynamicSkillSystem:
         parsed = json.loads(result)
         assert parsed["status"] == "error"
 
+    def test_search_skills_returns_database_lookup_for_pubchem_query(self) -> None:
+        from app.skills.manager import search_skills
+
+        matches = search_skills("PubChem 数据库 查询")
+        assert matches
+        assert matches[0].name == "database-lookup"
+
+    def test_search_available_skills_returns_structured_markdown(self) -> None:
+        from app.agents.sub_agents.runtime_tools import tool_search_available_skills
+
+        result = tool_search_available_skills.invoke({"query": "PubChem"})
+        assert "### Skill Search Results" in result
+        assert "Tool Name" in result
+        assert "database-lookup" in result
+
     def test_explore_prompt_with_skill_listing(self) -> None:
         from app.skills.manager import format_skill_listing
 
         listing = format_skill_listing(modes=["explore"])
         prompt = get_sub_agent_prompt(SubAgentMode.explore, skill_listing=listing)
         assert "<available_skills>" in prompt
+        assert "search_available_skills" in prompt
         assert "tool_load_skill" in prompt
         assert "database-lookup" in prompt
 
@@ -436,6 +459,7 @@ class TestDynamicSkillSystem:
 
         tool_names = [t.name for t in INTERNAL_SUB_AGENT_TOOLS]
         assert "tool_load_skill" in tool_names
+        assert "search_available_skills" in tool_names
 
 
 # ── sub_graph tests ───────────────────────────────────────────────────────────

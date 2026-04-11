@@ -13,7 +13,7 @@ async def planner_node(state: ChemState, config: RunnableConfig) -> dict:
         SystemMessage(
             content=(
                 "你是 ChemAgent 的化学任务规划师。"
-                "请把复杂请求拆解为 3-5 个按顺序执行的子任务。"
+                "请把复杂请求拆解为 3-8 个按顺序执行的子任务。"
                 "每个任务必须具体、可执行，不要把“输出最终回答”本身当作任务。"
                 "任务描述只允许写成简短概括性标签，不要写成长句、原因、参数、括号说明或实现细节。"
                 "每项尽量控制在 4-12 个中文字符，最长不要超过 16 个字符。"
