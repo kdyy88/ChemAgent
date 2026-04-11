@@ -10,6 +10,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
+from app.agents.execution_context import build_strict_execution_context, extract_plan_tasks
 from app.agents.sub_agents.protocol import RecoveryAction
 from app.agents.middleware.postprocessors import TOOL_POSTPROCESSORS
 from app.agents.state import ChemState, MoleculeWorkspaceEntry, Task, TaskStatus
@@ -515,11 +516,18 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
 
                             execution_delegation = dict(execution_args.get("delegation") or {})
                             existing_inline_context = str(execution_delegation.get("inline_context") or "").strip()
-                            approved_plan_context = f"Approved plan ({approved_plan_id}):\n{approved_plan_markdown}".strip()
+                            approved_plan_context = build_strict_execution_context(
+                                plan_id=approved_plan_id,
+                                plan_file_ref=str(plan_pointer.get("plan_file_ref") or "").strip(),
+                                plan_content=approved_plan_markdown,
+                            )
                             merged_inline_context = approved_plan_context if not existing_inline_context else f"{existing_inline_context}\n\n{approved_plan_context}"
                             execution_delegation["inline_context"] = merged_inline_context[:1400]
                             execution_delegation["subagent_type"] = "general"
-                            execution_delegation["task_directive"] = execution_args["task"]
+                            execution_delegation["task_directive"] = (
+                                "严格执行已批准计划的全部阶段，不要向用户请示中间步骤。"
+                                "需要探索或重型计算时直接委派并继续推进。"
+                            )
                             execution_args["delegation"] = execution_delegation
 
                             execution_config = dict(tool_config or {})
@@ -543,6 +551,9 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                             }
                             active_subtask_id = execution_task_id
                             active_subtasks.pop(approved_plan_id, None)
+                            parsed_plan_tasks = extract_plan_tasks(approved_plan_markdown)
+                            if parsed_plan_tasks:
+                                new_tasks = parsed_plan_tasks
 
                             raw_output = await tool.ainvoke(execution_args, config=execution_config)
                             parsed = parse_tool_output(raw_output)

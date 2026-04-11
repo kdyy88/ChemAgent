@@ -419,6 +419,93 @@ class TestSubmitMessageOuterLoop:
         # run_started must come before done
         assert types.index("run_started") < types.index("done")
 
+    async def test_pending_plan_context_is_injected_into_new_turn_without_checkpoint(self, engine: ChemSessionEngine) -> None:
+        captured_graph_input: dict[str, Any] = {}
+
+        async def _fake_astream(graph_input, *_args, **_kwargs):
+            captured_graph_input["value"] = graph_input
+            if False:
+                yield {}
+
+        snapshot = MagicMock()
+        snapshot.interrupts = []
+        snapshot.config = {"configurable": {"checkpoint_id": "chk-abc"}}
+
+        mock_graph = MagicMock()
+        mock_graph.astream_events = _fake_astream
+        mock_graph.aget_state = AsyncMock(return_value=snapshot)
+
+        with (
+            patch("app.agents.engine.get_compiled_graph", return_value=mock_graph),
+            patch("app.agents.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
+        ):
+            await self._collect(
+                engine,
+                message="把第二步改成先做毒性过滤",
+                pending_plan_context={
+                    "plan_id": "123e4567-e89b-12d3-a456-426614174000",
+                    "plan_file_ref": "sess-test/123e4567-e89b-12d3-a456-426614174000.md",
+                    "summary": "先验证再执行",
+                    "content": "# Plan\n1. 校验\n2. 执行",
+                },
+            )
+
+        graph_input = captured_graph_input["value"]
+        messages = graph_input["messages"]
+        assert len(messages) == 2
+        assert "待审批计划正文" in messages[0].content
+        assert "# Plan\n1. 校验\n2. 执行" in messages[0].content
+        assert messages[1].content == "把第二步改成先做毒性过滤"
+
+    async def test_direct_plan_revision_feedback_is_wrapped_as_system_directive(self, engine: ChemSessionEngine) -> None:
+        captured_sub_input: dict[str, Any] = {}
+
+        async def _fake_astream(sub_input, *_args, **_kwargs):
+            captured_sub_input["value"] = sub_input
+            if False:
+                yield {}
+
+        snapshot = MagicMock()
+        snapshot.interrupts = []
+        snapshot.values = {}
+
+        sub_graph = MagicMock()
+        sub_graph.astream_events = _fake_astream
+        sub_graph.aget_state = AsyncMock(return_value=snapshot)
+
+        with (
+            patch("app.agents.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
+            patch("app.agents.engine.get_tools_for_mode", return_value=[]),
+            patch("app.agents.engine.get_checkpointer", return_value=MagicMock()),
+            patch("app.agents.engine.build_sub_agent_graph", return_value=sub_graph),
+        ):
+            events = await self._collect(
+                engine,
+                message="把风险备注章节删掉，并简化关键依赖部分",
+                mode="plan",
+                pending_plan_context={
+                    "plan_id": "plan-123",
+                    "plan_file_ref": "sess-test/plan-123.md",
+                    "summary": "旧版 ADMET 评估计划",
+                    "content": "# 计划\n## 风险备注\n- 风险 A\n## 关键依赖与数据缺口\n- 数据 B",
+                },
+            )
+
+        types = [event["type"] for event in events]
+        assert "done" in types
+
+        messages = captured_sub_input["value"]["messages"]
+        assert len(messages) == 2
+        assert messages[0].type == "system"
+        assert "<system_directive>" in messages[0].content
+        assert "绝对不要生成‘修改计划的计划’" in messages[0].content
+        assert "<current_plan>" in messages[0].content
+        assert "<user_feedback>" in messages[0].content
+        assert "把风险备注章节删掉，并简化关键依赖部分" in messages[0].content
+        assert messages[1].type == "human"
+        assert "根据审批反馈修订当前计划" in messages[1].content
+        assert "tool_write_plan" in messages[1].content
+
     async def test_token_events_forwarded(self, engine: ChemSessionEngine) -> None:
         chunk = MagicMock()
         chunk.content = "carbon"
@@ -615,3 +702,52 @@ class TestSubmitMessageOuterLoop:
         assert events[0]["type"] == "plan_modified"
         assert events[0]["plan_id"] == "123e4567-e89b-12d3-a456-426614174000"
         assert events[-1]["type"] == "done"
+
+    async def test_direct_plan_approval_starts_root_graph_execution(
+        self, engine: ChemSessionEngine
+    ) -> None:
+        captured_graph_input: dict[str, Any] = {}
+
+        async def _fake_astream(graph_input, *_args, **_kwargs):
+            captured_graph_input["value"] = graph_input
+            if False:
+                yield {}
+
+        snapshot = MagicMock()
+        snapshot.interrupts = []
+        snapshot.config = {"configurable": {"checkpoint_id": "chk-approved"}}
+
+        mock_graph = MagicMock()
+        mock_graph.astream_events = _fake_astream
+        mock_graph.aget_state = AsyncMock(return_value=snapshot)
+
+        with (
+            patch("app.agents.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
+            patch("app.agents.engine.read_plan_file") as read_plan_file,
+            patch("app.agents.engine.get_compiled_graph", return_value=mock_graph),
+        ):
+            read_plan_file.return_value = (
+                MagicMock(plan_file_ref="sess-test/plan.md"),
+                "# Approved Plan\n1. Validate\n2. Execute",
+            )
+            events = await self._collect_resume(
+                engine,
+                action="approve",
+                args=None,
+                plan_id="123e4567-e89b-12d3-a456-426614174000",
+            )
+
+        read_plan_file.assert_called_once_with(
+            session_id="sess-test",
+            plan_id="123e4567-e89b-12d3-a456-426614174000",
+        )
+        types = [event["type"] for event in events]
+        assert types[0] == "run_started"
+        assert "done" in types
+        graph_input = captured_graph_input["value"]
+        assert graph_input["messages"][0].type == "system"
+        assert "<execution_context>" in graph_input["messages"][0].content
+        assert "<strict_execution_directives>" in graph_input["messages"][0].content
+        assert graph_input["messages"][1].content.startswith("开始执行这份已批准计划")
+        assert graph_input["subtask_control"]["strict_execution"] is True
+        assert [task["id"] for task in graph_input["tasks"]] == ["1", "2"]

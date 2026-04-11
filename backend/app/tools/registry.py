@@ -161,7 +161,7 @@ def get_tools_by_tier(
     return [catalog[name] for name in allowed_names]
 
 
-def get_root_tools(*, include_l2: bool = False) -> list[Any]:
+def get_root_tools(*, include_l2: bool = False, root_mode: str = "general") -> list[Any]:
     """Return the root-agent tool set from the registry source of truth.
 
     The root agent keeps only L1 (lightweight, sub-second) tools and control
@@ -177,6 +177,8 @@ def get_root_tools(*, include_l2: bool = False) -> list[Any]:
     for name, tool_obj in catalog.items():
         tier = get_tool_tier(tool_obj)
         if name in _CONTROL_TOOLS:
+            if name == "tool_run_sub_agent" and root_mode != "general":
+                continue
             allowed_names.append(name)
             continue
         if tier == "L1" or (include_l2 and tier == "L2"):

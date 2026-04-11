@@ -26,27 +26,27 @@ import '@/lib/i18n/client'
 
 interface SSEChatInputProps {
   isStreaming: boolean
-  sendMessage: (message: string, options?: { activeSmiles?: string | null; chatMode?: string | null }) => Promise<void>
+  sendMessage: (message: string, options?: { activeSmiles?: string | null; mode?: 'general' | 'explore' | 'plan' }) => Promise<void>
   clearTurns?: () => void
 }
 
-type ChatMode = 'agent' | 'explore' | 'plan'
+type ChatMode = 'general' | 'explore' | 'plan'
 
 interface ModeConfig {
   id: ChatMode
   label: string
   icon: React.ReactNode
   description: string
-  backendMode: string | null  // null = main agent self-routes
+  backendMode: 'general' | 'explore' | 'plan'
 }
 
 const CHAT_MODES: ModeConfig[] = [
   {
-    id: 'agent',
+    id: 'general',
     label: 'Agent',
     icon: <Bot className="h-3.5 w-3.5" />,
-    description: '主智能体自主路由',
-    backendMode: null,
+    description: '主智能体，可按需委派子任务',
+    backendMode: 'general',
   },
   {
     id: 'explore',
@@ -223,7 +223,7 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
   const { t } = useTranslation('common')
   const [value, setValue] = useState('')
   const [chatSmiles, setChatSmiles] = useState<string | null>(null)
-  const [chatMode, setChatMode] = useState<ChatMode>('agent')
+  const [chatMode, setChatMode] = useState<ChatMode>('general')
   const { currentSmiles } = useWorkspaceStore()
   const turns = useSseStore((s) => s.turns)
   const sessionUsage = useSseStore((s) => s.sessionUsage)
@@ -236,15 +236,16 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
   const loadAvailableModels = useSseStore((s) => s.loadAvailableModels)
   const pendingApproval = turns.at(-1)?.pendingApproval
   const pendingInterrupt = turns.at(-1)?.pendingInterrupt
-  const isApprovalPending = !!pendingApproval
-  const isFullyDisabled = isStreaming || isApprovalPending
+  const isToolApprovalPending = pendingApproval?.kind === 'tool'
+  const isPlanApprovalPending = pendingApproval?.kind === 'plan'
+  const isFullyDisabled = isStreaming || isToolApprovalPending
 
   useEffect(() => {
     void loadAvailableModels()
   }, [loadAvailableModels])
 
   const selectedModel = availableModels.find((model) => model.id === selectedModelId) ?? null
-  const isModelLocked = isStreaming || !!pendingApproval || !!pendingInterrupt
+  const isModelLocked = isStreaming || isToolApprovalPending || !!pendingInterrupt
   const modelButtonLabel =
     modelsStatus === 'loading' ? '加载中…' : selectedModel?.label ?? '选择模型'
   const maxContextTokens = selectedModel?.max_context_tokens ?? 400000
@@ -264,15 +265,8 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
     const activeModeConfig = CHAT_MODES.find((m) => m.id === chatMode)
     await sendMessage(trimmed, {
       activeSmiles: chatSmiles ?? null,
-      chatMode: activeModeConfig?.backendMode ?? null,
+      mode: activeModeConfig?.backendMode ?? 'general',
     })
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      void handleSubmit()
-    }
   }
 
   const handleAddSmiles = () => {
@@ -297,15 +291,22 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
       className="w-full"
     >
       {/* Approval notice */}
-      {isApprovalPending && (
+      {isToolApprovalPending && (
         <div className="flex items-center gap-1.5 px-3 pt-2.5 text-xs text-orange-500 dark:text-orange-400">
           <span>⏸</span>
           <span>请先处理上方的审批请求，再发送新消息</span>
         </div>
       )}
 
+      {isPlanApprovalPending && (
+        <div className="flex items-center gap-1.5 px-3 pt-2.5 text-xs text-amber-600 dark:text-amber-400">
+          <span>📋</span>
+          <span>计划待审批中；你可以继续发起新一轮对话，或回到上方审批卡处理该计划。</span>
+        </div>
+      )}
+
       {/* Plan mode amber hint */}
-      {chatMode === 'plan' && !isApprovalPending && (
+      {chatMode === 'plan' && !pendingApproval && (
         <div className="flex items-center gap-1.5 px-3 pt-2.5 text-xs text-amber-600 dark:text-amber-400">
           <span>📋</span>
           <span>Plan 模式 · 将生成结构化执行计划，执行前需人工审批</span>
@@ -336,7 +337,6 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
 
       <PromptInputTextarea
         placeholder={t('chat.placeholder')}
-        onKeyDown={handleKeyDown}
       />
 
       <PromptInputActions className="items-center justify-between px-1 pb-1">

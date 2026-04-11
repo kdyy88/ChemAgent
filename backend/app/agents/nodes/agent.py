@@ -9,6 +9,7 @@ from langchain_core.messages import SystemMessage
 logger = logging.getLogger(__name__)
 
 from app.agents.prompts import get_system_prompt
+from app.agents.execution_context import build_execution_stop_intercept, has_unfinished_tasks
 from app.agents.state import ChemState
 from app.tools.registry import get_root_tools
 from app.core.config import get_active_model_name, is_native_reasoning_model, _load_environment
@@ -70,7 +71,7 @@ def _log_response_summary(response: object) -> None:
 async def chem_agent_node(state: ChemState) -> dict:
     selected_model = state.get("selected_model")
     llm = build_llm(model=selected_model)
-    llm_with_tools = llm.bind_tools(get_root_tools())
+    llm_with_tools = llm.bind_tools(get_root_tools(root_mode=state.get("mode") or "general"))
 
     # ⚡ JIT normalization: fix any broken message sequences (e.g. dangling
     # tool_calls left by a user-interrupted request) in memory before the API
@@ -110,6 +111,17 @@ async def chem_agent_node(state: ChemState) -> dict:
             logger.info("📨 [LLM Input] msg[%d] role=%s:\n%s", i, role, content)
 
     response = await llm_with_tools.ainvoke(prompt_messages)
+
+    control = dict(state.get("subtask_control") or {})
+    if (
+        control.get("strict_execution")
+        and not getattr(response, "tool_calls", None)
+        and has_unfinished_tasks(state.get("tasks") or [])
+    ):
+        response = await llm_with_tools.ainvoke([
+            *prompt_messages,
+            SystemMessage(content=build_execution_stop_intercept()),
+        ])
 
     if _LOG_LLM_IO and not _LOG_LLM_IO_FULL:
         _log_response_summary(response)

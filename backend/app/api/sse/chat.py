@@ -100,8 +100,9 @@ async def stream_chat(req: StreamChatRequest) -> StreamingResponse:
             history=req.history,
             model=req.model,
             active_smiles=req.active_smiles,
-            chat_mode=req.chat_mode,
+            mode=req.mode,
             interrupt_context=req.interrupt_context,
+            pending_plan_context=req.pending_plan_context.model_dump() if req.pending_plan_context else None,
         ),
         media_type="text/event-stream",
         headers={

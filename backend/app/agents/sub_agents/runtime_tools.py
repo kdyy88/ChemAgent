@@ -77,6 +77,10 @@ class WritePlanArgs(BaseModel):
     summary: str = Field(default="", description="Optional short plan summary for the parent graph.")
 
 
+class ReadPlanArgs(BaseModel):
+    plan_id: str = Field(default="", description="Optional explicit plan id. When omitted, read the current runtime plan artifact.")
+
+
 class ExitPlanModeArgs(BaseModel):
     summary: str = Field(default="", description="Compact planning summary for the parent graph.")
 
@@ -216,6 +220,22 @@ def tool_write_plan(content: str, summary: str = "") -> str:
     )
 
 
+@tool(args_schema=ReadPlanArgs)
+def tool_read_plan(plan_id: str = "") -> str:
+    """Read the current or specified Markdown plan artifact before revising it."""
+    session_id, _ = _runtime_ids()
+    resolved_plan_id = plan_id.strip() or _runtime_plan_id()
+    pointer, content = read_plan_file(session_id=session_id, plan_id=resolved_plan_id)
+    return json.dumps(
+        {
+            "status": "plan_read",
+            "plan": pointer.model_dump(mode="json"),
+            "content": content,
+        },
+        ensure_ascii=False,
+    )
+
+
 @tool(args_schema=ExitPlanModeArgs)
 def tool_exit_plan_mode(summary: str = "") -> str:
     """Terminate planning and surface a stable plan pointer for HITL approval."""
@@ -295,6 +315,7 @@ def tool_load_skill(skill_name: str) -> str:
 INTERNAL_SUB_AGENT_TOOLS = [
     tool_read_scratchpad,
     tool_write_scratchpad,
+    tool_read_plan,
     tool_write_plan,
     tool_exit_plan_mode,
     tool_task_stop,

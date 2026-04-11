@@ -8,6 +8,7 @@ in ``app.api.sse.chat``.
 
 from __future__ import annotations
 
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -17,6 +18,15 @@ class HistoryMessage(BaseModel):
     """A single turn in the conversation history."""
     role: str    # "human" or "assistant"
     content: str
+
+
+class PendingPlanContext(BaseModel):
+    """Plan content forwarded with a follow-up message while approval is pending."""
+
+    plan_id: str = Field(..., description="待审批计划的稳定 ID")
+    plan_file_ref: str | None = Field(default=None, description="计划文件引用")
+    summary: str | None = Field(default=None, description="计划摘要")
+    content: str = Field(..., description="计划 Markdown 正文")
 
 
 class StreamChatRequest(BaseModel):
@@ -29,9 +39,9 @@ class StreamChatRequest(BaseModel):
         default=None,
         description="当前画布上已激活的 SMILES（可选；来自前端状态）",
     )
-    chat_mode: str | None = Field(
-        default=None,
-        description="前端指定的子智能体模式（'explore' | 'plan'）；None 表示由主 Agent 自主路由",
+    mode: Literal["general", "explore", "plan"] = Field(
+        default="general",
+        description="前端显式指定的会话模式（'general' | 'explore' | 'plan'）",
     )
     interrupt_context: dict | None = Field(
         default=None,
@@ -40,6 +50,10 @@ class StreamChatRequest(BaseModel):
     history: list[HistoryMessage] = Field(
         default_factory=list,
         description="前序对话轮次消息，按时间正序排列（human/assistant 交替）",
+    )
+    pending_plan_context: PendingPlanContext | None = Field(
+        default=None,
+        description="当存在待审批计划且用户继续发消息时，前端附带的计划正文上下文",
     )
 
 

@@ -286,11 +286,19 @@ export interface InterruptContext {
   interrupt_id: string
 }
 
+export interface PendingPlanContext {
+  plan_id: string
+  plan_file_ref?: string | null
+  summary?: string | null
+  content: string
+}
+
 export interface SSESendMessageOptions {
   activeSmiles?: string | null
   interruptContext?: InterruptContext
   model?: string | null
-  chatMode?: string | null
+  mode?: 'general' | 'explore' | 'plan'
+  pendingPlanContext?: PendingPlanContext | null
 }
 
 export interface SSEToolCall {

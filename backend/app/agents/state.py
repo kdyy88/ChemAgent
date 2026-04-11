@@ -13,6 +13,7 @@ from typing_extensions import TypedDict
 
 
 TaskStatus = Literal["pending", "in_progress", "completed", "failed"]
+SessionMode = Literal["general", "explore", "plan"]
 
 
 class Task(TypedDict):
@@ -53,6 +54,7 @@ class SubtaskStatePointer(TypedDict):
 
 class ChemState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
+    mode: SessionMode
     selected_model: str | None
     active_smiles: str | None
     artifacts: Annotated[list[dict], operator.add]

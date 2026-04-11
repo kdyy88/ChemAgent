@@ -629,6 +629,138 @@ async def test_chem_agent_preserves_long_natural_language_report_in_state() -> N
 
 
 @pytest.mark.asyncio
+async def test_chem_agent_retries_when_strict_execution_attempts_to_stop() -> None:
+    state = cast(ChemState, {
+        "messages": [AIMessage(content="prior turn")],
+        "active_smiles": None,
+        "artifacts": [],
+        "molecule_workspace": [],
+        "tasks": [
+            {"id": "1", "description": "验证输入", "status": "pending"},
+            {"id": "2", "description": "执行筛选", "status": "pending"},
+        ],
+        "is_complex": False,
+        "evidence_revision": 0,
+        "subtask_control": {"strict_execution": True},
+    })
+
+    class _FakeBoundLlm:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def bind_tools(self, tools):
+            return self
+
+        async def ainvoke(self, prompt_messages):
+            self.calls += 1
+            if self.calls == 1:
+                return AIMessage(content="阶段1已完成，请确认我是否继续阶段2。")
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "tool_update_task_status",
+                        "id": "call-task-1",
+                        "args": {"task_id": "1", "status": "completed", "summary": "已完成输入验证。"},
+                    }
+                ],
+            )
+
+    fake_llm = _FakeBoundLlm()
+    with patch("app.agents.nodes.agent.build_llm", return_value=fake_llm):
+        result = await chem_agent_node(state)
+
+    assert fake_llm.calls == 2
+    response = result["messages"][0]
+    assert response.tool_calls[0]["name"] == "tool_update_task_status"
+
+
+@pytest.mark.asyncio
+async def test_plan_approval_execution_injects_strict_execution_context_into_general_subagent() -> None:
+    state = cast(ChemState, {
+        "messages": [
+            AIMessage(
+                content="Approve plan",
+                tool_calls=[
+                    {
+                        "name": "tool_run_sub_agent",
+                        "id": "call-plan-approve",
+                        "args": {
+                            "mode": "plan",
+                            "task": "为该先导化合物生成执行计划",
+                            "delegation": {},
+                        },
+                    }
+                ],
+            )
+        ],
+        "active_smiles": "CCO",
+        "artifacts": [],
+        "molecule_workspace": [],
+        "tasks": [],
+        "is_complex": False,
+        "evidence_revision": 0,
+        "active_subtasks": {},
+        "active_subtask_id": None,
+        "sub_agent_result": None,
+        "subtask_control": None,
+    })
+
+    seen_args: list[dict] = []
+
+    class _PlanThenExecuteTool:
+        name = "tool_run_sub_agent"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def ainvoke(self, args: dict, config: dict | None = None):
+            self.calls += 1
+            seen_args.append(dict(args))
+            if self.calls == 1:
+                return json.dumps(
+                    {
+                        "status": "plan_pending_approval",
+                        "mode": "plan",
+                        "summary": "已生成计划。",
+                        "plan_pointer": {
+                            "plan_id": "plan-001",
+                            "plan_file_ref": "root/plan-001.md",
+                            "status": "pending_approval",
+                            "summary": "已生成计划。",
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {
+                    "status": "ok",
+                    "mode": "general",
+                    "summary": "执行完成",
+                    "completion": {"summary": "执行完成"},
+                },
+                ensure_ascii=False,
+            )
+
+    fake_tool = _PlanThenExecuteTool()
+
+    with (
+        patch.dict("app.agents.nodes.executor._TOOL_LOOKUP", {"tool_run_sub_agent": fake_tool}),
+        patch("app.agents.nodes.executor.interrupt", return_value={"action": "execute_plan", "plan_id": "plan-001"}),
+        patch("app.agents.nodes.executor.read_plan_file", return_value=(None, "# 目标\n## 执行阶段\n**阶段 1：验证输入**\n说明\n**阶段 2：运行分析**\n说明")),
+    ):
+        result = await tools_executor_node(state, {"configurable": {"thread_id": "root"}})
+
+    assert fake_tool.calls == 2
+    second_call = seen_args[1]
+    assert second_call["mode"] == "general"
+    assert "<execution_context>" in second_call["delegation"]["inline_context"]
+    assert "<strict_execution_directives>" in second_call["delegation"]["inline_context"]
+    assert second_call["delegation"]["task_directive"].startswith("严格执行已批准计划")
+    assert [task["id"] for task in result["tasks"]] == ["1", "2"]
+
+
+@pytest.mark.asyncio
 async def test_sanitize_ai_tool_call_args_passes_through_unchanged() -> None:
     """Context Firewall removed: tool call args are no longer redacted to artifacts."""
     huge_sdf = "HEADER    PROTEIN\n" + ("ATOM      1  C   LIG A   1      10.000  10.000  10.000\n" * 200)

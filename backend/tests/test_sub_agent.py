@@ -17,6 +17,7 @@ import pytest
 
 from app.agents.sub_agents.protocol import ScratchpadKind, ScratchpadRef
 from app.agents.sub_agents.prompts import SubAgentMode, get_sub_agent_prompt
+from app.agents.sub_agents.runtime_tools import INTERNAL_SUB_AGENT_TOOLS
 from app.tools.registry import ALWAYS_DENIED, get_root_tools, get_tool_tier, get_tools_for_mode
 from app.agents.sub_agents.skills import load_required_skill_markdown
 from app.skills.manager import invalidate_skill_cache
@@ -53,6 +54,12 @@ class TestToolRegistry:
     def test_plan_mode_has_no_tools(self) -> None:
         tools = get_tools_for_mode(SubAgentMode.plan)
         assert tools == [], "plan mode must have zero tools (pure LLM)"
+
+    def test_plan_runtime_tools_include_read_and_write_plan(self) -> None:
+        names = {tool.name for tool in INTERNAL_SUB_AGENT_TOOLS}
+        assert "tool_read_plan" in names
+        assert "tool_write_plan" in names
+        assert "tool_exit_plan_mode" in names
 
     def test_general_mode_includes_full_rdkit_and_babel(self) -> None:
         tools = get_tools_for_mode(SubAgentMode.general)
@@ -123,6 +130,15 @@ class TestToolRegistry:
         assert "tool_run_sub_agent" not in names
         assert "tool_ask_human" not in names
 
+
+class TestSubAgentPrompts:
+    def test_plan_prompt_contains_revision_rules(self) -> None:
+        prompt = get_sub_agent_prompt(SubAgentMode.plan)
+        assert "<revision_rules>" in prompt
+        assert "绝对禁止输出‘我将如何修改’" in prompt
+        assert "tool_read_plan" in prompt
+        assert "tool_write_plan" in prompt
+
     def test_custom_mode_no_tools_returns_empty(self) -> None:
         tools = get_tools_for_mode(SubAgentMode.custom, [])
         assert tools == []
@@ -137,6 +153,14 @@ class TestToolRegistry:
 
         assert "tool_validate_smiles" in names
         assert "tool_run_sub_agent" in names
+        assert "tool_ask_human" in names
+
+    def test_root_tools_strip_subagent_delegation_outside_general_mode(self) -> None:
+        tools = get_root_tools(root_mode="plan")
+        names = {t.name for t in tools}
+
+        assert "tool_validate_smiles" in names
+        assert "tool_run_sub_agent" not in names
         assert "tool_ask_human" in names
 
     def test_tool_tier_reads_metadata_for_migrated_tools(self) -> None:
@@ -671,6 +695,44 @@ class TestRunSubAgentToolIntegration:
         assert result["result"] == result["response"]
         assert result["task_kind"] == "validate_candidate"
         assert result["delegation"]["task_directive"] == "为布洛芬的 Lipinski 分析设计执行步骤"
+
+    @pytest.mark.asyncio
+    async def test_general_execution_context_is_injected_as_system_message_and_tasks(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.agents.sub_agents.dispatcher import tool_run_sub_agent
+
+        captured_input: dict[str, Any] = {}
+
+        class _MockGraph:
+            async def ainvoke(self, sub_input, config=None):
+                captured_input["value"] = sub_input
+                return {"messages": [AIMessage(content="done")], "sub_agent_result": {"status": "completed", "summary": "done"}}
+
+            async def aget_state(self, _config):
+                return MagicMock(interrupts=[])
+
+        with (
+            patch("app.agents.sub_agents.dispatcher.build_sub_agent_graph", return_value=_MockGraph()),
+            patch("app.agents.runtime.get_checkpointer", return_value=MagicMock()),
+        ):
+            await tool_run_sub_agent.ainvoke(
+                {
+                    "mode": "general",
+                    "task": "执行已批准计划",
+                    "delegation": {
+                        "subagent_type": "general",
+                        "task_directive": "严格执行已批准计划",
+                        "inline_context": "<execution_context>\n你当前处于 GENERAL 模式\n</execution_context>\n\n<approved_plan_content>\n**阶段 1：验证输入**\nfoo\n**阶段 2：运行分析**\nbar\n</approved_plan_content>\n\n<strict_execution_directives>\n不要请示用户\n</strict_execution_directives>",
+                    },
+                }
+            )
+
+        sub_input = captured_input["value"]
+        assert sub_input["messages"][0].type == "system"
+        assert "<execution_context>" in sub_input["messages"][0].content
+        assert sub_input["subtask_control"]["strict_execution"] is True
+        assert [task["id"] for task in sub_input["tasks"]] == ["1", "2"]
 
     @pytest.mark.asyncio
     async def test_run_sub_agent_returns_produced_artifacts_and_suggested_smiles(self) -> None:

@@ -55,11 +55,12 @@ import uuid
 from enum import Enum
 from typing import Annotated, Any, cast
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
+from app.agents.execution_context import extract_execution_context_block, extract_plan_tasks
 from app.agents.sub_agents.graph import build_sub_agent_graph, extract_sub_agent_outcome
 from app.agents.sub_agents.protocol import (
     AgentToolResult,
@@ -693,18 +694,24 @@ async def tool_run_sub_agent(
                 _preview_text(normalized_delegation.inline_context),
                 _preview_text(parent_molecule_workspace_summary),
             )
+        execution_context = extract_execution_context_block(normalized_delegation.inline_context)
         sub_input = {
             "messages": [HumanMessage(content=format_delegation_prompt(normalized_delegation))],
             "active_smiles": parent_active_smiles or None,
             "artifacts": [],
             "molecule_workspace": [],
-            "tasks": [],
+            "tasks": extract_plan_tasks(normalized_delegation.inline_context),
             "is_complex": False,
             "sub_agent_result": None,
             "active_subtasks": {},
             "active_subtask_id": None,
-            "subtask_control": {},
+            "subtask_control": {"strict_execution": bool(execution_context)},
         }
+        if execution_context:
+            sub_input["messages"] = [
+                SystemMessage(content=execution_context),
+                *sub_input["messages"],
+            ]
         logger.info(
             "Sub-agent starting: mode=%s sub_thread_id=%s",
             mode,

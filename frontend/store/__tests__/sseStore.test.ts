@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SSEEvent } from '@/lib/sse-types'
 
-const { fetchAvailableModelsMock, fetchEventSourceMock } = vi.hoisted(() => ({
+const { fetchAvailableModelsMock, fetchEventSourceMock, fetchPlanDocumentMock } = vi.hoisted(() => ({
   fetchAvailableModelsMock: vi.fn(),
   fetchEventSourceMock: vi.fn(),
+  fetchPlanDocumentMock: vi.fn(),
 }))
 
 vi.mock('@microsoft/fetch-event-source', () => ({
@@ -14,8 +15,13 @@ vi.mock('@/lib/chat-api', () => ({
   fetchAvailableModels: fetchAvailableModelsMock,
 }))
 
+vi.mock('@/lib/artifact-api', () => ({
+  fetchPlanDocument: fetchPlanDocumentMock,
+}))
+
 import { useSseStore } from '../sseStore'
 import { useWorkspaceStore } from '../workspaceStore'
+import { sseClient } from '@/services/sse-client'
 
 describe('sseStore', () => {
   beforeEach(() => {
@@ -43,6 +49,7 @@ describe('sseStore', () => {
       currentName: '',
     })
     fetchAvailableModelsMock.mockReset()
+    fetchPlanDocumentMock.mockReset()
   })
 
   afterEach(() => {
@@ -198,6 +205,118 @@ describe('sseStore', () => {
       status: 'pending_approval',
     })
     expect(useSseStore.getState().isStreaming).toBe(false)
+  })
+
+  it('allows new turns while a plan approval is pending and still approves the older turn', async () => {
+    let callIndex = 0
+    fetchPlanDocumentMock.mockResolvedValue({
+      plan_id: '1234567890abcdef1234567890abcdef',
+      plan_file_ref: 'session-1/1234567890abcdef1234567890abcdef.md',
+      status: 'pending_approval',
+      summary: 'Three-step synthesis and validation plan',
+      revision: 1,
+      content: '# Draft Plan\n- Step A',
+    })
+    fetchEventSourceMock.mockImplementation(async (_url: string, options?: { body?: string; onmessage?: (msg: { data: string }) => void }) => {
+      callIndex += 1
+      const emit = (event: SSEEvent) => {
+        options?.onmessage?.({ data: JSON.stringify(event) })
+      }
+
+      if (callIndex === 1) {
+        emit({ type: 'run_started', session_id: 'session-1', turn_id: 'turn-plan', message: 'draft a plan' })
+        emit({
+          type: 'plan_approval_request',
+          plan_id: '1234567890abcdef1234567890abcdef',
+          plan_file_ref: 'session-1/1234567890abcdef1234567890abcdef.md',
+          summary: 'Three-step synthesis and validation plan',
+          status: 'pending_approval',
+          mode: 'plan',
+          interrupt_id: 'interrupt-plan-1',
+          session_id: 'session-1',
+          turn_id: 'turn-plan',
+        })
+        return
+      }
+
+      if (callIndex === 2) {
+        emit({ type: 'run_started', session_id: 'session-1', turn_id: 'turn-general', message: 'continue chatting' })
+        emit({ type: 'done', session_id: 'session-1', turn_id: 'turn-general' })
+        return
+      }
+
+      emit({ type: 'run_started', session_id: 'session-1', turn_id: 'turn-approve', message: '[approval:approve]' })
+      emit({ type: 'done', session_id: 'session-1', turn_id: 'turn-approve' })
+    })
+
+    await useSseStore.getState().sendMessage('draft a plan', { mode: 'plan' })
+    await useSseStore.getState().sendMessage('continue chatting', { mode: 'general' })
+
+    expect(useSseStore.getState().turns).toHaveLength(2)
+    expect(useSseStore.getState().turns[0]?.pendingApproval).toMatchObject({
+      kind: 'plan',
+      plan_id: '1234567890abcdef1234567890abcdef',
+    })
+
+    sseClient.sessionId = 'session-1'
+    await useSseStore.getState().approveToolCall('approve')
+
+    const approvalRequest = JSON.parse(String(fetchEventSourceMock.mock.calls[2]?.[1]?.body ?? '{}')) as {
+      session_id?: string
+      plan_id?: string | null
+      action?: string
+    }
+
+    expect(approvalRequest.plan_id).toBe('1234567890abcdef1234567890abcdef')
+    expect(approvalRequest.action).toBe('approve')
+    expect(useSseStore.getState().turns[0]?.pendingApproval).toBeUndefined()
+  })
+
+  it('includes pending plan content when sending a follow-up message during plan approval', async () => {
+    let requestBodies: Array<Record<string, unknown>> = []
+    fetchPlanDocumentMock.mockResolvedValue({
+      plan_id: '1234567890abcdef1234567890abcdef',
+      plan_file_ref: 'session-1/1234567890abcdef1234567890abcdef.md',
+      status: 'pending_approval',
+      summary: 'Three-step synthesis and validation plan',
+      revision: 1,
+      content: '# Draft Plan\n- Step A',
+    })
+
+    fetchEventSourceMock.mockImplementation(async (_url: string, options?: { body?: string; onmessage?: (msg: { data: string }) => void }) => {
+      requestBodies.push(JSON.parse(String(options?.body ?? '{}')))
+      const emit = (event: SSEEvent) => {
+        options?.onmessage?.({ data: JSON.stringify(event) })
+      }
+
+      if (requestBodies.length === 1) {
+        emit({ type: 'run_started', session_id: 'session-1', turn_id: 'turn-plan', message: 'draft a plan' })
+        emit({
+          type: 'plan_approval_request',
+          plan_id: '1234567890abcdef1234567890abcdef',
+          plan_file_ref: 'session-1/1234567890abcdef1234567890abcdef.md',
+          summary: 'Three-step synthesis and validation plan',
+          status: 'pending_approval',
+          mode: 'plan',
+          interrupt_id: 'interrupt-plan-1',
+          session_id: 'session-1',
+          turn_id: 'turn-plan',
+        })
+        return
+      }
+
+      emit({ type: 'run_started', session_id: 'session-1', turn_id: 'turn-followup', message: '第 2 步改成先做毒性过滤' })
+      emit({ type: 'done', session_id: 'session-1', turn_id: 'turn-followup' })
+    })
+
+    await useSseStore.getState().sendMessage('draft a plan', { mode: 'plan' })
+    await useSseStore.getState().sendMessage('第 2 步改成先做毒性过滤', { mode: 'general' })
+
+    expect(fetchPlanDocumentMock).toHaveBeenCalledWith(sseClient.sessionId, '1234567890abcdef1234567890abcdef')
+    expect(requestBodies[1]?.pending_plan_context).toMatchObject({
+      plan_id: '1234567890abcdef1234567890abcdef',
+      content: '# Draft Plan\n- Step A',
+    })
   })
 
   it('tracks planner task updates for the active turn', async () => {
@@ -373,10 +492,9 @@ describe('sseStore', () => {
 
     const turn = useSseStore.getState().turns[0]
     expect(turn.assistantText).toBe('Parent agent continues with the integrated result.')
-    expect(turn.thinkingSteps).toHaveLength(3)
+    expect(turn.thinkingSteps).toHaveLength(2)
     expect(turn.thinkingSteps[0].text).toBe('正在调用：run_sub_agent')
-    expect(turn.thinkingSteps[1].text).toBe('Analyzing scaffold similarities...')
-    expect(turn.thinkingSteps[2].text).toBe('子智能体任务完成，结果已返回主流程。')
+    expect(turn.thinkingSteps[1].text).toBe('子智能体任务完成，结果已返回主流程。')
     expect(turn.tasks[1]).toMatchObject({ id: '2', status: 'in_progress' })
   })
 

@@ -69,6 +69,20 @@ _CHEM_TOOL_FORCING = (
 _FOOTER = f"\n\n{_ANTI_RECURSION}\n{_ARTIFACT_RULE}\n{_SMILES_RULE}\n{_SCRATCHPAD_RULE}\n{_TERMINATION_RULE}"
 _CHEM_FOOTER = f"{_FOOTER}\n{_CHEM_TOOL_FORCING}"
 
+_PLAN_REVISION_RULES = (
+    "\n\n<revision_rules>\n"
+    "【计划修订铁律】当上下文中出现‘先前计划未通过审批’‘审批意见’‘revision_feedback’或旧版计划正文时，"
+    "你当前处理的是一次计划修订，不是新的业务立项。\n"
+    "1. 绝对禁止输出‘我将如何修改’‘阶段1：分析反馈’‘步骤1：删除某章节’这类元计划。\n"
+    "2. 绝对禁止把‘编辑文档’‘删掉某段’‘合并章节’本身当成业务执行目标写进计划。\n"
+    "3. 你必须先在脑海中完成全文重写，再直接产出新的完整业务计划。\n"
+    "4. 如当前上下文已经提供旧版计划正文，你必须基于该正文吸收审批意见，直接覆盖生成新版本；"
+    "不要只返回差异说明或局部补丁。\n"
+    "5. 如你不确定旧版计划全文，先调用 tool_read_plan 读取当前版本，再调用 tool_write_plan 覆盖写入。\n"
+    "6. 修订完成后必须调用 tool_write_plan 写入完整 Markdown，再调用 tool_exit_plan_mode 提交审批。\n"
+    "</revision_rules>"
+)
+
 
 # ── Mode-specific prompts ─────────────────────────────────────────────────────
 
@@ -128,6 +142,7 @@ def _plan_prompt() -> str:
         "- 计划要足够清晰让执行者理解方向，足够模糊让执行者有空间应对意外\n"
         "- 不要在计划中体现你自己在规划时使用或不使用哪些工具\n"
         "</identity>"
+        + _PLAN_REVISION_RULES
         + _FOOTER
     )
 

@@ -9,6 +9,7 @@
 import { create } from 'zustand'
 import type {
   ChatModelOption,
+  PendingPlanContext,
   SSEArtifactEvent,
   SSEPendingApproval,
   SSEPendingInterrupt,
@@ -20,6 +21,7 @@ import type {
   SSEUsageSnapshot,
   SSETurn,
 } from '@/lib/sse-types'
+import { fetchPlanDocument } from '@/lib/artifact-api'
 import { fetchAvailableModels } from '@/lib/chat-api'
 import { sseClient } from '@/services/sse-client'
 import { useWorkspaceStore } from '@/store/workspaceStore'
@@ -229,6 +231,73 @@ export function nodeLabel(node: string): string {
 }
 
 export const useSseStore = create<SseState>((set, get) => {
+  function findLatestPendingPlanApproval(): { approval: Extract<SSEPendingApproval, { kind: 'plan' }>; turnIndex: number } | null {
+    const turns = get().turns
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      const approval = turns[index]?.pendingApproval
+      if (approval?.kind === 'plan') {
+        return { approval, turnIndex: index }
+      }
+    }
+    return null
+  }
+
+  async function resolvePendingPlanContext(): Promise<PendingPlanContext | null> {
+    const pending = findLatestPendingPlanApproval()
+    if (!pending) return null
+
+    const { approval } = pending
+    const inlineContent = typeof approval.content === 'string' ? approval.content.trim() : ''
+    if (inlineContent) {
+      return {
+        plan_id: approval.plan_id,
+        plan_file_ref: approval.plan_file_ref,
+        summary: approval.summary,
+        content: inlineContent,
+      }
+    }
+
+    const sessionId = sseClient.sessionId
+    if (!sessionId) return null
+
+    let document
+    try {
+      document = await fetchPlanDocument(sessionId, approval.plan_id)
+    } catch {
+      return null
+    }
+    if (!document || typeof document.content !== 'string' || !document.content.trim()) {
+      return null
+    }
+
+    return {
+      plan_id: document.plan_id,
+      plan_file_ref: document.plan_file_ref,
+      summary: document.summary,
+      content: document.content,
+    }
+  }
+
+  function findLatestPendingApprovalTurnIndex(): number {
+    const turns = get().turns
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      if (turns[index]?.pendingApproval) {
+        return index
+      }
+    }
+    return -1
+  }
+
+  function updateTurnAt(index: number, updater: (prev: SSETurn) => Partial<SSETurn>) {
+    set((state) => {
+      if (index < 0 || index >= state.turns.length) return state
+      const turns = [...state.turns]
+      const current = turns[index]
+      turns[index] = { ...current, ...updater(current) }
+      return { turns }
+    })
+  }
+
   function updateLastTurn(updater: (prev: SSETurn) => Partial<SSETurn>) {
     set((state) => {
       if (state.turns.length === 0) return state
@@ -310,6 +379,7 @@ export const useSseStore = create<SseState>((set, get) => {
       if (get().isStreaming) return
 
       const selectedModelId = options.model ?? get().selectedModelId ?? null
+      const pendingPlanContext = await resolvePendingPlanContext()
 
       await sseClient.sendMessage({
         message,
@@ -317,6 +387,7 @@ export const useSseStore = create<SseState>((set, get) => {
         options: {
           ...options,
           model: selectedModelId,
+          pendingPlanContext,
         },
         handlers: {
           startTurn: (turnId, userMessage, tasks) => {
@@ -532,7 +603,9 @@ export const useSseStore = create<SseState>((set, get) => {
         ? crypto.randomUUID()
         : Math.random().toString(36).slice(2) + Date.now().toString(36)
 
-      const pendingApproval = get().turns.at(-1)?.pendingApproval
+      const pendingApprovalTurnIndex = findLatestPendingApprovalTurnIndex()
+      if (pendingApprovalTurnIndex < 0) return
+      const pendingApproval = get().turns[pendingApprovalTurnIndex]?.pendingApproval
       if (!pendingApproval) return
 
       const approvalTarget = pendingApproval.kind === 'plan'
@@ -542,7 +615,7 @@ export const useSseStore = create<SseState>((set, get) => {
       const approvalLabel = `${actionLabel}: ${approvalTarget}`
 
       // Clear the pendingApproval badge on the last turn before starting the new one
-      updateLastTurn(() => ({ pendingApproval: undefined }))
+      updateTurnAt(pendingApprovalTurnIndex, () => ({ pendingApproval: undefined }))
 
       const handlers = {
         startTurn: (tId: string, message: string, tasks: SSETaskItem[]) => {

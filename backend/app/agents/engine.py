@@ -23,7 +23,7 @@ import logging
 import os
 import traceback
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, cast
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -33,8 +33,13 @@ from langgraph.types import Command
 import re
 import uuid
 
+from app.agents.execution_context import (
+    build_execution_start_instruction,
+    build_strict_execution_context,
+    extract_plan_tasks,
+)
 from app.agents.runtime import get_compiled_graph, get_checkpointer, has_persisted_session
-from app.agents.state import ChemState
+from app.agents.state import ChemState, SessionMode
 from app.agents.sub_agents.graph import build_sub_agent_graph, extract_sub_agent_outcome
 from app.agents.sub_agents.protocol import SubAgentDelegation, ScratchpadRef, ScratchpadKind, format_delegation_prompt
 from app.domain.stores.artifacts import store_engine_artifact
@@ -43,6 +48,81 @@ from app.domain.stores.scratchpad import create_scratchpad_entry
 from app.tools.registry import SubAgentMode, get_tools_for_mode
 
 logger = logging.getLogger(__name__)
+
+
+def _format_pending_plan_context(plan_context: dict[str, Any] | None) -> str:
+    if not isinstance(plan_context, dict):
+        return ""
+
+    plan_id = str(plan_context.get("plan_id") or "").strip()
+    plan_file_ref = str(plan_context.get("plan_file_ref") or "").strip()
+    summary = str(plan_context.get("summary") or "").strip()
+    content = str(plan_context.get("content") or "").strip()
+    if not content:
+        return ""
+
+    parts = [
+        "当前存在一份待审批计划。用户本轮新输入默认视为针对该计划的修改建议、补充要求或反馈。",
+    ]
+    if plan_id:
+        parts.append(f"plan_id: {plan_id}")
+    if plan_file_ref:
+        parts.append(f"plan_file_ref: {plan_file_ref}")
+    if summary:
+        parts.append(f"计划摘要: {summary}")
+    parts.append("待审批计划正文:")
+    parts.append(content)
+    return "\n".join(parts).strip()
+
+
+def _build_plan_revision_wrapper(
+    *,
+    plan_context: dict[str, Any],
+    user_feedback: str,
+) -> str:
+    plan_id = str(plan_context.get("plan_id") or "").strip()
+    plan_file_ref = str(plan_context.get("plan_file_ref") or "").strip()
+    summary = str(plan_context.get("summary") or "").strip()
+    content = str(plan_context.get("content") or "").strip()
+
+    parts = [
+        "<system_directive>",
+        "先前的计划未能通过审批。",
+        "你当前执行的是一次计划修订，不是新的业务规划立项。",
+        "绝对不要解释你将如何修改，绝对不要生成‘修改计划的计划’或‘编辑文档的步骤表’。",
+        "请直接在脑海中完成全文重写，输出新的完整生化业务计划，并立即调用 tool_write_plan 覆盖当前版本。",
+        "如你不确定旧版计划全文，请先调用 tool_read_plan 读取当前计划，再继续覆盖写入。",
+    ]
+    if plan_id:
+        parts.append(f"current_plan_id: {plan_id}")
+    if plan_file_ref:
+        parts.append(f"current_plan_file_ref: {plan_file_ref}")
+    if summary:
+        parts.append(f"current_plan_summary: {summary}")
+    if content:
+        parts.extend([
+            "<current_plan>",
+            content,
+            "</current_plan>",
+        ])
+    parts.extend([
+        "</system_directive>",
+        "<user_feedback>",
+        user_feedback.strip(),
+        "</user_feedback>",
+    ])
+    return "\n".join(parts).strip()
+
+
+def _build_plan_task_directive(message: str, plan_context: dict[str, Any] | None) -> str:
+    feedback = str(message or "").strip()
+    if isinstance(plan_context, dict) and str(plan_context.get("content") or "").strip():
+        return (
+            "根据审批反馈修订当前计划。"
+            "不要创建元计划，不要输出修改步骤说明。"
+            "直接重写完整的业务执行计划，并调用 tool_write_plan 覆盖原计划后再调用 tool_exit_plan_mode。"
+        )
+    return feedback
 
 # ── Module-level constants ─────────────────────────────────────────────────────
 
@@ -323,12 +403,6 @@ class ChemSessionEngine:
         self.turn_id = turn_id
         # Per-call flag; reset at the top of each submit_message invocation.
         self._llm_reasoning_emitted: bool = False
-        # Holds pending plan metadata when a Plan-mode message is waiting for
-        # user approval via the direct sub-agent routing path.
-        self._direct_plan_pending: dict | None = None
-        # Holds pending plan metadata when a Plan-mode message is waiting for
-        # user approval via the direct sub-agent routing path.
-        self._direct_plan_pending: dict | None = None
 
     # ── SSE serialization helpers ──────────────────────────────────────────────
 
@@ -397,8 +471,9 @@ class ChemSessionEngine:
         history: list[Any] | None = None,
         model: str | None = None,
         active_smiles: str | None = None,
-        chat_mode: str | None = None,
+        mode: SessionMode = "general",
         interrupt_context: dict | None = None,
+        pending_plan_context: dict[str, Any] | None = None,
     ) -> AsyncGenerator[str, None]:
         """【外层生成器】驱动单次用户交互的全生命周期。
 
@@ -444,16 +519,21 @@ class ChemSessionEngine:
                 elif h.role == "assistant" and h.content.strip():
                     history_messages.append(AIMessage(content=h.content))
 
+        pending_plan_prompt = _format_pending_plan_context(pending_plan_context)
+        if not has_persisted_state and pending_plan_prompt:
+            history_messages.append(SystemMessage(content=pending_plan_prompt))
+
         initial_messages = [*history_messages, HumanMessage(content=message)]
 
         # Direct sub-agent routing for Plan / Explore modes: bypass the root graph
         # entirely to avoid an extra LLM routing call and fragile prompt injection.
-        if chat_mode in {"plan", "explore"}:
+        if mode in {"plan", "explore"}:
             async for sse_line in self._run_direct_subagent(
-                mode=chat_mode,
+                mode=mode,
                 message=message,
                 active_smiles=active_smiles,
                 history_messages=history_messages,
+                pending_plan_context=pending_plan_context,
                 model=model,
             ):
                 yield sse_line
@@ -461,6 +541,7 @@ class ChemSessionEngine:
 
         initial_state: ChemState = {
             "messages": initial_messages,
+            "mode": "general",
             "selected_model": model,
             "artifacts": [],
             "molecule_workspace": [],
@@ -676,10 +757,13 @@ class ChemSessionEngine:
             yield self._sse(self._event_payload("done", checkpoint_id=None))
             return
 
-        # Direct-mode plan approval: if this session was started as a direct Plan
-        # sub-agent (no root graph), resume here instead of calling the root graph.
-        if self._direct_plan_pending:
-            async for sse_line in self._resume_direct_plan(action=action, args=args, plan_id=plan_id, model=model):
+        has_persisted_state = await has_persisted_session(self.session_id)
+        if plan_id and not has_persisted_state:
+            async for sse_line in self._resume_direct_plan_via_root_graph(
+                action=action,
+                plan_id=plan_id,
+                model=model,
+            ):
                 yield sse_line
             return
 
@@ -766,7 +850,7 @@ class ChemSessionEngine:
             return create_scratchpad_entry(
                 session_id=self.session_id,
                 sub_thread_id=sub_thread_id,
-                kind="context",
+                kind=ScratchpadKind.context,
                 content=content,
                 created_by="engine",
                 summary=f"会话上下文（active_smiles={'是' if active_smiles else '否'}，history={len(history_messages)}轮）",
@@ -782,6 +866,7 @@ class ChemSessionEngine:
         message: str,
         active_smiles: str | None,
         history_messages: list,
+        pending_plan_context: dict[str, Any] | None = None,
         model: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """直接构建并运行 Plan / Explore 子智能体图，跳过根图路由。
@@ -794,7 +879,7 @@ class ChemSessionEngine:
         try:
             sub_mode = SubAgentMode(mode)
         except ValueError:
-            yield self._sse(self._event_payload("error", error=f"Unknown chat_mode: '{mode}'"))
+            yield self._sse(self._event_payload("error", error=f"Unknown mode: '{mode}'"))
             return
 
         is_plan = sub_mode == SubAgentMode.plan
@@ -806,13 +891,26 @@ class ChemSessionEngine:
 
         delegation = SubAgentDelegation(
             subagent_type=mode,
-            task_directive=message,
+            task_directive=_build_plan_task_directive(message, pending_plan_context) if is_plan else message,
             active_smiles=active_smiles or "",
             scratchpad_refs=[ctx_ref] if ctx_ref is not None else [],
         )
 
+        sub_messages: list[Any] = []
+        if is_plan and isinstance(pending_plan_context, dict) and str(pending_plan_context.get("content") or "").strip():
+            sub_messages.append(
+                SystemMessage(
+                    content=_build_plan_revision_wrapper(
+                        plan_context=pending_plan_context,
+                        user_feedback=message,
+                    )
+                )
+            )
+        sub_messages.append(HumanMessage(content=format_delegation_prompt(delegation)))
+
         sub_input: ChemState = {
-            "messages": [HumanMessage(content=format_delegation_prompt(delegation))],
+            "messages": sub_messages,
+            "mode": cast(SessionMode, sub_mode.value),
             "selected_model": model,
             "active_smiles": active_smiles,
             "artifacts": [],
@@ -875,12 +973,6 @@ class ChemSessionEngine:
             pid = str(plan_pointer.get("plan_id") or plan_id or "").strip()
             pref = str(plan_pointer.get("plan_file_ref") or "").strip()
             summary = str((sub_result or {}).get("summary") or "").strip()
-            self._direct_plan_pending = {
-                "plan_id": pid,
-                "plan_file_ref": pref,
-                "summary": summary,
-                "sub_thread_id": sub_thread_id,
-            }
             yield self._sse(
                 self._event_payload(
                     "plan_approval_request",
@@ -897,23 +989,20 @@ class ChemSessionEngine:
                 yield self._sse(self._event_payload("assistant_text", text=final_text))
             yield self._sse(self._event_payload("done", checkpoint_id=None))
 
-    async def _resume_direct_plan(
+    async def _resume_direct_plan_via_root_graph(
         self,
         *,
         action: str,
-        args: dict | None,
         plan_id: str | None,
         model: str | None = None,
     ) -> AsyncGenerator[str, None]:
-        """Handle approve / reject on a Plan-mode direct sub-agent result.
+        """Handle explicit Plan-mode approvals by starting a fresh root run.
 
-        approve → build a fresh general sub-agent with the approved plan as
-                  a scratchpad reference, then stream its execution.
-        reject  → emit a simple acknowledgement.
+        Direct plan mode does not create a root checkpoint, so approval must
+        start a new root-graph execution in general mode using the approved
+        plan file as the control-plane handoff.
         """
-        pending = self._direct_plan_pending or {}
-        resolved_plan_id = plan_id or pending.get("plan_id") or ""
-        self._direct_plan_pending = None
+        resolved_plan_id = plan_id or ""
 
         yield self._sse(self._event_payload("run_started", message=f"[approval:{action}]"))
 
@@ -925,101 +1014,67 @@ class ChemSessionEngine:
             yield self._sse(self._event_payload("done", checkpoint_id=None))
             return
 
-        # approve → read plan file, pass via scratchpad, run general sub-agent
         if not resolved_plan_id:
             yield self._sse(self._event_payload("error", error="Cannot execute plan: plan_id is missing."))
             return
 
         try:
-            _, plan_markdown = read_plan_file(session_id=self.session_id, plan_id=resolved_plan_id)
+            plan_pointer, plan_markdown = read_plan_file(session_id=self.session_id, plan_id=resolved_plan_id)
         except Exception as exc:
             yield self._sse(self._event_payload("error", error=f"Failed to read plan file: {exc}"))
             return
 
-        exec_task_id = uuid.uuid4().hex
-        exec_thread_id = f"exec_{exec_task_id}"
-
-        try:
-            plan_ref = create_scratchpad_entry(
-                session_id=self.session_id,
-                sub_thread_id=exec_thread_id,
-                kind="note",
-                content=plan_markdown,
-                created_by="engine",
-                summary=f"批准的执行计划（plan_id={resolved_plan_id[:8]}）",
-            )
-        except Exception as exc:
-            logger.warning("Failed to write plan scratchpad: %s — falling back to inline_context", exc)
-            plan_ref = None
-
-        exec_delegation = SubAgentDelegation(
-            subagent_type="general",
-            task_directive="按照批准的执行计划逐步完成任务。",
-            scratchpad_refs=[plan_ref] if plan_ref is not None else [],
-            inline_context=(
-                f"Approved plan (plan_id={resolved_plan_id}):\n"
-                + plan_markdown[:1400]
-            ) if plan_ref is None else "",
+        execution_context = build_strict_execution_context(
+            plan_id=resolved_plan_id,
+            plan_file_ref=plan_pointer.plan_file_ref,
+            plan_content=plan_markdown,
         )
+        execution_tasks = extract_plan_tasks(plan_markdown)
 
-        exec_input: ChemState = {
-            "messages": [HumanMessage(content=format_delegation_prompt(exec_delegation))],
+        graph_input: ChemState = {
+            "messages": [
+                SystemMessage(content=execution_context),
+                HumanMessage(content=build_execution_start_instruction()),
+            ],
+            "mode": "general",
             "selected_model": model,
             "active_smiles": None,
             "artifacts": [],
             "molecule_workspace": [],
-            "tasks": [],
+            "tasks": execution_tasks,
             "is_complex": False,
             "evidence_revision": 0,
             "sub_agent_result": None,
             "active_subtasks": {},
             "active_subtask_id": None,
-            "subtask_control": None,
-        }
-
-        exec_config: dict = {
-            "configurable": {
-                "thread_id": exec_thread_id,
-                "scratchpad_session_id": self.session_id,
-                "execution_task_id": exec_task_id,
-                "subagent_phase": "execution",
+            "subtask_control": {
+                "strict_execution": True,
+                "plan_id": resolved_plan_id,
+                "plan_file_ref": plan_pointer.plan_file_ref,
             },
-            "recursion_limit": 80,
         }
 
-        try:
-            tools = get_tools_for_mode(SubAgentMode.general)
-            sub_graph = build_sub_agent_graph(SubAgentMode.general, tools, get_checkpointer())
-        except Exception as exc:
-            yield self._sse(self._event_payload("error", error=f"Failed to build execution sub-agent: {exc}"))
-            return
+        graph_config: dict = {
+            "configurable": {
+                "thread_id": self.session_id,
+                "session_id": self.session_id,
+                "turn_id": self.turn_id,
+            },
+            "recursion_limit": _graph_recursion_limit(),
+        }
 
-        logger.info(
-            "Direct plan execution starting: plan_id=%s exec_thread_id=%s",
-            resolved_plan_id[:8], exec_thread_id,
-        )
+        logger.info("Root execution starting from approved plan: plan_id=%s", resolved_plan_id[:8])
         self._llm_reasoning_emitted = False
 
         try:
-            async for raw_event in sub_graph.astream_events(
-                exec_input, version="v2", config=exec_config
-            ):
-                for parsed in self._parse_langgraph_event(raw_event):
-                    yield self._sse(parsed)
+            async for event_dict in self._graph_query_loop(graph_input, graph_config):
+                if event_dict.get("type") == "tool_end":
+                    event_dict = await self._intercept_and_collapse_artifact(event_dict)
+                yield self._sse(event_dict)
         except Exception as exc:
             tb = traceback.format_exc()
             yield self._sse(self._event_payload("error", error=str(exc), traceback=tb))
             return
-
-        try:
-            snapshot = await sub_graph.aget_state(exec_config)
-            final_text, _, _, sub_result = extract_sub_agent_outcome(snapshot.values)
-        except Exception:
-            final_text = "执行计划完成。"
-
-        if final_text:
-            yield self._sse(self._event_payload("assistant_text", text=final_text))
-        yield self._sse(self._event_payload("done", checkpoint_id=None))
 
     # ── LangGraph event parser ─────────────────────────────────────────────────
 

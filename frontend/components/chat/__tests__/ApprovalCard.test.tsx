@@ -58,8 +58,10 @@ describe('ApprovalCard', () => {
     })
 
     await waitFor(() => {
-      expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('# Initial plan\n- Step 1')
+      expect(screen.getByText('Initial plan')).toBeInTheDocument()
     })
+
+    await user.click(screen.getByRole('button', { name: '编辑' }))
 
     const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
     await user.clear(textarea)

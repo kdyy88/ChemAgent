@@ -29,6 +29,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from app.agents.execution_context import build_execution_stop_intercept, has_unfinished_tasks
 from app.agents.middleware.postprocessors import TOOL_POSTPROCESSORS
 from app.agents.sub_agents.runtime_tools import INTERNAL_SUB_AGENT_TOOLS
 from app.agents.state import ChemState, MoleculeWorkspaceEntry
@@ -188,10 +189,19 @@ def _make_sub_agent_node(
 
         safe_messages = normalize_messages_for_api(state["messages"])
 
-        response = await llm_bound.ainvoke(
-            [SystemMessage(content=system_prompt), *safe_messages],
-            config=config,
-        )
+        prompt_messages = [SystemMessage(content=system_prompt), *safe_messages]
+        response = await llm_bound.ainvoke(prompt_messages, config=config)
+
+        control = dict(state.get("subtask_control") or {})
+        if (
+            control.get("strict_execution")
+            and not getattr(response, "tool_calls", None)
+            and has_unfinished_tasks(state.get("tasks") or [])
+        ):
+            response = await llm_bound.ainvoke(
+                [*prompt_messages, SystemMessage(content=build_execution_stop_intercept())],
+                config=config,
+            )
         return {"messages": await sanitize_messages_for_state([response], source=f"sub_agent.{mode.value}")}
 
     # Give the closure a stable name for LangGraph event tracing.
