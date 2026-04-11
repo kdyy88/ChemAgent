@@ -18,7 +18,7 @@ const API_BASE =
   (typeof window !== 'undefined' ? window.location.origin : '') ||
   'http://localhost:8000'
 
-const STREAM_URL = `${API_BASE}/api/chat/stream`
+const STREAM_URL = `${API_BASE}/api/v1/chat/stream`
 const SILENT_TOOLS = new Set(['tool_update_task_status'])
 
 type ToolOutput = Record<string, unknown>

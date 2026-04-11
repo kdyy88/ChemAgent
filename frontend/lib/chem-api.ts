@@ -49,7 +49,7 @@ export type ValidateResult = {
 export type ValidateResponse = ValidateResult | ChemError
 
 export async function validateSmiles(smiles: string): Promise<ValidateResponse> {
-  const res = await fetch(`${BASE_URL}/api/rdkit/validate`, {
+  const res = await fetch(`${BASE_URL}/api/v1/rdkit/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ smiles }),
@@ -78,7 +78,7 @@ export type SaltStripResult = {
 export type SaltStripResponse = SaltStripResult | ChemError
 
 export async function saltStrip(smiles: string): Promise<SaltStripResponse> {
-  const res = await fetch(`${BASE_URL}/api/rdkit/salt-strip`, {
+  const res = await fetch(`${BASE_URL}/api/v1/rdkit/salt-strip`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ smiles }),
@@ -136,7 +136,7 @@ export async function computeDescriptors(
   smiles: string,
   name = '',
 ): Promise<DescriptorsResponse> {
-  const res = await fetch(`${BASE_URL}/api/rdkit/descriptors`, {
+  const res = await fetch(`${BASE_URL}/api/v1/rdkit/descriptors`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ smiles, name }),
@@ -176,7 +176,7 @@ export async function computeSimilarity(
   radius = 2,
   nBits = 2048,
 ): Promise<SimilarityResponse> {
-  const res = await fetch(`${BASE_URL}/api/rdkit/similarity`, {
+  const res = await fetch(`${BASE_URL}/api/v1/rdkit/similarity`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ smiles1, smiles2, radius, n_bits: nBits }),
@@ -212,7 +212,7 @@ export async function substructureMatch(
   smiles: string,
   smartsPattern: string,
 ): Promise<SubstructureResponse> {
-  const res = await fetch(`${BASE_URL}/api/rdkit/substructure`, {
+  const res = await fetch(`${BASE_URL}/api/v1/rdkit/substructure`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ smiles, smarts_pattern: smartsPattern }),
@@ -238,7 +238,7 @@ export type ScaffoldResult = {
 export type ScaffoldResponse = ScaffoldResult | ChemError
 
 export async function murckoScaffold(smiles: string): Promise<ScaffoldResponse> {
-  const res = await fetch(`${BASE_URL}/api/rdkit/scaffold`, {
+  const res = await fetch(`${BASE_URL}/api/v1/rdkit/scaffold`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ smiles }),
@@ -271,7 +271,7 @@ export type MolPropertiesResponse = MolPropertiesResult | ChemError
 export async function computeMolProperties(
   smiles: string,
 ): Promise<MolPropertiesResponse> {
-  const res = await fetch(`${BASE_URL}/api/babel/properties`, {
+  const res = await fetch(`${BASE_URL}/api/v1/babel/properties`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ smiles }),
@@ -297,7 +297,7 @@ export type SupportedFormats = {
 }
 
 export async function fetchSupportedFormats(): Promise<SupportedFormats> {
-  const res = await fetch(`${BASE_URL}/api/babel/formats`)
+  const res = await fetch(`${BASE_URL}/api/v1/babel/formats`)
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`)
   return res.json() as Promise<SupportedFormats>
 }
@@ -348,7 +348,7 @@ export async function analyzeMolecule(
   smiles: string,
   name = '',
 ): Promise<LipinskiResponse> {
-  const res = await fetch(`${BASE_URL}/api/rdkit/analyze`, {
+  const res = await fetch(`${BASE_URL}/api/v1/rdkit/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ smiles, name }),
@@ -376,7 +376,7 @@ export async function convertFormat(
   inputFormat: string,
   outputFormat: string,
 ): Promise<FormatConversionResponse> {
-  const res = await fetch(`${BASE_URL}/api/babel/convert`, {
+  const res = await fetch(`${BASE_URL}/api/v1/babel/convert`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ molecule, input_format: inputFormat, output_format: outputFormat }),
@@ -407,7 +407,7 @@ export async function build3DConformer(
   forcefield = 'mmff94',
   steps = 500,
 ): Promise<Conformer3DResponse> {
-  const res = await fetch(`${BASE_URL}/api/babel/conformer3d`, {
+  const res = await fetch(`${BASE_URL}/api/v1/babel/conformer3d`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ smiles, name, forcefield, steps }),
@@ -438,7 +438,7 @@ export async function preparePdbqt(
   name = '',
   ph = 7.4,
 ): Promise<PdbqtPrepResponse> {
-  const res = await fetch(`${BASE_URL}/api/babel/pdbqt`, {
+  const res = await fetch(`${BASE_URL}/api/v1/babel/pdbqt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ smiles, name, ph }),
@@ -475,7 +475,7 @@ export async function computePartialCharges(
   smiles: string,
   method = 'gasteiger',
 ): Promise<PartialChargeResponse> {
-  const res = await fetch(`${BASE_URL}/api/babel/partial-charges`, {
+  const res = await fetch(`${BASE_URL}/api/v1/babel/partial-charges`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ smiles, method }),
@@ -513,7 +513,7 @@ export type SdfMergeResult = {
 export async function sdfSplit(file: File): Promise<SdfSplitResult | ChemError> {
   const form = new FormData()
   form.append('file', file)
-  const res = await fetch(`${BASE_URL}/api/babel/sdf-split`, {
+  const res = await fetch(`${BASE_URL}/api/v1/babel/sdf-split`, {
     method: 'POST',
     body: form,
   })
@@ -524,7 +524,7 @@ export async function sdfSplit(file: File): Promise<SdfSplitResult | ChemError> 
 export async function sdfMerge(files: File[]): Promise<SdfMergeResult | ChemError> {
   const form = new FormData()
   files.forEach((f) => form.append('files', f))
-  const res = await fetch(`${BASE_URL}/api/babel/sdf-merge`, {
+  const res = await fetch(`${BASE_URL}/api/v1/babel/sdf-merge`, {
     method: 'POST',
     body: form,
   })
@@ -533,9 +533,9 @@ export async function sdfMerge(files: File[]): Promise<SdfMergeResult | ChemErro
 }
 
 export function getSdfSplitDownloadUrl(resultId: string): string {
-  return `${BASE_URL}/api/babel/sdf-split-download?result_id=${encodeURIComponent(resultId)}`
+  return `${BASE_URL}/api/v1/artifacts/${encodeURIComponent(resultId)}`
 }
 
 export function getSdfMergeDownloadUrl(resultId: string): string {
-  return `${BASE_URL}/api/babel/sdf-merge-download?result_id=${encodeURIComponent(resultId)}`
+  return `${BASE_URL}/api/v1/artifacts/${encodeURIComponent(resultId)}`
 }

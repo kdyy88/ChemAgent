@@ -30,7 +30,7 @@ from typing import Annotated
 
 from langchain_core.tools import tool
 
-from app.chem.babel_ops import (
+from app.services.chem_engine.babel_ops import (
     build_3d_conformer,
     compute_mol_properties,
     compute_partial_charges,

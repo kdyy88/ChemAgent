@@ -41,10 +41,10 @@ afterEach(() => {
 // ── Pure URL builders ──────────────────────────────────────────────────────────
 
 describe('getSdfSplitDownloadUrl()', () => {
-  it('returns a URL containing the path and result_id', () => {
+  it('returns a URL containing the v1 artifacts path and result_id', () => {
     const url = getSdfSplitDownloadUrl('abc-123')
-    expect(url).toMatch('/api/babel/sdf-split-download')
-    expect(url).toMatch('result_id=abc-123')
+    expect(url).toMatch('/api/v1/artifacts/')
+    expect(url).toContain('abc-123')
   })
 
   it('URL-encodes the result id', () => {
@@ -54,10 +54,10 @@ describe('getSdfSplitDownloadUrl()', () => {
 })
 
 describe('getSdfMergeDownloadUrl()', () => {
-  it('returns a URL containing the path and result_id', () => {
+  it('returns a URL containing the v1 artifacts path and result_id', () => {
     const url = getSdfMergeDownloadUrl('merge-xyz')
-    expect(url).toMatch('/api/babel/sdf-merge-download')
-    expect(url).toMatch('result_id=merge-xyz')
+    expect(url).toMatch('/api/v1/artifacts/')
+    expect(url).toContain('merge-xyz')
   })
 })
 
@@ -71,7 +71,7 @@ describe('validateSmiles()', () => {
     await validateSmiles('CCO')
 
     const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit]
-    expect(url).toMatch('/api/rdkit/validate')
+    expect(url).toMatch('/api/v1/rdkit/validate')
     expect(init.method).toBe('POST')
     expect(init.headers).toMatchObject({ 'Content-Type': 'application/json' })
     expect(JSON.parse(init.body as string)).toEqual({ smiles: 'CCO' })
@@ -101,7 +101,7 @@ describe('saltStrip()', () => {
     await saltStrip('CCO.Cl')
 
     const [url] = mockFetch.mock.calls[0] as [string, RequestInit]
-    expect(url).toMatch('/api/rdkit/salt-strip')
+    expect(url).toMatch('/api/v1/rdkit/salt-strip')
   })
 
   it('throws on HTTP 500', async () => {
@@ -120,7 +120,7 @@ describe('computeDescriptors()', () => {
     await computeDescriptors('CCO', 'Ethanol')
 
     const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit]
-    expect(url).toMatch('/api/rdkit/descriptors')
+    expect(url).toMatch('/api/v1/rdkit/descriptors')
     expect(JSON.parse(init.body as string)).toMatchObject({ smiles: 'CCO', name: 'Ethanol' })
   })
 
@@ -146,7 +146,7 @@ describe('fetchSupportedFormats()', () => {
     await fetchSupportedFormats()
 
     const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit | undefined]
-    expect(url).toMatch('/api/babel/formats')
+    expect(url).toMatch('/api/v1/babel/formats')
     // GET — no body
     expect(init?.body).toBeUndefined()
   })
@@ -167,7 +167,7 @@ describe('build3DConformer()', () => {
     await build3DConformer('CCO')
 
     const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit]
-    expect(url).toMatch('/api/babel/conformer3d')
+    expect(url).toMatch('/api/v1/babel/conformer3d')
     const body = JSON.parse(init.body as string)
     expect(body.smiles).toBe('CCO')
     expect(body.name).toBe('')
@@ -200,7 +200,7 @@ describe('sdfSplit()', () => {
     await sdfSplit(file)
 
     const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit]
-    expect(url).toMatch('/api/babel/sdf-split')
+    expect(url).toMatch('/api/v1/babel/sdf-split')
     expect(init.method).toBe('POST')
     expect(init.body).toBeInstanceOf(FormData)
     // Content-Type header must NOT be set manually (browser sets multipart boundary)

@@ -1,5 +1,6 @@
 ignoredBuiltDependencies:
   - '@tsparticles/engine'
   - '@waldiez/react'
+  - msw
   - sharp
   - unrs-resolver

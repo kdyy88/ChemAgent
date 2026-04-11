@@ -4,8 +4,8 @@ from langchain_core.callbacks.manager import adispatch_custom_event
 from langchain_core.runnables import RunnableConfig
 
 from app.agents.utils import ToolPostprocessor, ToolResult, refresh_result, strip_binary_fields
-from app.chem.babel_ops import build_3d_conformer, convert_format, prepare_pdbqt
-from app.chem.rdkit_ops import compute_descriptors, substructure_match
+from app.services.chem_engine.babel_ops import build_3d_conformer, convert_format, prepare_pdbqt
+from app.services.chem_engine.rdkit_ops import compute_descriptors, substructure_match
 
 
 async def _dispatch_artifact(artifacts: list[dict], artifact: dict, config: RunnableConfig) -> None:

@@ -11,10 +11,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.agents.runtime import initialize_graph_runtime, shutdown_graph_runtime
-from app.api.sse_chat import router as sse_chat_router
-from app.api.rdkit_api import router as rdkit_router
-from app.api.babel_api import router as babel_router
+from app.agents.main_agent.runtime import initialize_graph_runtime, shutdown_graph_runtime
+from app.api.v1.chat import router as v1_chat_router
+from app.api.v1.rdkit import router as v1_rdkit_router
+from app.api.v1.babel import router as v1_babel_router
+from app.api.v1.artifacts import router as v1_artifacts_router
 from app.core.network import get_allowed_origins
 
 
@@ -44,9 +45,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(sse_chat_router, prefix="/api/chat")
-app.include_router(rdkit_router, prefix="/api")
-app.include_router(babel_router, prefix="/api")
+# v1 versioned routes
+app.include_router(v1_chat_router, prefix="/api/v1/chat")
+app.include_router(v1_rdkit_router, prefix="/api/v1")
+app.include_router(v1_babel_router, prefix="/api/v1")
+app.include_router(v1_artifacts_router, prefix="/api/v1")
 
 
 @app.get("/")
