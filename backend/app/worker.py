@@ -15,9 +15,7 @@ from app.core.task_queue import (
     store_task_result,
 )
 
-from app.core.task_registry import TASK_DISPATCH, TaskFn
-
-_TASK_DISPATCH = TASK_DISPATCH  # keep the local alias so rest of file is unchanged
+from app.core.task_registry import TASK_DISPATCH
 
 # ── Parameter bounds enforced before handing kwargs to chemistry functions ────
 # These guard against unbounded inputs (e.g. steps=999999999) that could cause
@@ -63,8 +61,8 @@ def _sanitize_stem(name: str | None, fallback: str) -> str:
 
 
 async def _execute_task(task_name: str, kwargs: dict[str, Any], task_id: str) -> dict[str, Any]:
-    fn = _TASK_DISPATCH.get(task_name)
-    if fn is None:
+    spec = TASK_DISPATCH.get(task_name)
+    if spec is None:
         return {"is_valid": False, "error": f"未知任务：{task_name}"}
 
     task_kwargs = dict(kwargs)
@@ -74,33 +72,22 @@ async def _execute_task(task_name: str, kwargs: dict[str, Any], task_id: str) ->
     if validation_error:
         return {"is_valid": False, "error": f"参数校验失败：{validation_error}"}
 
-    result = await asyncio.to_thread(fn, **task_kwargs)
+    result = await asyncio.to_thread(spec.fn, **task_kwargs)
 
-    if task_name == "babel.sdf_split" and result.get("is_valid"):
-        zip_bytes = result.pop("zip_bytes", b"")
-        download_id = task_id
-        filename_stem = _sanitize_stem(filename_base, "split")
+    if spec.artifact is not None and result.get("is_valid"):
+        art = spec.artifact
+        raw = result.pop(art.content_key, b"" if not art.encode_utf8 else "")
+        content: bytes = raw.encode("utf-8") if art.encode_utf8 else raw
+        stem = _sanitize_stem(filename_base, art.fallback_stem)
+        filename = art.filename_template.replace("{stem}", stem)
         await store_artifact(
-            download_id,
-            content=zip_bytes,
-            filename=f"{filename_stem}_split.zip",
-            media_type="application/zip",
+            task_id,
+            content=content,
+            filename=filename,
+            media_type=art.media_type,
             ttl_seconds=get_default_artifact_ttl_seconds(),
         )
-        result["download_id"] = download_id
-
-    if task_name == "babel.sdf_merge" and result.get("is_valid"):
-        sdf_content = result.pop("sdf_content", "")
-        download_id = task_id
-        filename_stem = _sanitize_stem(filename_base, "merged_library")
-        await store_artifact(
-            download_id,
-            content=sdf_content.encode("utf-8"),
-            filename=f"{filename_stem}.sdf",
-            media_type="chemical/x-mdl-sdfile",
-            ttl_seconds=get_default_artifact_ttl_seconds(),
-        )
-        result["download_id"] = download_id
+        result["download_id"] = task_id
 
     return result
 

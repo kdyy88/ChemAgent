@@ -14,7 +14,6 @@ from app.agents.tool_registry import get_root_tools
 from app.agents.config import get_active_model_name, is_native_reasoning_model, _load_environment
 from app.agents.utils import build_llm, format_tasks_for_prompt, normalize_messages_for_api, sanitize_messages_for_state
 from app.agents.utils import format_molecule_workspace_for_prompt
-from app.core.artifact_store import get_engine_artifact_warning
 
 # Loaded lazily so dotenv is applied before the flag is read.
 _load_environment()
@@ -81,7 +80,7 @@ async def chem_agent_node(state: ChemState) -> dict:
     # Derive active artifact ID from the most recent artifact in state.
     artifacts = state.get("artifacts") or []
     active_artifact_id = artifacts[-1].get("artifact_id") if artifacts else None
-    artifact_warning = await get_engine_artifact_warning(str(active_artifact_id or "").strip())
+    artifact_warning = state.get("artifact_expiry_warning")
 
     env_info = {
         "active_smiles": state.get("active_smiles"),

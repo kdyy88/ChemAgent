@@ -27,7 +27,7 @@ from app.agents.utils import (
     update_tasks,
 )
 from app.core.plan_store import read_plan_file
-from app.core.artifact_store import get_engine_artifact
+from app.core.artifact_store import get_engine_artifact, get_engine_artifact_warning
 
 _TOOL_LOOKUP = {tool.name: tool for tool in get_root_tools()}
 logger = logging.getLogger(__name__)
@@ -651,6 +651,14 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                 )
             )
 
+    # Refresh the artifact expiry warning so the next agent turn can read it
+    # from state without reaching into the storage layer.
+    all_artifacts = (state.get("artifacts") or []) + artifacts
+    active_artifact_id = all_artifacts[-1].get("artifact_id") if all_artifacts else None
+    artifact_expiry_warning = await get_engine_artifact_warning(
+        str(active_artifact_id or "").strip()
+    )
+
     return {
         "messages": await sanitize_messages_for_state(tool_messages, source="tools_executor"),
         "active_smiles": new_active_smiles,
@@ -660,4 +668,5 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
         "evidence_revision": evidence_revision,
         "active_subtasks": active_subtasks,
         "active_subtask_id": active_subtask_id,
+        "artifact_expiry_warning": artifact_expiry_warning,
     }

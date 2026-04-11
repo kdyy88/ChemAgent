@@ -62,6 +62,7 @@ class ChemState(TypedDict):
     active_subtasks: dict[str, SubtaskStatePointer]
     active_subtask_id: str | None
     subtask_control: dict[str, Any] | None
+    artifact_expiry_warning: NotRequired[str | None]
 
 
 class RouteDecision(BaseModel):

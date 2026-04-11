@@ -22,11 +22,11 @@ async def _run_direct(task_name: str, kwargs: dict[str, Any]) -> dict[str, Any]:
     Used as a fallback when Redis/ARQ is unavailable (local dev, CI).
     Strips `filename_base` since that only affects ARQ artifact storage.
     """
-    fn = TASK_DISPATCH.get(task_name)
-    if fn is None:
+    spec = TASK_DISPATCH.get(task_name)
+    if spec is None:
         return {"is_valid": False, "error": f"未知任务：{task_name}"}
     kw = {k: v for k, v in kwargs.items() if k != "filename_base"}
-    return await asyncio.to_thread(fn, **kw)
+    return await asyncio.to_thread(spec.fn, **kw)
 
 
 async def run_via_worker(
