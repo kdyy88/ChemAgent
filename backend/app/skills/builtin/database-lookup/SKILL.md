@@ -2,10 +2,6 @@
 name: database-lookup
 description: Search public chemistry, drug, and biomedical databases via their REST APIs. Covers compounds (PubChem, ChEMBL, ZINC, ChEBI, BindingDB), drugs (DailyMed, FDA/OpenFDA, KEGG), proteins/structures (UniProt, PDB, AlphaFold, STRING, Reactome), and clinical data (Open Targets, ClinicalTrials.gov).
 whenToUse: Use when the user asks to look up compounds, drugs, proteins, targets, pathways, binding affinities, drug-target interactions, clinical trials, or any data from a public chemistry/biomedical database API. Also trigger when a database is mentioned by name, or the task involves molecular properties, pharmacology, ADMET cross-referencing, or purchasable compound searches.
-applicableModes:
-  - explore
-  - general
-  - custom
 metadata:
   skill-author: K-Dense Inc.
 ---

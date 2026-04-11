@@ -65,6 +65,10 @@ _EXPLORE_TOOLS: frozenset[str] = frozenset({
     # Lightweight Babel inspection
     "tool_compute_mol_properties",
     "tool_list_formats",
+    # Skills infrastructure (L3 reference reading + database API fetching)
+    "tool_invoke_skill",
+    "tool_read_skill_reference",
+    "tool_fetch_chemistry_api",
 })
 
 _PLAN_TOOLS: frozenset[str] = frozenset()  # no tools — pure LLM reasoning
@@ -88,6 +92,10 @@ _GENERAL_TOOLS: frozenset[str] = frozenset({
     "tool_compute_mol_properties",
     "tool_compute_partial_charges",
     "tool_list_formats",
+    # Skills infrastructure
+    "tool_invoke_skill",
+    "tool_read_skill_reference",
+    "tool_fetch_chemistry_api",
 })
 
 # custom mode uses caller-provided list (validated at runtime)
@@ -122,6 +130,10 @@ _STATIC_TIER_OVERRIDES: dict[str, ChemToolTier] = {
     "tool_build_3d_conformer": "L2",
     "tool_prepare_pdbqt": "L2",
     "tool_compute_partial_charges": "L2",
+    # Skills infrastructure
+    "tool_invoke_skill": "L1",
+    "tool_read_skill_reference": "L1",
+    "tool_fetch_chemistry_api": "L1",
 }
 
 

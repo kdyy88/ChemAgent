@@ -14,6 +14,7 @@ from app.tools.registry import get_root_tools
 from app.agents.config import get_active_model_name, is_native_reasoning_model, _load_environment
 from app.agents.utils import build_llm, format_tasks_for_prompt, normalize_messages_for_api, sanitize_messages_for_state
 from app.agents.utils import format_molecule_workspace_for_prompt
+from app.skills.loader import load_skill_catalogue
 
 # Loaded lazily so dotenv is applied before the flag is read.
 _load_environment()
@@ -96,7 +97,7 @@ async def chem_agent_node(state: ChemState) -> dict:
     }
 
     prompt_messages = [
-        SystemMessage(content=get_system_prompt(env_info)),
+        SystemMessage(content=get_system_prompt(env_info, skill_catalogue=load_skill_catalogue())),
         *safe_messages,
     ]
 

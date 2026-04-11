@@ -21,8 +21,11 @@ import os
 from typing import Literal
 
 from app.tools.babel.prep import ALL_BABEL_TOOLS
+from app.tools.database.api import tool_fetch_chemistry_api
 from app.tools.pubchem.search import ALL_PUBCHEM_TOOLS
 from app.tools.rdkit import ALL_RDKIT_TOOLS
+from app.tools.skills.invoke import tool_invoke_skill
+from app.tools.skills.references import tool_read_skill_reference
 from app.tools.system.task_control import ALL_SYSTEM_CONTROL_TOOLS
 
 # Lazy import to avoid circular dependency:
@@ -37,5 +40,9 @@ ALL_CHEM_TOOLS = [
     *ALL_PUBCHEM_TOOLS,
     *ALL_SYSTEM_CONTROL_TOOLS,
     *ALL_BABEL_TOOLS,
+    # Skills infrastructure
+    tool_invoke_skill,
+    tool_read_skill_reference,
+    tool_fetch_chemistry_api,
     *_get_sub_agent_tool(),
 ]

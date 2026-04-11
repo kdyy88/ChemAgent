@@ -32,6 +32,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.skills.base import SkillManifest
+
 
 # ── Section builders ───────────────────────────────────────────────────────────
 
@@ -207,10 +212,43 @@ def _CUSTOM_INSTRUCTIONS(custom: str) -> str:
 </project_instructions>"""
 
 
-# ── Public factory ─────────────────────────────────────────────────────────────
+def _AVAILABLE_SKILLS(skill_catalogue: list["SkillManifest"]) -> str:
+    """L1 catalogue: always-present compact skill listing (~100 tokens/skill)."""
+    if not skill_catalogue:
+        return ""
+
+    skill_blocks: list[str] = []
+    for manifest in skill_catalogue:
+        arg_summary = ", ".join(
+            f"{a.name}({'required' if a.required else 'optional'})"
+            for a in (manifest.arguments or [])
+        ) or "query (required)"
+        skill_blocks.append(
+            f'<skill name="{manifest.name}" context="{manifest.context}">\n'
+            f"  <description>{manifest.description}</description>\n"
+            f"  <when_to_use>{manifest.when_to_use}</when_to_use>\n"
+            f"  <arguments>{arg_summary}</arguments>\n"
+            f"</skill>"
+        )
+
+    skills_xml = "\n".join(skill_blocks)
+    return f"""<available_skills>
+以下技能可通过 tool_invoke_skill(skill_name, arguments) 按需激活。
+阅读每个技能的描述，当任务意图匹配时立即调用，无需等待用户确认。
+
+执行模式说明：
+- inline: tool_invoke_skill 返回完整 SOP；接着按 SOP 使用 tool_read_skill_reference（读取 L3 API 参考文档⬝）和 tool_fetch_chemistry_api（调用数据库 API）执行。
+- fork: tool_invoke_skill 内部自动委派给隔离子代理，返回结果摘要；无需手动调用子代理。
+
+{skills_xml}
+</available_skills>"""
 
 
-def get_system_prompt(env_info: dict | None = None, custom_instructions: str = "") -> str:
+def get_system_prompt(
+    env_info: dict | None = None,
+    custom_instructions: str = "",
+    skill_catalogue: "list[SkillManifest] | None" = None,
+) -> str:
     """组装完整的 ChemAgent System Prompt。
 
     Parameters
@@ -220,12 +258,21 @@ def get_system_prompt(env_info: dict | None = None, custom_instructions: str = "
         时所有环境字段退回安全的占位值，便于离线测试。
     custom_instructions:
         可选的工作区级别额外约束，通常来自 ``.chemrc`` 文件或项目知识库。
+    skill_catalogue:
+        L1 skill catalogue from ``skills.loader.load_skill_catalogue()``.
+        Rendered as an ``<available_skills>`` section always present in the
+        prompt so the agent can self-route via ``when_to_use`` semantics.
     """
     env = env_info or {}
+    available_skills_section = _AVAILABLE_SKILLS(skill_catalogue or [])
     sections = [
         _IDENTITY(),
         _SYSTEM_RULES(),
         _TOOL_USAGE(),
+    ]
+    if available_skills_section:
+        sections.append(available_skills_section)
+    sections += [
         _OUTPUT_EFFICIENCY(env),
         _ENVIRONMENT_INFO(env),
         _TASK_PLAN(env),
