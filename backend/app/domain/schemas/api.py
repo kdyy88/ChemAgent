@@ -29,6 +29,10 @@ class StreamChatRequest(BaseModel):
         default=None,
         description="当前画布上已激活的 SMILES（可选；来自前端状态）",
     )
+    chat_mode: str | None = Field(
+        default=None,
+        description="前端指定的子智能体模式（'explore' | 'plan'）；None 表示由主 Agent 自主路由",
+    )
     interrupt_context: dict | None = Field(
         default=None,
         description="LangGraph 原生 HITL 恢复上下文；至少包含 interrupt_id",
@@ -48,6 +52,10 @@ class ApproveToolRequest(BaseModel):
         description="计划审批流的稳定 plan_id。提供后表示此次审批针对计划文件而非普通工具断点。",
     )
     action: str = Field(..., description='"approve" | "reject" | "modify"')
+    model: str | None = Field(
+        default=None,
+        description="批准执行时希望使用的模型 ID（可选；用于计划执行子智能体）",
+    )
     args: dict | None = Field(
         default=None,
         description="修改后的工具参数（仅在 action=modify 时有效）",

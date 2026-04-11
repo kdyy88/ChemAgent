@@ -176,10 +176,11 @@ def _make_sub_agent_node(
     tools: list,
     custom_instructions: str,
     skill_markdown: str,
+    skill_listing: str = "",
 ) -> Any:
     """Return an async LangGraph-compatible node function for the LLM step."""
 
-    system_prompt = get_sub_agent_prompt(mode, custom_instructions, skill_markdown)
+    system_prompt = get_sub_agent_prompt(mode, custom_instructions, skill_markdown, skill_listing)
 
     async def sub_agent_node(state: ChemState, config: RunnableConfig) -> dict:  # noqa: ARG001
         llm = build_llm(model=state.get("selected_model"))
@@ -424,6 +425,7 @@ def build_sub_agent_graph(
     checkpointer: Any,
     custom_instructions: str = "",
     skill_markdown: str = "",
+    skill_listing: str = "",
 ) -> Any:
     """Compile an isolated sub-agent ``StateGraph``.
 
@@ -446,6 +448,10 @@ def build_sub_agent_graph(
     skill_markdown:
         Only used for ``SubAgentMode.custom``; local markdown skills injected
         alongside custom instructions.
+    skill_listing:
+        Compact ``<available_skills>`` XML block injected into the system
+        prompt for all non-custom modes.  Sub-agents can call
+        ``tool_load_skill`` to fetch full skill content on demand.
 
     Returns
     -------
@@ -465,7 +471,7 @@ def build_sub_agent_graph(
 
     graph: StateGraph = StateGraph(ChemState)
 
-    sub_agent_fn = _make_sub_agent_node(mode, runtime_tools, custom_instructions, skill_markdown)
+    sub_agent_fn = _make_sub_agent_node(mode, runtime_tools, custom_instructions, skill_markdown, skill_listing)
     graph.add_node("sub_agent", sub_agent_fn)
 
     if runtime_tools:

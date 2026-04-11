@@ -6,6 +6,7 @@ import { Message, MessageContent } from '@/components/ui/message'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ClarificationCard } from './ClarificationCard'
 import { ApprovalCard } from './ApprovalCard'
+import { PlanDraftStream } from './PlanDraftStream'
 import { LipinskiCard } from './LipinskiCard'
 import { SubAgentReportCard, type SubAgentOutput } from './SubAgentReportCard'
 import { ArtifactDispatcher } from './bubbles/ArtifactDispatcher'
@@ -28,11 +29,12 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
   const lipinskiCards = parseLipinskiToolCalls(turn.toolCalls)
 
   // Collect completed sub-agent tool call outputs for SubAgentReportCard.
+  // Exclude plan_pending_approval — those are handled by ApprovalCard instead.
   const subAgentOutputs = useMemo<SubAgentOutput[]>(() => {
     return turn.toolCalls
       .filter((tc) => tc.tool === 'tool_run_sub_agent' && tc.done && tc.output != null)
       .map((tc) => tc.output as unknown as SubAgentOutput)
-      .filter((o) => typeof o.status === 'string')
+      .filter((o) => typeof o.status === 'string' && o.status !== 'plan_pending_approval')
   }, [turn.toolCalls])
 
   // Split artifacts: web sources show immediately; the rest are delayed
@@ -125,6 +127,12 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
               interrupt={turn.pendingInterrupt}
               researchTopic={turn.userMessage}
             />
+          )}
+
+          {/* Plan-mode live draft — streams while Pipeline Architect is thinking; 
+               fades out when pendingApproval (ApprovalCard) takes over */}
+          {turn.planDraftText && !turn.pendingApproval && (
+            <PlanDraftStream text={turn.planDraftText} isStreaming={isStreaming} />
           )}
 
           {/* Hard-breakpoint approval card — shown before executing HEAVY_TOOLS */}

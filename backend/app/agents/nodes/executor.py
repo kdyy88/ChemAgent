@@ -393,6 +393,26 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
             raw_output = await tool.ainvoke(args, config=tool_config)
             parsed = parse_tool_output(raw_output)
 
+            # For tool_run_sub_agent: if parse_tool_output returned None (e.g. raw_output
+            # is a plain string or double-encoded JSON), attempt a direct json.loads()
+            # fallback so that the plan_pending_approval interrupt gate is never silently
+            # skipped due to a parse failure.
+            if parsed is None and tool_name == "tool_run_sub_agent":
+                try:
+                    parsed = json.loads(raw_output) if isinstance(raw_output, str) else None
+                    if parsed is not None:
+                        logger.warning(
+                            "tool_run_sub_agent: parse_tool_output returned None; fallback json.loads succeeded. "
+                            "raw_output[:120]=%s",
+                            str(raw_output)[:120],
+                        )
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "tool_run_sub_agent: both parse_tool_output and fallback json.loads failed. "
+                        "raw_output[:120]=%s",
+                        str(raw_output)[:120],
+                    )
+
             if parsed is not None:
                 if tool_name == "tool_update_task_status":
                     requested_task_id = str(parsed.get("task_id", "")).strip()

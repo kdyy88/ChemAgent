@@ -276,6 +276,22 @@ def tool_report_failure(
     return json.dumps(payload.model_dump(mode="json"), ensure_ascii=False)
 
 
+class LoadSkillArgs(BaseModel):
+    skill_name: str = Field(description="Name of the skill to load (e.g. 'database-lookup'). Check <available_skills> for valid names.")
+
+
+@tool(args_schema=LoadSkillArgs)
+def tool_load_skill(skill_name: str) -> str:
+    """Load the full content of a skill document by name. Use this to get detailed API endpoints, query formats, and examples for a specific skill listed in <available_skills>."""
+    from app.skills.manager import load_skill_by_name  # noqa: PLC0415
+
+    try:
+        content = load_skill_by_name(skill_name)
+    except (FileNotFoundError, ValueError) as exc:
+        return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
+    return json.dumps({"status": "ok", "skill_name": skill_name, "content": content}, ensure_ascii=False)
+
+
 INTERNAL_SUB_AGENT_TOOLS = [
     tool_read_scratchpad,
     tool_write_scratchpad,
@@ -284,4 +300,5 @@ INTERNAL_SUB_AGENT_TOOLS = [
     tool_task_stop,
     tool_report_failure,
     tool_task_complete,
+    tool_load_skill,
 ]

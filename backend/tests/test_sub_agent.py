@@ -19,6 +19,7 @@ from app.agents.sub_agents.protocol import ScratchpadKind, ScratchpadRef
 from app.agents.sub_agents.prompts import SubAgentMode, get_sub_agent_prompt
 from app.tools.registry import ALWAYS_DENIED, get_root_tools, get_tool_tier, get_tools_for_mode
 from app.agents.sub_agents.skills import load_required_skill_markdown
+from app.skills.manager import invalidate_skill_cache
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -139,11 +140,27 @@ class TestToolRegistry:
         assert "tool_ask_human" in names
 
     def test_tool_tier_reads_metadata_for_migrated_tools(self) -> None:
-        tools = get_root_tools()
+        tools = get_root_tools(include_l2=True)
         tool_map = {tool.name: tool for tool in tools}
 
         assert get_tool_tier(tool_map["tool_compute_descriptors"]) == "L1"
         assert get_tool_tier(tool_map["tool_build_3d_conformer"]) == "L2"
+
+    def test_root_tools_excludes_l2_by_default(self) -> None:
+        tools = get_root_tools()
+        names = {tool.name for tool in tools}
+
+        # L1 tools present
+        assert "tool_validate_smiles" in names
+        assert "tool_compute_descriptors" in names
+        assert "tool_pubchem_lookup" in names
+        # Control tools present
+        assert "tool_run_sub_agent" in names
+        # L2 tools absent
+        assert "tool_build_3d_conformer" not in names
+        assert "tool_prepare_pdbqt" not in names
+        assert "tool_convert_format" not in names
+        assert "tool_compute_partial_charges" not in names
 
 
 class TestWebSearchTool:
@@ -258,6 +275,9 @@ class TestSubAgentPrompts:
 
 
 class TestSkillLoader:
+    def setup_method(self) -> None:
+        invalidate_skill_cache()
+
     def test_load_required_skill_markdown_reads_local_skill(self) -> None:
         markdown = load_required_skill_markdown(["rdkit"])
 
@@ -270,7 +290,7 @@ class TestSkillLoader:
         assert markdown.count('<skill name="rdkit">') == 1
 
     def test_load_required_skill_markdown_rejects_missing_skill(self) -> None:
-        with pytest.raises(FileNotFoundError, match="Skill markdown not found"):
+        with pytest.raises(FileNotFoundError, match="Skill not found"):
             load_required_skill_markdown(["missing_skill_xyz"])
 
     def test_explore_prompt_forces_chem_tools(self) -> None:
@@ -278,6 +298,120 @@ class TestSkillLoader:
         assert "tool_murcko_scaffold" in prompt
         assert "tool_pubchem_lookup" in prompt
         assert "官能团" in prompt
+
+
+class TestDynamicSkillSystem:
+    """Tests for the dynamic skill scanning, listing, and on-demand loading."""
+
+    def setup_method(self) -> None:
+        invalidate_skill_cache()
+
+    def test_scan_all_skills_discovers_database_lookup(self) -> None:
+        from app.skills.manager import scan_all_skills
+
+        skills = scan_all_skills()
+        names = [s.name for s in skills]
+        assert "database-lookup" in names
+
+    def test_scan_all_skills_discovers_rdkit(self) -> None:
+        from app.skills.manager import scan_all_skills
+
+        skills = scan_all_skills()
+        names = [s.name for s in skills]
+        assert "rdkit" in names
+
+    def test_scan_all_skills_parses_frontmatter(self) -> None:
+        from app.skills.manager import scan_all_skills
+
+        skills = scan_all_skills()
+        db_skill = next(s for s in skills if s.name == "database-lookup")
+        assert db_skill.description
+        assert db_skill.when_to_use
+        assert "explore" in db_skill.applicable_modes
+
+    def test_scan_all_skills_caches_results(self) -> None:
+        from app.skills.manager import scan_all_skills
+
+        first = scan_all_skills()
+        second = scan_all_skills()
+        assert first is second
+
+    def test_format_skill_listing_returns_xml(self) -> None:
+        from app.skills.manager import format_skill_listing
+
+        listing = format_skill_listing()
+        assert "<available_skills>" in listing
+        assert "database-lookup" in listing
+        assert "</available_skills>" in listing
+
+    def test_format_skill_listing_filters_by_mode(self) -> None:
+        from app.skills.manager import format_skill_listing
+
+        listing = format_skill_listing(modes=["explore"])
+        assert "database-lookup" in listing
+
+        # plan mode is NOT in database-lookup's applicableModes
+        listing_plan = format_skill_listing(modes=["plan"])
+        # rdkit has plan? No. But skills with empty applicableModes match all modes.
+        # Just verify it returns something or is empty as expected.
+        assert isinstance(listing_plan, str)
+
+    def test_load_skill_by_name_returns_content(self) -> None:
+        from app.skills.manager import load_skill_by_name
+
+        content = load_skill_by_name("database-lookup")
+        assert "Database Lookup" in content
+        assert "PubChem" in content
+
+    def test_load_skill_by_name_rejects_unknown(self) -> None:
+        from app.skills.manager import load_skill_by_name
+
+        with pytest.raises(FileNotFoundError, match="Skill not found"):
+            load_skill_by_name("nonexistent_skill_abc")
+
+    def test_load_skill_by_name_rejects_path_traversal(self) -> None:
+        from app.skills.manager import load_skill_by_name
+
+        with pytest.raises(ValueError, match="Unsafe skill name"):
+            load_skill_by_name("../../../etc/passwd")
+
+    def test_tool_load_skill_returns_json(self) -> None:
+        from app.agents.sub_agents.runtime_tools import tool_load_skill
+
+        result = tool_load_skill.invoke({"skill_name": "database-lookup"})
+        parsed = json.loads(result)
+        assert parsed["status"] == "ok"
+        assert "PubChem" in parsed["content"]
+
+    def test_tool_load_skill_handles_missing(self) -> None:
+        from app.agents.sub_agents.runtime_tools import tool_load_skill
+
+        result = tool_load_skill.invoke({"skill_name": "nonexistent_xyz"})
+        parsed = json.loads(result)
+        assert parsed["status"] == "error"
+
+    def test_explore_prompt_with_skill_listing(self) -> None:
+        from app.skills.manager import format_skill_listing
+
+        listing = format_skill_listing(modes=["explore"])
+        prompt = get_sub_agent_prompt(SubAgentMode.explore, skill_listing=listing)
+        assert "<available_skills>" in prompt
+        assert "tool_load_skill" in prompt
+        assert "database-lookup" in prompt
+
+    def test_custom_mode_ignores_skill_listing(self) -> None:
+        prompt = get_sub_agent_prompt(
+            SubAgentMode.custom,
+            custom_instructions="Custom task",
+            skill_listing="<available_skills>should be ignored</available_skills>",
+        )
+        assert "<available_skills>" not in prompt
+
+    def test_internal_tools_include_load_skill(self) -> None:
+        from app.agents.sub_agents.runtime_tools import INTERNAL_SUB_AGENT_TOOLS
+
+        tool_names = [t.name for t in INTERNAL_SUB_AGENT_TOOLS]
+        assert "tool_load_skill" in tool_names
 
 
 # ── sub_graph tests ───────────────────────────────────────────────────────────

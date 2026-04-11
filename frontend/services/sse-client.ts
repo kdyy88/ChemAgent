@@ -41,6 +41,7 @@ interface SSEClientHandlers {
   updateTasks: (tasks: SSETaskItem[]) => void
   addShadowError: (error: SSEShadowError) => void
   appendThinking: (thinking: SSEThinking) => void
+  appendPlanDraftText: (text: string) => void
   recordUsage: (usage: SSEUsage) => void
   setPendingInterrupt: (interrupt: SSEPendingInterrupt) => void
   setPendingApproval: (approval: SSEPendingApproval) => void
@@ -70,6 +71,7 @@ interface SendApprovalArgs {
   action: 'approve' | 'reject' | 'modify'
   args?: Record<string, unknown>
   planId?: string
+  model?: string | null
   handlers: Omit<SSEClientHandlers, 'startTurn'>
 }
 
@@ -108,6 +110,7 @@ export class SSEClient {
           turn_id: turnId,
           model: options.model ?? null,
           active_smiles: options.activeSmiles ?? null,
+          chat_mode: options.chatMode ?? null,
           interrupt_context: options.interruptContext ?? null,
         }),
         signal: ctrl.signal,
@@ -176,18 +179,23 @@ export class SSEClient {
 
       case 'token':
         if (ev.source === 'sub_agent') {
-          handlers.appendThinking({
-            type: 'thinking',
-            text: ev.content,
-            iteration: 0,
-            done: false,
-            source: `sub_agent:${ev.node}`,
-            category: 'llm',
-            importance: 'high',
-            group_key: `sub_agent:${ev.node}`,
-            session_id: ev.session_id,
-            turn_id: ev.turn_id,
-          })
+          if (ev.sub_agent_mode === 'plan') {
+            // Route Plan sub-agent tokens to the visible plan draft stream card
+            handlers.appendPlanDraftText(ev.content)
+          } else {
+            // Explore / general sub-agent tokens go to the ThinkingLog
+            handlers.appendThinking({
+              type: 'thinking',
+              text: ev.content,
+              iteration: 0,
+              done: false,
+              source: `sub_agent[${ev.sub_agent_mode ?? ev.node}]`,
+              category: 'sub_agent',
+              importance: 'low',
+              session_id: ev.session_id,
+              turn_id: ev.turn_id,
+            })
+          }
           return
         }
         handlers.appendAssistantText(ev.content)
@@ -373,7 +381,7 @@ export class SSEClient {
    * POSTs to /api/chat/approve and streams the continuation exactly like
    * sendMessage does, reusing the same handlers.
    */
-  async sendApproval({ sessionId, turnId, approvalLabel, action, args = {}, planId, handlers }: SendApprovalArgs) {
+  async sendApproval({ sessionId, turnId, approvalLabel, action, args = {}, planId, model, handlers }: SendApprovalArgs) {
     this.abortActiveStream()
     const ctrl = new AbortController()
     this.abortCtrl = ctrl
@@ -388,7 +396,7 @@ export class SSEClient {
       await fetchEventSource(APPROVE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, turn_id: turnId, plan_id: planId ?? null, action, args }),
+        body: JSON.stringify({ session_id: sessionId, turn_id: turnId, plan_id: planId ?? null, action, args, model: model ?? null }),
         signal: ctrl.signal,
         openWhenHidden: true,
 

@@ -161,6 +161,7 @@ function createTurn(turnId: string, message: string, tasks: SSETaskItem[]): SSET
     pendingApproval: undefined,
     thinkingSteps: [],
     usage: undefined,
+    planDraftText: '',
   }
 }
 
@@ -215,8 +216,9 @@ export interface SseState {
   recordUsage: (usage: SSEUsage) => void
   setPendingInterrupt: (interrupt: SSEPendingInterrupt) => void
   setPendingApproval: (approval: SSEPendingApproval) => void
-  approveToolCall: (action: 'approve' | 'reject' | 'modify', args?: Record<string, unknown>) => Promise<void>
+  approveToolCall: (action: 'approve' | 'reject' | 'modify', args?: Record<string, unknown>, model?: string | null) => Promise<void>
   appendThinking: (thinking: SSEThinking) => void
+  appendPlanDraftText: (text: string) => void
   completeStream: () => void
   failStream: (message: string) => void
   handleConnectionError: (message: string) => void
@@ -350,6 +352,9 @@ export const useSseStore = create<SseState>((set, get) => {
           },
           appendThinking: (thinking) => {
             get().appendThinking(thinking)
+          },
+          appendPlanDraftText: (text) => {
+            get().appendPlanDraftText(text)
           },
           recordUsage: (usage) => {
             get().recordUsage(usage)
@@ -510,13 +515,15 @@ export const useSseStore = create<SseState>((set, get) => {
     },
 
     setPendingApproval: (approval) => {
-      stopStreamingTurn(() => ({
+      stopStreamingTurn((turn) => ({
         statusLabel: makeApprovalStatusLabel(approval),
         pendingApproval: approval,
+        // Clear plan draft text — the ApprovalCard takes over rendering the plan
+        planDraftText: turn.planDraftText ? '' : turn.planDraftText,
       }))
     },
 
-    approveToolCall: async (action, args) => {
+    approveToolCall: async (action, args, model) => {
       if (get().isStreaming) return
       const sessionId = sseClient.sessionId
       if (!sessionId) return
@@ -558,6 +565,7 @@ export const useSseStore = create<SseState>((set, get) => {
         updateTasks: (tasks: SSETaskItem[]) => { get().updateTasks(tasks) },
         addShadowError: (error: SSEShadowError) => { get().addShadowError(error) },
         appendThinking: (thinking: SSEThinking) => { get().appendThinking(thinking) },
+        appendPlanDraftText: (text: string) => { get().appendPlanDraftText(text) },
         recordUsage: (usage: SSEUsage) => { get().recordUsage(usage) },
         setPendingInterrupt: (interrupt: SSEPendingInterrupt) => { get().setPendingInterrupt(interrupt) },
         setPendingApproval: (approval: SSEPendingApproval) => { get().setPendingApproval(approval) },
@@ -576,6 +584,7 @@ export const useSseStore = create<SseState>((set, get) => {
         action,
         args,
         planId: pendingApproval.kind === 'plan' ? pendingApproval.plan_id : undefined,
+        model: model ?? null,
         handlers,
       })
     },
@@ -583,6 +592,12 @@ export const useSseStore = create<SseState>((set, get) => {
     appendThinking: (thinking) => {
       updateLastTurn((turn) => ({
         thinkingSteps: appendThinkingStep(turn.thinkingSteps, thinking),
+      }))
+    },
+
+    appendPlanDraftText: (text) => {
+      updateLastTurn((turn) => ({
+        planDraftText: (turn.planDraftText ?? '') + text,
       }))
     },
 

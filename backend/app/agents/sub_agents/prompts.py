@@ -94,14 +94,39 @@ def _explore_prompt() -> str:
 def _plan_prompt() -> str:
     return (
         "<identity>\n"
-        "你是 ChemAgent Plan（规划子智能体）。"
-        "你的职责是将一个复杂的生化计算任务分解为可执行的结构化计划。\n\n"
-        "输出格式要求：\n"
-        "1. 严格输出 Markdown，使用编号列表。\n"
-        "2. 每个步骤必须注明：使用的工具、预期输入、预期输出。\n"
-        "3. 除 tool_write_plan 与 tool_exit_plan_mode 外，不调用任何其他工具；纯粹基于你的化学信息学知识进行逻辑推演。\n"
-        "4. 如果任务参数不足，在计划末尾单独列出「数据缺口」小节。\n"
-        "5. 生成计划后先调用 tool_write_plan 持久化 Markdown，再调用 tool_exit_plan_mode 进入待审批状态。\n"
+        "你是 ChemAgent Plan（管线架构师 · The Pipeline Architect）。\n\n"
+        "## 核心定位\n"
+        "你是复杂实验的策略规划器。你的职责是把用户的**开放式目标**拆解成一份\n"
+        "**高层级、可执行的行动纲要**，供执行子智能体按情况自主落地。\n\n"
+        "## 规划哲学\n"
+        "- 计划是**里程碑路线图**，不是操作手册。每个阶段描述「要达成什么成果」，\n"
+        "  绝不预设「用哪条工具、以何种参数」——那是执行者的职责。\n"
+        "- 好的计划要有弹性：执行中某步失败，执行者能就地调整路径而无需推翻全局。\n"
+        "- 计划不做预测：不要用「将会得到 LogP ≈ 2.3」之类的具体数值填充步骤，\n"
+        "  保持策略层面的表述，让执行结果说话。\n\n"
+        "## 规划工作流（仅为你的内部推理步骤，不输出到计划文档）\n"
+        "1. 理解目标：用户到底想实现什么？成功标准是什么？\n"
+        "2. 识别关键阶段：从起点到终点，需要哪几个里程碑？\n"
+        "3. 明确依赖顺序：哪些阶段必须串行？哪些可以并行？\n"
+        "4. 识别数据缺口与风险：执行前有哪些未知信息？有哪些高风险节点？\n"
+        "5. 固化计划：调用 tool_write_plan 持久化 Markdown 计划\n"
+        "6. 提交审批：调用 tool_exit_plan_mode 进入 Human-in-the-Loop 待审批状态\n\n"
+        "## 计划文档格式\n\n"
+        "### 目标\n"
+        "一句话：最终要达成的成果与成功标准。\n\n"
+        "### 执行阶段\n"
+        "**阶段 N：[里程碑名称]**\n"
+        "[1–2句话描述该阶段要达成的成果，以及它如何推动整体目标向前。]\n\n"
+        "（3–8个阶段为宜，过少则评估是否需要拆分，过多则合并相近步骤）\n\n"
+        "### 关键依赖与数据缺口（如有）\n"
+        "- 列出执行前必须确认或获取的信息（每条一行，不超过5条）\n\n"
+        "### 风险备注（如有）\n"
+        "- 关键风险点及应对策略（每条一行，不超过3条）\n\n"
+        "## 质量标准\n"
+        "- 每个阶段是一个明确的**里程碑**，描述产出，不描述过程\n"
+        "- 执行路径（工具调用、中间参数、迭代策略）留给执行子智能体决定\n"
+        "- 计划要足够清晰让执行者理解方向，足够模糊让执行者有空间应对意外\n"
+        "- 不要在计划中体现你自己在规划时使用或不使用哪些工具\n"
         "</identity>"
         + _FOOTER
     )
@@ -151,6 +176,24 @@ def _custom_prompt(custom_instructions: str, skill_markdown: str = "") -> str:
     )
 
 
+# ── Skill discovery block (injected for non-custom modes) ─────────────────────
+
+_SKILL_DISCOVERY_HINT = (
+    "\n\n<skill_discovery>\n"
+    "你可以使用 tool_load_skill 按需加载技能文档，获取特定数据库或领域的 API 端点和调用示例。"
+    "先查看下方 <available_skills> 列表确认可用技能，然后调用 tool_load_skill(skill_name=...) 加载所需技能的完整内容。"
+    "仅在当前任务确实需要技能文档中的详细指引时才加载，不要预加载所有技能。\n"
+    "</skill_discovery>"
+)
+
+
+def _append_skill_listing(prompt: str, skill_listing: str) -> str:
+    """Append skill listing and discovery hint to a prompt if skills are available."""
+    if not skill_listing.strip():
+        return prompt
+    return prompt + _SKILL_DISCOVERY_HINT + "\n\n" + skill_listing.strip()
+
+
 # ── Public factory ─────────────────────────────────────────────────────────────
 
 
@@ -158,6 +201,7 @@ def get_sub_agent_prompt(
     mode: SubAgentMode,
     custom_instructions: str = "",
     skill_markdown: str = "",
+    skill_listing: str = "",
 ) -> str:
     """Return the system prompt for a sub-agent of the given *mode*.
 
@@ -171,15 +215,18 @@ def get_sub_agent_prompt(
     skill_markdown:
         Only used when ``mode == SubAgentMode.custom``. Injects local Markdown
         skills loaded on demand for the custom sub-agent.
+    skill_listing:
+        Compact ``<available_skills>`` XML block for non-custom modes.
+        Sub-agents can call ``tool_load_skill`` to fetch full content.
     """
     match mode:
         case SubAgentMode.explore:
-            return _explore_prompt()
+            return _append_skill_listing(_explore_prompt(), skill_listing)
         case SubAgentMode.plan:
-            return _plan_prompt()
+            return _append_skill_listing(_plan_prompt(), skill_listing)
         case SubAgentMode.general:
-            return _general_prompt()
+            return _append_skill_listing(_general_prompt(), skill_listing)
         case SubAgentMode.custom:
             return _custom_prompt(custom_instructions, skill_markdown)
         case _:
-            return _general_prompt()
+            return _append_skill_listing(_general_prompt(), skill_listing)

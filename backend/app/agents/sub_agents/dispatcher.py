@@ -71,7 +71,7 @@ from app.agents.sub_agents.protocol import (
     TaskStopPayload,
     format_delegation_prompt,
 )
-from app.agents.sub_agents.skills import load_required_skill_markdown
+from app.skills.manager import format_skill_listing, load_required_skill_markdown
 from app.tools.registry import SubAgentMode, get_tools_for_mode
 from app.domain.stores.scratchpad import create_scratchpad_entry
 
@@ -549,17 +549,41 @@ async def tool_run_sub_agent(
             sub_agent_mode = inferred_mode
             mode = inferred_mode.value
 
+    # ── Soft preflight: warn if delegation lacks SMILES/artifact context ──────
+    _delegation_text = task
+    if isinstance(delegation, dict):
+        _delegation_text += " " + str(delegation.get("task_directive") or "")
+    elif isinstance(delegation, SubAgentDelegation):
+        _delegation_text += " " + delegation.task_directive
+    _has_smiles_ref = bool(re.search(r"[A-Za-z0-9@+\-\[\]\\/(=#$)]{5,}", _delegation_text))
+    _has_artifact_ref = bool(re.search(r"art_[a-f0-9]", _delegation_text))
+    if (
+        sub_agent_mode in (SubAgentMode.explore, SubAgentMode.general)
+        and not _has_smiles_ref
+        and not _has_artifact_ref
+        and parent_active_smiles
+    ):
+        logger.warning(
+            "Sub-agent delegation lacks SMILES/artifact reference despite parent active_smiles=%s. "
+            "Consider including concrete molecular identifiers in task_directive. task=%.120s",
+            _compact_smiles_for_log(parent_active_smiles),
+            task,
+        )
+
     try:
         filtered_tools = get_tools_for_mode(sub_agent_mode, custom_tools or None)
     except ValueError as exc:
         return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
 
     skill_markdown = ""
+    skill_listing = ""
     if sub_agent_mode == SubAgentMode.custom:
         try:
             skill_markdown = load_required_skill_markdown(required_skills or None)
         except (FileNotFoundError, ValueError) as exc:
             return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
+    else:
+        skill_listing = format_skill_listing(modes=[sub_agent_mode.value])
 
     # ── Shared checkpointer (MUST be the SQLite instance) ─────────────────────
     try:
@@ -575,6 +599,7 @@ async def tool_run_sub_agent(
         checkpointer,
         custom_instructions=custom_instructions or "",
         skill_markdown=skill_markdown,
+        skill_listing=skill_listing,
     )
 
     # ── UUID-backed thread isolation ─────────────────────────────────────────

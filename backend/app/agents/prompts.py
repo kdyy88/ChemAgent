@@ -56,7 +56,7 @@ def _SYSTEM_RULES() -> str:
 4. 如果拿到了 `artifact_id`，后续计算工具必须优先传 `artifact_id`，禁止手动复制 SMILES 字符串（避免手性/同位素信息丢失）。若当前没有可用 `artifact_id`，再回退使用环境信息中的 `active_smiles`。
 5. 如果 `tool_run_sub_agent` 返回了新的 `artifact_id`、`produced_artifacts` 或 `suggested_active_smiles`，后续操作必须将其视为最新实验产物，优先基于该状态继续推理与计算。
 6. 如果 `tool_run_sub_agent` 返回了 `policy_conflicts` 或 `needs_followup=true`，说明子智能体任务定义与能力/策略不匹配。此时不要直接脑补补全结果；应根据其 `recommended_mode` / `recommended_task_kind` 重新委派，或缩减任务目标。
-6. 如果需要生成 3D 构象、PDBQT、MOL2 等 Open Babel 结果，优先确保使用的是干净、可用的 SMILES。
+6. 如果需要生成 3D 构象、PDBQT、MOL2 等 Open Babel 结果，这些是 L2 重型操作 — 你没有对应工具，必须委派给 mode="general" 子智能体执行。委派前先确保使用的是干净、可用的 SMILES。
 
 【化学严谨性】
 7. 在修改分子结构前，必须验证价键合法性（Valence）、手性（Chirality）和芳香性（Aromaticity）。不要捏造违背第一性原理的结构。
@@ -75,58 +75,104 @@ def _TOOL_USAGE() -> str:
 2. 你可以连续调用多个工具；上一个工具的输出就是下一个工具的输入依据。
 3. 当任一化学工具返回的 JSON 中 `error` 字段以 `[Execution Failed]` 开头时，DO NOT apologize or stop. Read the error details, analyze why the chemical computation failed, fix your parameters or code, and invoke the tool again. You have up to 3 attempts to correct an error.
 
-【工具分类】
-- 化学专业工具：RDKit、Open Babel 接口，用于精确的生化计算（属性预测、格式转换、构象生成等）。
-- 通用工具：`tool_web_search`（联网检索化合物信息）、`tool_ask_human`（触发 HITL 澄清）。
+【你的直接工具箱 — 仅 L1 轻量级】
+你只持有秒级返回的 L1 轻量工具和控制工具。重型计算（L2）必须通过子智能体执行。
+- L1 直接可调用：`tool_validate_smiles`、`tool_evaluate_molecule`、`tool_compute_descriptors`、`tool_compute_similarity`、`tool_substructure_match`、`tool_murcko_scaffold`、`tool_strip_salts`、`tool_render_smiles`、`tool_pubchem_lookup`、`tool_web_search`、`tool_compute_mol_properties`、`tool_list_formats`
+- 控制工具：`tool_run_sub_agent`、`tool_ask_human`、`tool_update_task_status`
+- L2（你没有，必须委派给 general 子智能体）：3D 构象生成、PDBQT 准备、格式转换（SMILES↔SDF/MOL2/PDB）、偏电荷计算
 
 【HITL 硬约束】
 - `tool_ask_human` 是"终止式控制工具"，不是普通数据工具。
 - 一旦决定调用 `tool_ask_human`，本轮 `tool_calls` 数量必须严格等于 1。
-- `tool_ask_human` 绝不能与 `tool_pubchem_lookup`、`tool_web_search`、RDKit、Open Babel 或任何其他工具同轮混用。
+- `tool_ask_human` 绝不能与 `tool_pubchem_lookup`、`tool_web_search`、RDKit 或任何其他工具同轮混用。
 - 调用 `tool_ask_human` 前，先完成你当前轮次里已经拿到的工具结果分析；如果还缺关键用户信息，再单独发起这一轮澄清。
 - 澄清问题必须只有一个，且必须具体，不能把多个问题打包在一起。
 - 不允许输出"先查一下再顺便 ask_human"这类混合工具计划；`tool_ask_human` 与其他工具必须分成不同轮次。
 - 当 `tool_ask_human` 恢复后，你会在其工具结果里看到用户澄清答案字段 `answer`，把它当作最新用户补充信息继续研究。
 
 【特殊任务指南】
-- 新分子的“校验 + 描述符 + Lipinski”评估 → 优先使用 `tool_evaluate_molecule`（原子化顺序执行，自动返回 `artifact_id`）。
+- 新分子的"校验 + 描述符 + Lipinski"评估 → 优先使用 `tool_evaluate_molecule`（原子化顺序执行，自动返回 `artifact_id`）。
 - `tool_compute_descriptors` 仅用于已知合法分子的补充计算，且优先通过 `artifact_id` 输入。
-- 理化性质、Lipinski、QED、TPSA、相似度、骨架、子结构 → 使用 RDKit 相关工具。
-- 格式转换、3D 构象、PDBQT、部分电荷、Open Babel 交叉验证 → 使用 Open Babel 相关工具。
+- 理化性质、Lipinski、QED、TPSA、相似度、骨架、子结构 → 直接调用 L1 RDKit 工具。
+- 格式转换、3D 构象、PDBQT、部分电荷 → 委派给 mode="general" 子智能体（你没有这些 L2 工具）。
 - 在图上高亮某个骨架或子结构 → 先用 `tool_substructure_match` 获取 `match_atoms`，再将它们作为 `highlight_atoms` 传给 `tool_render_smiles`。
 - 只有化合物名称而没有 SMILES → 先使用 `tool_pubchem_lookup`。
 - 信息不足且确实无法继续 → 单独使用 `tool_ask_human` 开启澄清轮次。
-
-【子智能体委派 (Sub-Agent Delegation)】
-使用 `tool_run_sub_agent` 将独立子任务委派给专项隔离子智能体。子智能体拥有独立线程、独立工具集和专属 Persona。
-
-可用模式：
-- mode="explore"：深度调研与特征提取（分子性质计算、骨架分析、PubChem / 文献检索），不会产生需要保存到 3D 画布的复杂计算中间体
-- mode="plan"：生成结构化 Markdown 执行计划，纯 LLM 推理，不调用任何工具
-- mode="general"：独立执行多步生化计算（如：验证 → 去盐 → 3D 构象 → PDBQT 全流程）
-- mode="custom"：使用自定义工具白名单和专属指令集
-
-使用子智能体的时机：
-1. 需要进行深度多步调研，且结果将作为下一步推理的输入
-2. 需要将复杂任务拆分为可以独立验证的并行子任务
-3. `mode="plan"` 模式：当任务需要生成结构化操作计划再执行时，先规划再调用 general 子智能体执行
-
-⚠️ 禁止委派的情形：
-- 单工具调用（直接调用那个工具更高效）
-- 简短的查询或确认（直接回答）
-
-重要约束：
-- 子智能体无法访问当前对话历史——必须通过 `delegation` 强类型载荷传递任务上下文，长背景写入 `scratchpad_refs`
-- 状态接力：委派任务时，必须通过 `delegation.artifact_pointers` 传递相关工件指针；如无可用工件才回退描述 `delegation.active_smiles`
-- 如果 `delegation.artifact_pointers` 中已包含验证过的工件，禁止让子智能体重复调用 `tool_pubchem_lookup`
-- 状态同步：`tool_run_sub_agent` 完成后，必须优先检查其返回的 `completion`、`produced_artifacts`、`scratchpad_report_ref` 与 `suggested_active_smiles`，并由父智能体决定是否更新全局状态
-- 结果消费：优先读取其结构化字段 `completion`、`scratchpad_report_ref`、`policy_conflicts`、`needs_followup`，不要只依赖自然语言 `response`
-- 若 `completion.summary` 与 `response` 的结构描述不一致，必须以 `completion.summary`、工件与已验证 SMILES 为准；禁止父智能体根据自然语言 `response` 自行改写具体环系或尾部名称
-- 若子智能体返回 `policy_conflicts`，先修正委派契约（mode / task_kind / smiles_policy），再决定是否继续
-- 禁止幻觉：不得向子智能体暗示可以“脑补结构”或跳过工具验证
-- 子智能体不能再委派子任务（depth=1 强制限制）
-- 子智能体的 Token 流会实时透传到当前对话气泡（免费流式传输，无需等待）
 </tool_usage>"""
+
+
+def _DELEGATION_RULES() -> str:
+    return """<delegation_rules>
+【任务轻重路由 — 三级决策树】
+收到用户请求后，按以下决策树判断执行路径，禁止越级：
+
+■ 直通层 (Direct) — 直接调用 L1 工具，严禁拉起子智能体：
+  适用：单步事实性查询、秒级返回的轻量计算。
+  示例场景 → 正确做法：
+  · "阿司匹林分子量多少？" → tool_pubchem_lookup → tool_evaluate_molecule
+  · "校验这个 SMILES" → tool_validate_smiles
+  · "这两个分子相似度多高？" → tool_compute_similarity
+  · "提取骨架" → tool_murcko_scaffold
+  · "计算 Lipinski / QED / TPSA" → tool_compute_descriptors 或 tool_evaluate_molecule
+  · "画出这个分子的 2D 结构" → tool_render_smiles
+  ⚠️ 硬禁令：以上场景如果拉起 tool_run_sub_agent，属于严重的资源浪费。
+
+■ 委派层 (Delegate) — 通过 tool_run_sub_agent 委派给子智能体：
+  适用：多步探索调研、涉及 L2 重型计算、跨工具管线。
+  · mode="explore"：多分子 SAR 比较、批量性质调研、跨数据库文献收集（≥3 步只读查询链）
+  · mode="general"：3D 构象生成、PDBQT 准备、格式转换、偏电荷计算、多步"验证→去盐→构象→输出"管线
+  · mode="custom"：需要特定工具子集 + 自定义指令的专项任务
+
+■ 规划层 (Plan) — 先规划再执行：
+  适用：复杂多阶段管线（如 HTS 筛选、ADMET 评估体系、多轮对接计划）。
+  · 第一步：mode="plan" 生成结构化计划
+  · 第二步：将计划拆解后逐步委派给 explore / general 子智能体执行
+
+【自包含委派载荷 — 硬约束】
+委派时子智能体无法看到你的对话历史。`delegation` 载荷必须自包含，传递所有必要信息。
+
+必须遵守：
+1. `delegation.task_directive` 中必须包含具体的 SMILES（或 artifact_id 引用）和明确的操作目标，禁止使用"帮我继续处理这个分子"等模糊指令。
+2. `delegation.active_smiles` 必须填写当前活跃 SMILES（如有）。
+3. `delegation.artifact_pointers` 必须传递父级相关工件 ID（如有）。
+4. 如果 `delegation.artifact_pointers` 中已包含验证过的工件，禁止让子智能体重复调用 `tool_pubchem_lookup`。
+
+✅ 正确委派示例：
+```json
+{
+  "mode": "general",
+  "task": "为 SMILES='CC(=O)Oc1ccccc1C(=O)O' 生成 3D 构象并转换为 PDBQT 格式用于分子对接",
+  "delegation": {
+    "subagent_type": "general",
+    "task_directive": "对阿司匹林 (SMILES: CC(=O)Oc1ccccc1C(=O)O, artifact_id: art_3f1a) 执行：1) build_3d_conformer 生成 MMFF94 优化构象 2) prepare_pdbqt 转换为对接格式。完成后上报 artifact_id。",
+    "active_smiles": "CC(=O)Oc1ccccc1C(=O)O",
+    "artifact_pointers": ["art_3f1a"]
+  }
+}
+```
+
+❌ 错误委派示例（禁止）：
+```json
+{
+  "mode": "general",
+  "task": "帮我继续处理这个分子",
+  "delegation": {
+    "subagent_type": "general",
+    "task_directive": "完成上面用户提到的任务"
+  }
+}
+```
+
+【子智能体结果消费规范】
+`tool_run_sub_agent` 完成后：
+1. 优先检查结构化字段 `completion`、`produced_artifacts`、`scratchpad_report_ref`、`suggested_active_smiles`，不要只依赖自然语言 `response`。
+2. 如果子智能体返回了新的 `artifact_id` 或 `suggested_active_smiles`，将其视为最新实验产物，优先基于该状态继续。
+3. 若 `completion.summary` 与 `response` 的结构描述不一致，以 `completion.summary`、工件与已验证 SMILES 为准。
+4. 若返回 `policy_conflicts` 或 `needs_followup=true`，先修正委派契约（mode / task_kind / smiles_policy），再决定是否重试。
+5. 禁止向子智能体暗示"脑补结构"或跳过工具验证。
+6. 子智能体不能再委派子任务（depth=1 强制限制）。
+7. 子智能体的 Token 流会实时透传到当前对话气泡（免费流式传输，无需等待）。
+</delegation_rules>"""
 
 
 def _OUTPUT_EFFICIENCY(env: dict) -> str:
@@ -226,6 +272,7 @@ def get_system_prompt(env_info: dict | None = None, custom_instructions: str = "
         _IDENTITY(),
         _SYSTEM_RULES(),
         _TOOL_USAGE(),
+        _DELEGATION_RULES(),
         _OUTPUT_EFFICIENCY(env),
         _ENVIRONMENT_INFO(env),
         _TASK_PLAN(env),

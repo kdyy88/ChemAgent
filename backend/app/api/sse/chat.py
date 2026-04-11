@@ -100,6 +100,7 @@ async def stream_chat(req: StreamChatRequest) -> StreamingResponse:
             history=req.history,
             model=req.model,
             active_smiles=req.active_smiles,
+            chat_mode=req.chat_mode,
             interrupt_context=req.interrupt_context,
         ),
         media_type="text/event-stream",
@@ -137,7 +138,7 @@ async def approve_tool(req: ApproveToolRequest) -> StreamingResponse:
         )
     engine = ChemSessionEngine(session_id=req.session_id, turn_id=req.turn_id)
     return StreamingResponse(
-        engine.resume_approval(action=req.action, args=req.args, plan_id=req.plan_id),
+        engine.resume_approval(action=req.action, args=req.args, plan_id=req.plan_id, model=req.model),
         media_type="text/event-stream",
         headers={
             "X-Accel-Buffering": "no",

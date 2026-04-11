@@ -17,7 +17,7 @@ import { fetchScratchpad } from '@/lib/chem-api'
 import { sseClient } from '@/services/sse-client'
 
 export interface SubAgentOutput {
-  status: 'ok' | 'protocol_error' | 'timeout' | 'error'
+  status: 'ok' | 'protocol_error' | 'timeout' | 'error' | 'plan_pending_approval'
   mode: string
   sub_thread_id: string
   summary?: string
@@ -165,6 +165,7 @@ function StatusIcon({ status }: { status: SubAgentOutput['status'] }) {
   if (status === 'ok') return <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
   if (status === 'timeout') return <Clock className="h-3.5 w-3.5 shrink-0 text-amber-500" />
   if (status === 'protocol_error') return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+  if (status === 'plan_pending_approval') return <Clock className="h-3.5 w-3.5 shrink-0 text-amber-500" />
   return <XCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
 }
 
@@ -172,6 +173,7 @@ function statusLabel(status: SubAgentOutput['status']): string {
   if (status === 'ok') return '完成'
   if (status === 'timeout') return '超时'
   if (status === 'protocol_error') return '协议错误'
+  if (status === 'plan_pending_approval') return '待审批'
   return '出错'
 }
 
@@ -206,7 +208,7 @@ export function SubAgentReportCard({ output }: SubAgentReportCardProps) {
   const statusTone =
     output.status === 'ok'
       ? 'text-foreground/72'
-      : output.status === 'timeout' || output.status === 'protocol_error'
+      : output.status === 'timeout' || output.status === 'protocol_error' || output.status === 'plan_pending_approval'
         ? 'text-amber-700 dark:text-amber-300'
         : 'text-destructive'
         const parsedReport = content ? parseStructuredReportContent(content) : null

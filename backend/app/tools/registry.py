@@ -161,11 +161,16 @@ def get_tools_by_tier(
     return [catalog[name] for name in allowed_names]
 
 
-def get_root_tools(*, include_l2: bool = True) -> list[Any]:
+def get_root_tools(*, include_l2: bool = False) -> list[Any]:
     """Return the root-agent tool set from the registry source of truth.
 
-    For now Root keeps soft isolation semantics: it always receives all control
-    tools and all L1 tools, and can optionally see L2 tools.
+    The root agent keeps only L1 (lightweight, sub-second) tools and control
+    tools by default.  L2 tools (3D conformer, PDBQT, format conversion,
+    partial charges) are accessed exclusively through the ``general``
+    sub-agent, enforcing the "direct for light / delegate for heavy" boundary.
+
+    Pass ``include_l2=True`` to restore the full catalog (used by tests and
+    the sub-agent graph factory).
     """
     catalog = _tool_catalog()
     allowed_names: list[str] = []

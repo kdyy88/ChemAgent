@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ChevronDown, Send, X, Plus, Upload, Globe, FlaskConical, Cpu } from 'lucide-react'
+import { ChevronDown, Send, X, Plus, Upload, Globe, FlaskConical, Cpu, Bot, Compass, Workflow } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -26,8 +26,43 @@ import '@/lib/i18n/client'
 
 interface SSEChatInputProps {
   isStreaming: boolean
-  sendMessage: (message: string, options?: { activeSmiles?: string | null }) => Promise<void>
+  sendMessage: (message: string, options?: { activeSmiles?: string | null; chatMode?: string | null }) => Promise<void>
+  clearTurns?: () => void
 }
+
+type ChatMode = 'agent' | 'explore' | 'plan'
+
+interface ModeConfig {
+  id: ChatMode
+  label: string
+  icon: React.ReactNode
+  description: string
+  backendMode: string | null  // null = main agent self-routes
+}
+
+const CHAT_MODES: ModeConfig[] = [
+  {
+    id: 'agent',
+    label: 'Agent',
+    icon: <Bot className="h-3.5 w-3.5" />,
+    description: '主智能体自主路由',
+    backendMode: null,
+  },
+  {
+    id: 'explore',
+    label: 'Explore',
+    icon: <Compass className="h-3.5 w-3.5" />,
+    description: '只读调研，无副作用',
+    backendMode: 'explore',
+  },
+  {
+    id: 'plan',
+    label: 'Plan',
+    icon: <Workflow className="h-3.5 w-3.5" />,
+    description: '管线架构师，HITL 审批',
+    backendMode: 'plan',
+  },
+]
 
 function formatTokenCount(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
@@ -188,6 +223,7 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
   const { t } = useTranslation('common')
   const [value, setValue] = useState('')
   const [chatSmiles, setChatSmiles] = useState<string | null>(null)
+  const [chatMode, setChatMode] = useState<ChatMode>('agent')
   const { currentSmiles } = useWorkspaceStore()
   const turns = useSseStore((s) => s.turns)
   const sessionUsage = useSseStore((s) => s.sessionUsage)
@@ -225,7 +261,11 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
     const trimmed = value.trim()
     if (!trimmed || isFullyDisabled) return
     setValue('')
-    await sendMessage(trimmed, { activeSmiles: chatSmiles ?? null })
+    const activeModeConfig = CHAT_MODES.find((m) => m.id === chatMode)
+    await sendMessage(trimmed, {
+      activeSmiles: chatSmiles ?? null,
+      chatMode: activeModeConfig?.backendMode ?? null,
+    })
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -261,6 +301,14 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
         <div className="flex items-center gap-1.5 px-3 pt-2.5 text-xs text-orange-500 dark:text-orange-400">
           <span>⏸</span>
           <span>请先处理上方的审批请求，再发送新消息</span>
+        </div>
+      )}
+
+      {/* Plan mode amber hint */}
+      {chatMode === 'plan' && !isApprovalPending && (
+        <div className="flex items-center gap-1.5 px-3 pt-2.5 text-xs text-amber-600 dark:text-amber-400">
+          <span>📋</span>
+          <span>Plan 模式 · 将生成结构化执行计划，执行前需人工审批</span>
         </div>
       )}
 
@@ -352,6 +400,56 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
                   {t('input.coming_soon')}
                 </span>
               </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* divider */}
+          <div className="h-4 w-px bg-border/40 mx-0.5" />
+
+          {/* Mode selector — Copilot-style Agent / Explore / Plan */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-8 gap-1.5 rounded-xl border border-border/50 bg-muted/40 px-2.5 text-xs font-medium text-muted-foreground shadow-none transition-colors hover:bg-primary/10 hover:text-primary disabled:opacity-40"
+                disabled={isModelLocked}
+                aria-label="切换 Agent 模式"
+              >
+                {CHAT_MODES.find((m) => m.id === chatMode)?.icon}
+                <span className="hidden sm:inline">{CHAT_MODES.find((m) => m.id === chatMode)?.label}</span>
+                <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              side="top"
+              sideOffset={8}
+              className="w-52 rounded-2xl border border-border/60 bg-popover/95 p-1.5 shadow-xl backdrop-blur-sm"
+            >
+              <DropdownMenuLabel className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/60">
+                Agent 模式
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator className="my-1 bg-border/50" />
+              {CHAT_MODES.map((mode) => (
+                <DropdownMenuCheckboxItem
+                  key={mode.id}
+                  checked={chatMode === mode.id}
+                  onCheckedChange={() => setChatMode(mode.id)}
+                  className="rounded-xl px-2 py-2 text-sm"
+                >
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <div className="flex items-center gap-1.5">
+                      {mode.icon}
+                      <span className="font-medium">{mode.label}</span>
+                    </div>
+                    <span className="text-[10px] text-muted-foreground/60 leading-tight pl-5">
+                      {mode.description}
+                    </span>
+                  </div>
+                </DropdownMenuCheckboxItem>
+              ))}
             </DropdownMenuContent>
           </DropdownMenu>
 

@@ -144,6 +144,8 @@ export interface SSEToken {
   session_id: string
   turn_id: string
   source?: 'sub_agent'
+  /** Resolved sub-agent mode when source === 'sub_agent' (e.g. 'plan', 'explore', 'general'). */
+  sub_agent_mode?: string | null
   content: string       // partial text — append to the current bubble
 }
 
@@ -256,7 +258,7 @@ export interface SSEThinking {
   iteration: number
   done?: boolean
   source?: string
-  category?: 'node' | 'tool' | 'llm' | 'status' | 'error'
+  category?: 'node' | 'tool' | 'llm' | 'status' | 'error' | 'sub_agent'
   importance?: 'high' | 'low'
   group_key?: string
   session_id: string
@@ -288,6 +290,7 @@ export interface SSESendMessageOptions {
   activeSmiles?: string | null
   interruptContext?: InterruptContext
   model?: string | null
+  chatMode?: string | null
 }
 
 export interface SSEToolCall {
@@ -356,4 +359,6 @@ export interface SSETurn {
   /** Unified reasoning stream shown in the chain-of-thought area. */
   thinkingSteps: SSEThinking[]
   usage?: SSEUsageSnapshot
+  /** Accumulated text from Plan sub-agent while it streams its draft (cleared when ApprovalCard arrives). */
+  planDraftText?: string
 }

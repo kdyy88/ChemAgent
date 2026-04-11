@@ -1,8 +1,18 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { ClipboardPenLine, FilePenLine, ShieldAlert } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { ChevronDown, ClipboardPenLine, Cpu, Eye, FilePenLine, Pencil, ShieldAlert } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Textarea } from '@/components/ui/textarea'
 import { fetchPlanDocument } from '@/lib/artifact-api'
 import type { SSEPendingApproval } from '@/lib/sse-types'
@@ -25,18 +35,33 @@ function toolLabel(name: string): string {
 
 export function ApprovalCard({ approval }: ApprovalCardProps) {
   const { approveToolCall, isStreaming } = useSseStore()
+  const availableModels = useSseStore((s) => s.availableModels)
+  const selectedModelId = useSseStore((s) => s.selectedModelId)
   const [argsJson, setArgsJson] = useState('')
   const [planContent, setPlanContent] = useState('')
   const [parseError, setParseError] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [isLoadingPlan, setIsLoadingPlan] = useState(false)
   const [submitted, setSubmitted] = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
+  // Execution model — defaults to the globally selected model but can be overridden
+  // per-approval so users can pick a different (e.g. more capable) model for execution.
+  const [execModelId, setExecModelId] = useState<string | null>(null)
 
   const isDisabled = isStreaming || submitted
+
+  // Count steps parsed from plan Markdown (looks for **步骤 N** or numbered list patterns)
+  const stepCount = useMemo(() => {
+    if (!planContent) return 0
+    const matches = planContent.match(/^\s*\*\*步骤\s*\d+/gm) ?? planContent.match(/^\s*\d+\.\s+\*\*/gm) ?? []
+    return matches.length
+  }, [planContent])
 
   useEffect(() => {
     setSubmitted(false)
     setParseError(null)
+    // Reset execution model to the global selection each time a new approval arrives
+    setExecModelId(selectedModelId)
 
     if (approval.kind === 'tool') {
       setArgsJson(JSON.stringify(approval.args, null, 2))
@@ -102,7 +127,7 @@ export function ApprovalCard({ approval }: ApprovalCardProps) {
     setSubmitted(true)
 
     if (approval.kind === 'plan') {
-      await approveToolCall('approve')
+      await approveToolCall('approve', undefined, execModelId)
       return
     }
 
@@ -151,9 +176,16 @@ export function ApprovalCard({ approval }: ApprovalCardProps) {
             <ClipboardPenLine />
           </div>
           <div className="flex min-w-0 flex-col gap-1">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-700 dark:text-amber-300">
-              Plan Approval Request
-            </span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-700 dark:text-amber-300">
+                Plan Approval Request
+              </span>
+              {stepCount > 0 && (
+                <span className="rounded-full bg-amber-200/80 px-2 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-800/40 dark:text-amber-300">
+                  {stepCount} 步
+                </span>
+              )}
+            </div>
             <p className="text-sm leading-relaxed text-foreground/90">
               子智能体已提交执行计划。您可以先改写 Markdown 计划，再决定是否批准执行。
             </p>
@@ -171,24 +203,101 @@ export function ApprovalCard({ approval }: ApprovalCardProps) {
         )}
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-xs text-muted-foreground">计划 Markdown</span>
-          <Textarea
-            value={planContent}
-            onChange={(event) => {
-              setPlanContent(event.target.value)
-              setParseError(null)
-            }}
-            disabled={isDisabled || isLoadingPlan}
-            rows={Math.min(18, Math.max(8, planContent.split('\n').length + 2))}
-            className="resize-y rounded-2xl border-amber-200 bg-white/75 font-mono text-xs leading-5 focus-visible:ring-amber-400 dark:border-amber-800/50 dark:bg-black/25"
-            spellCheck={false}
-          />
-          {isLoadingPlan && <p className="text-xs text-muted-foreground">正在加载计划正文…</p>}
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">计划 Markdown</span>
+            {!isDisabled && !isLoadingPlan && planContent && (
+              <button
+                type="button"
+                onClick={() => setIsEditing((v) => !v)}
+                className="flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] text-amber-700 hover:bg-amber-100 dark:text-amber-400 dark:hover:bg-amber-900/30"
+              >
+                {isEditing ? (
+                  <><Eye className="h-3 w-3" />预览</>
+                ) : (
+                  <><Pencil className="h-3 w-3" />编辑</>
+                )}
+              </button>
+            )}
+          </div>
+
+          {isEditing ? (
+            <Textarea
+              value={planContent}
+              onChange={(event) => {
+                setPlanContent(event.target.value)
+                setParseError(null)
+              }}
+              disabled={isDisabled || isLoadingPlan}
+              rows={Math.min(18, Math.max(8, planContent.split('\n').length + 2))}
+              className="resize-y rounded-2xl border-amber-200 bg-white/75 font-mono text-xs leading-5 focus-visible:ring-amber-400 dark:border-amber-800/50 dark:bg-black/25"
+              spellCheck={false}
+            />
+          ) : (
+            <div className="rounded-2xl border border-amber-200/80 bg-white/60 px-4 py-3 dark:border-amber-800/40 dark:bg-black/20">
+              {isLoadingPlan ? (
+                <p className="text-xs text-muted-foreground">正在加载计划正文…</p>
+              ) : planContent ? (
+                <div className="prose prose-sm max-w-none dark:prose-invert prose-headings:font-semibold prose-headings:text-amber-900 dark:prose-headings:text-amber-200 prose-strong:text-amber-800 dark:prose-strong:text-amber-300 prose-code:text-[11px] prose-li:my-0.5 prose-p:my-1">
+                  <ReactMarkdown>{planContent}</ReactMarkdown>
+                </div>
+              ) : null}
+            </div>
+          )}
+
           {loadError && <p className="text-xs text-destructive">{loadError}</p>}
           {parseError && <p className="text-xs text-destructive">{parseError}</p>}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {/* Execution model selector — only for plan approval */}
+          {availableModels.length > 0 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  disabled={isDisabled}
+                  className="h-8 max-w-44 gap-1.5 rounded-xl border border-amber-300/70 bg-white/60 px-2.5 text-xs font-medium text-amber-800 shadow-none hover:bg-amber-100 disabled:opacity-40 dark:border-amber-700/50 dark:bg-black/20 dark:text-amber-300 dark:hover:bg-amber-900/30"
+                  title={execModelId ?? '选择执行模型'}
+                >
+                  <Cpu className="h-3 w-3 shrink-0 opacity-70" />
+                  <span className="truncate">
+                    {availableModels.find((m) => m.id === execModelId)?.label ?? '选择模型'}
+                  </span>
+                  <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                side="top"
+                sideOffset={8}
+                className="w-60 rounded-2xl border border-border/60 bg-popover/95 p-1.5 shadow-xl backdrop-blur-sm"
+              >
+                <DropdownMenuLabel className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/60">
+                  执行模型
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator className="my-1 bg-border/50" />
+                {availableModels.map((m) => (
+                  <DropdownMenuCheckboxItem
+                    key={m.id}
+                    checked={execModelId === m.id}
+                    onCheckedChange={() => setExecModelId(m.id)}
+                    className="rounded-xl px-2 py-2 text-sm"
+                  >
+                    <div className="flex min-w-0 flex-1 items-center gap-2">
+                      <span className="truncate">{m.label}</span>
+                      {m.is_default && (
+                        <Badge variant="secondary" className="text-[9px]">
+                          默认
+                        </Badge>
+                      )}
+                    </div>
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           <Button
             variant="outline"
             size="sm"

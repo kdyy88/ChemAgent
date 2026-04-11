@@ -18,7 +18,7 @@ def test_system_prompt_includes_artifact_handoff_rules() -> None:
     assert "suggested_active_smiles" in prompt
     assert "policy_conflicts" in prompt
     assert "needs_followup" in prompt
-    assert "骨架分析" in prompt
+    assert "SAR" in prompt
 
 
 def test_system_prompt_requires_structured_completion_over_response() -> None:
@@ -33,7 +33,7 @@ def test_system_prompt_requires_structured_completion_over_response() -> None:
 
     assert "completion.summary" in prompt
     assert "不要只依赖自然语言 `response`" in prompt
-    assert "禁止父智能体根据自然语言 `response` 自行改写具体环系或尾部名称" in prompt
+    assert "以 `completion.summary`、工件与已验证 SMILES 为准" in prompt
 
 
 def test_sub_agent_prompt_forbids_speculative_ring_naming() -> None:
