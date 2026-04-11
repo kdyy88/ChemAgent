@@ -45,7 +45,37 @@
   },
   "copilot": {
     "turns": "{{count}} turns",
-    "clear_history": "Clear history"
+    "clear_history": "Clear history",
+    "empty_badge": "Chem Copilot",
+    "empty_title": "Chemistry AI, at your side",
+    "empty_description": "Molecules, reactions, drug-likeness — just ask.",
+    "copilot_capability_1": "Property analysis",
+    "copilot_capability_2": "Structure review",
+    "copilot_capability_3": "Workflow planning",
+    "starter_label": "Quick prompts",
+    "starter_hint": "Click to send",
+    "starters": {
+      "compare": {
+        "title": "Full drug-likeness pipeline for aspirin",
+        "description": "Chain validation, descriptor calculation, and PAINS screening end-to-end.",
+        "prompt": "Run a complete drug-likeness assessment for aspirin (CC(=O)Oc1ccccc1C(=O)O): start by validating and standardizing the structure with RDKit, then compute full molecular descriptors (MW, LogP, TPSA, QED, SA Score), evaluate Lipinski's Rule of Five, and finally screen for PAINS alerts. Summarize your findings."
+      },
+      "properties": {
+        "title": "Scaffold extraction and ibuprofen vs. naproxen comparison",
+        "description": "Murcko scaffold decomposition + Tanimoto similarity in two chained steps.",
+        "prompt": "Extract the Murcko core scaffold for both ibuprofen (CC(C)Cc1ccc(C(C)C(=O)O)cc1) and naproxen (CC(c1ccc2cccc(OC)c2c1)C(=O)O), then compute their Tanimoto similarity. Use the scaffold differences to explain the structural basis for their different COX selectivity profiles."
+      },
+      "rules": {
+        "title": "Caffeine atomic partial charges and reactive sites",
+        "description": "Use Gasteiger charges to identify nucleophilic and electrophilic centers.",
+        "prompt": "Compute Gasteiger partial charges for all atoms in caffeine (Cn1cnc2c1c(=O)n(C)c(=O)n2C). Identify the most negative and most positive atom positions, explain their nucleophilic and electrophilic character, and discuss what this means for N-demethylation metabolism."
+      },
+      "workflow": {
+        "title": "Ligand docking prep pipeline for lidocaine",
+        "description": "Desalt → 3D conformer generation → PDBQT output, ready for docking.",
+        "prompt": "Process lidocaine hydrochloride (CCN(CC)CC(=O)Nc1c(C)cccc1C.Cl) through a full docking preparation pipeline: desalt and standardize with RDKit, generate the lowest-energy 3D conformer using Open Babel, then produce a docking-ready PDBQT file. Explain the key parameter choices at each step."
+      }
+    }
   },
   "input": {
     "add_datasource": "Add data source to chat",

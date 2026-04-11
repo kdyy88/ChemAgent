@@ -107,7 +107,7 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
 
           {/* Thinking panel — auto-expands while streaming, collapses on completion */}
           {turn.thinkingSteps.length > 0 && (
-            <ResearchThinking steps={turn.thinkingSteps} isStreaming={isStreaming} webSources={webSources} />
+            <ResearchThinking steps={turn.thinkingSteps} isStreaming={isStreaming} webSources={webSources} toolCalls={turn.toolCalls} />
           )}
 
           {/* Web sources fallback — when there are no thinking steps to embed into */}

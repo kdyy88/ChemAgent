@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.agents.state import ChemState, RouteDecision
 from app.agents.utils import build_llm, dispatch_task_update
+
+logger = logging.getLogger(__name__)
 
 
 async def task_router_node(state: ChemState, config: RunnableConfig) -> dict:
@@ -30,6 +34,11 @@ async def task_router_node(state: ChemState, config: RunnableConfig) -> dict:
     ])
 
     is_complex = bool(decision.is_complex)
+    logger.info(
+        "🔀 [TaskRouter] is_complex=%s  query_preview=%.80s",
+        is_complex,
+        last_user_message,
+    )
     if not is_complex and state.get("tasks"):
         await dispatch_task_update([], config, source="task_router")
 

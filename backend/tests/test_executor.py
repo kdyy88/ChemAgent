@@ -67,63 +67,57 @@ def test_sanitize_message_bus_payload_strips_nested_binary_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_summary_tool_message_is_compacted_without_artifact_redaction() -> None:
-    message = ToolMessage(
-        content=json.dumps(
-            {
-                "type": "evaluation",
+async def test_summary_tool_message_passes_through_unchanged() -> None:
+    content = json.dumps(
+        {
+            "type": "evaluation",
+            "is_valid": True,
+            "artifact_id": "art_eval_1",
+            "parent_artifact_id": None,
+            "from_artifact": False,
+            "validation": {
                 "is_valid": True,
-                "artifact_id": "art_eval_1",
-                "parent_artifact_id": None,
-                "from_artifact": False,
-                "validation": {
-                    "is_valid": True,
-                    "canonical_smiles": "CC(C)C[C@H](N)C(=O)O",
-                    "formula": "C6H13NO2",
-                    "molecular_weight": 131.17,
-                },
-                "descriptors": {
-                    "molecular_weight": 131.17,
-                    "logp": -1.52,
-                    "tpsa": 63.32,
-                    "qed": 0.71,
-                    "sa_score": 2.4,
-                    "fraction_csp3": 0.83,
-                    "ring_count": 0,
-                    "extra_blob": "X" * 1600,
-                },
-                "lipinski": {
-                    "mw": 131.17,
-                    "logp": -1.52,
-                    "hbd": 2,
-                    "hba": 2,
-                    "violations": 0,
-                    "passes": True,
-                },
+                "canonical_smiles": "CC(C)C[C@H](N)C(=O)O",
                 "formula": "C6H13NO2",
-                "smiles": "CC(C)C[C@H](N)C(=O)O",
-                "name": "L-Leucine",
+                "molecular_weight": 131.17,
             },
-            ensure_ascii=False,
-        ),
+            "descriptors": {
+                "molecular_weight": 131.17,
+                "logp": -1.52,
+                "tpsa": 63.32,
+                "qed": 0.71,
+                "sa_score": 2.4,
+                "fraction_csp3": 0.83,
+                "ring_count": 0,
+                "extra_blob": "X" * 1600,
+            },
+            "lipinski": {
+                "mw": 131.17,
+                "logp": -1.52,
+                "hbd": 2,
+                "hba": 2,
+                "violations": 0,
+                "passes": True,
+            },
+            "formula": "C6H13NO2",
+            "smiles": "CC(C)C[C@H](N)C(=O)O",
+            "name": "L-Leucine",
+        },
+        ensure_ascii=False,
+    )
+    message = ToolMessage(
+        content=content,
         tool_call_id="call-eval",
         name="tool_evaluate_molecule",
     )
 
-    with patch("app.agents.utils.store_engine_artifact", new=AsyncMock()) as store_mock:
-        sanitized = await sanitize_message_for_state(message, source="tools_executor[0]")
+    sanitized = await sanitize_message_for_state(message, source="tools_executor[0]")
 
-    compact = json.loads(cast(str, sanitized.content))
-    assert compact["content_compacted"] is True
-    assert compact["artifact_id"] == "art_eval_1"
-    assert compact["source_tool"] == "tool_evaluate_molecule"
-    assert len(sanitized.content) < len(message.content)
-    assert "temp_art_" not in sanitized.content
-    store_mock.assert_not_awaited()
+    assert sanitized.content == content
 
 
 @pytest.mark.asyncio
-async def test_sub_agent_tool_message_is_exempt_from_firewall() -> None:
+async def test_sub_agent_tool_message_passes_through_unchanged() -> None:
     message = ToolMessage(
         content=json.dumps(
             {
@@ -141,11 +135,9 @@ async def test_sub_agent_tool_message_is_exempt_from_firewall() -> None:
         name="tool_run_sub_agent",
     )
 
-    with patch("app.agents.utils.store_engine_artifact", new=AsyncMock()) as store_mock:
-        sanitized = await sanitize_message_for_state(message, source="tools_executor[0]")
+    sanitized = await sanitize_message_for_state(message, source="tools_executor[0]")
 
     assert sanitized.content == message.content
-    store_mock.assert_not_awaited()
 
 
 def test_normalize_messages_aggregates_omitted_tool_placeholders_across_rounds() -> None:
@@ -541,7 +533,7 @@ async def test_failed_sub_agent_with_continue_retries_same_execution_context() -
 
 
 @pytest.mark.asyncio
-async def test_tools_executor_redacts_large_biostructure_messages_to_temp_artifact(caplog: pytest.LogCaptureFixture) -> None:
+async def test_tools_executor_passes_large_tool_result_through(caplog: pytest.LogCaptureFixture) -> None:
     state = cast(ChemState, {
         "messages": [
             AIMessage(
@@ -573,22 +565,16 @@ async def test_tools_executor_redacts_large_biostructure_messages_to_temp_artifa
 
     caplog.set_level(logging.WARNING)
 
-    with patch.dict("app.agents.nodes.executor._TOOL_LOOKUP", {"tool_bulk_structure": _FakeTool()}), \
-         patch("app.agents.utils.store_engine_artifact", new_callable=AsyncMock) as store_mock:
+    with patch.dict("app.agents.nodes.executor._TOOL_LOOKUP", {"tool_bulk_structure": _FakeTool()}):
         result = await tools_executor_node(state, {"configurable": {}})
 
     tool_message = result["messages"][0]
-    assert len(str(tool_message.content)) < 1000
-    assert "Data Redacted due to size" in str(tool_message.content)
-    artifact_id = str(tool_message.content).split("Artifact ID: ", 1)[1].rstrip("]")
-    assert artifact_id.startswith("temp_art_")
-    store_mock.assert_awaited_once_with(artifact_id, huge_pdb, tier="temp")
-    assert artifact_id in caplog.text
-    assert "Context firewall redacted message before state write" in caplog.text
+    assert "Data Redacted" not in str(tool_message.content)
+    assert "Context firewall" not in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_chem_agent_redacts_large_model_message_before_state_write() -> None:
+async def test_chem_agent_passes_large_model_message_through() -> None:
     state = cast(ChemState, {
         "messages": [AIMessage(content="prior turn")],
         "active_smiles": None,
@@ -608,15 +594,11 @@ async def test_chem_agent_redacts_large_model_message_before_state_write() -> No
         async def ainvoke(self, prompt_messages):
             return AIMessage(content=huge_response)
 
-    with patch("app.agents.nodes.agent.build_llm", return_value=_FakeBoundLlm()), \
-         patch("app.agents.utils.store_engine_artifact", new_callable=AsyncMock) as store_mock:
+    with patch("app.agents.nodes.agent.build_llm", return_value=_FakeBoundLlm()):
         result = await chem_agent_node(state)
 
     ai_message = result["messages"][0]
-    assert len(str(ai_message.content)) < 1000
-    assert "Data Redacted due to size" in str(ai_message.content)
-    artifact_id = str(ai_message.content).split("Artifact ID: ", 1)[1].rstrip("]")
-    store_mock.assert_awaited_once_with(artifact_id, huge_response, tier="temp")
+    assert ai_message.content == huge_response
 
 
 @pytest.mark.asyncio
@@ -640,17 +622,15 @@ async def test_chem_agent_preserves_long_natural_language_report_in_state() -> N
         async def ainvoke(self, prompt_messages):
             return AIMessage(content=report)
 
-    with patch("app.agents.nodes.agent.build_llm", return_value=_FakeBoundLlm()), \
-         patch("app.agents.utils.store_engine_artifact", new_callable=AsyncMock) as store_mock:
+    with patch("app.agents.nodes.agent.build_llm", return_value=_FakeBoundLlm()):
         result = await chem_agent_node(state)
 
     ai_message = result["messages"][0]
     assert ai_message.content == report
-    store_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_sanitize_ai_tool_call_args_redacts_large_raw_chemistry_inputs() -> None:
+async def test_sanitize_ai_tool_call_args_passes_through_unchanged() -> None:
     huge_sdf = "HEADER    PROTEIN\n" + ("ATOM      1  C   LIG A   1      10.000  10.000  10.000\n" * 200)
     message = AIMessage(
         content="Convert this structure",
@@ -663,14 +643,10 @@ async def test_sanitize_ai_tool_call_args_redacts_large_raw_chemistry_inputs() -
         ],
     )
 
-    with patch("app.agents.utils.store_engine_artifact", new_callable=AsyncMock) as store_mock:
-        sanitized = await sanitize_message_for_state(message, source="chem_agent")
+    sanitized = await sanitize_message_for_state(message, source="chem_agent")
 
     sanitized_ai = cast(AIMessage, sanitized)
-    assert sanitized_ai.tool_calls[0]["args"]["__redacted__"] is True
-    artifact_id = sanitized_ai.tool_calls[0]["args"]["__artifact_id__"]
-    assert artifact_id.startswith("temp_art_")
-    store_mock.assert_awaited_once()
+    assert sanitized_ai.tool_calls[0]["args"] == {"molecule_str": huge_sdf, "input_fmt": "sdf", "output_fmt": "pdb"}
 
 
 @pytest.mark.asyncio
@@ -884,7 +860,7 @@ async def test_pubchem_lookup_updates_structured_molecule_workspace() -> None:
 
 
 @pytest.mark.asyncio
-async def test_murcko_scaffold_keeps_minimal_structured_fields_before_firewall() -> None:
+async def test_murcko_scaffold_tool_result_passes_through() -> None:
     state = cast(ChemState, {
         "messages": [
             AIMessage(
@@ -924,7 +900,6 @@ async def test_murcko_scaffold_keeps_minimal_structured_fields_before_firewall()
             )
 
     with patch.dict("app.agents.nodes.executor._TOOL_LOOKUP", {"tool_murcko_scaffold": _FakeMurckoTool()}), \
-         patch("app.agents.utils.store_engine_artifact", new=AsyncMock()) as store_mock, \
          patch("app.agents.postprocessors.adispatch_custom_event", new=AsyncMock()):
         result = await tools_executor_node(state, {"configurable": {}})
 
@@ -936,4 +911,3 @@ async def test_murcko_scaffold_keeps_minimal_structured_fields_before_firewall()
     assert "molecule_image" not in content
     assert "scaffold_image" not in content
     assert len(result["artifacts"]) == 2
-    store_mock.assert_not_awaited()

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.agents.state import ChemState, PlanStructure
 from app.agents.utils import build_llm, dispatch_task_update, normalize_tasks
+
+logger = logging.getLogger(__name__)
 
 
 async def planner_node(state: ChemState, config: RunnableConfig) -> dict:
@@ -24,6 +28,11 @@ async def planner_node(state: ChemState, config: RunnableConfig) -> dict:
     ])
 
     tasks = normalize_tasks(plan.tasks)
+    logger.info(
+        "📋 [Planner] generated %d tasks: %s",
+        len(tasks),
+        [t.get("description", "")[:30] for t in tasks],
+    )
     await dispatch_task_update(tasks, config, source="planner_node")
     return {
         "tasks": tasks,

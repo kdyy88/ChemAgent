@@ -45,7 +45,37 @@
   },
   "copilot": {
     "turns": "{{count}} 轮",
-    "clear_history": "清除对话记录"
+    "clear_history": "清除对话记录",
+    "empty_badge": "Chem Copilot",
+    "empty_title": "化学 AI，触手可及",
+    "empty_description": "分子结构 · 性质计算 · 成药性分析，一问即达",
+    "copilot_capability_1": "性质计算",
+    "copilot_capability_2": "结构分析",
+    "copilot_capability_3": "实验思路整理",
+    "starter_label": "快捷问题",
+    "starter_hint": "点击即可发送",
+    "starters": {
+      "compare": {
+        "title": "阿司匹林成药性全流程评估",
+        "description": "串联验证、描述符计算与 PAINS 筛查，演示工具链衔接。",
+        "prompt": "请对阿司匹林做完整的成药性评估：先验证并标准化结构，再计算综合分子描述符，评估 Lipinski 五规则，最后检查是否含 PAINS 警示子结构，并给出综合结论。"
+      },
+      "properties": {
+        "title": "提取骨架并对比布洛芬与萘普生",
+        "description": "Murcko 骨架拆解 + Tanimoto 相似度，两步工具串联。",
+        "prompt": "请分别对布洛芬和萘普生提取 Murcko 核心骨架，然后计算两者的 Tanimoto 相似度，并从骨架差异角度解释二者 COX 选择性的结构基础。"
+      },
+      "rules": {
+        "title": "咖啡因原子偏电荷与活性位点分析",
+        "description": "用 Gasteiger 电荷识别亲核/亲电位点，推断反应性。",
+        "prompt": "请对咖啡因计算各原子的 Gasteiger 偏电荷，标出电荷最负和最正的原子编号，结合结构解释其潜在的亲核与亲电反应位点，以及这对 N-甲基化代谢的意义。"
+      },
+      "workflow": {
+        "title": "利多卡因配体对接前处理流程",
+        "description": "脱盐 → 3D 构象生成 → PDBQT 预处理，一键完成配体准备。",
+        "prompt": "请对利多卡因盐酸盐执行完整的对接前处理：先进行脱盐并标准化，再生成能量最低 3D 构象，最后输出对接用 PDBQT 文件，并说明每步关键参数的选择理由。"
+      }
+    }
   },
   "input": {
     "add_datasource": "添加数据源到聊天框",

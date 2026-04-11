@@ -357,6 +357,7 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
 
         try:
             tool_config: RunnableConfig | dict = config
+            logger.info("\ud83d\udd27 [ToolDispatch] tool=%s  args_keys=%s", tool_name, list(args.keys()))
             if tool_name == "tool_run_sub_agent":
                 args, requested_artifact_ids = _prepare_sub_agent_artifact_inputs(
                     args,
@@ -392,6 +393,14 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
 
             raw_output = await tool.ainvoke(args, config=tool_config)
             parsed = parse_tool_output(raw_output)
+
+            if isinstance(parsed, dict):
+                _status = parsed.get("status", "ok")
+                _err = parsed.get("error")
+                if _err:
+                    logger.info("\u274c [ToolResult] tool=%s  status=%s  error=%.120s", tool_name, _status, _err)
+                elif tool_name != "tool_update_task_status":
+                    logger.info("\u2705 [ToolResult] tool=%s  status=%s  keys=%s", tool_name, _status, list(parsed.keys()))
 
             if parsed is not None:
                 if tool_name == "tool_update_task_status":
@@ -643,6 +652,7 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
             )
 
         except Exception as exc:
+            logger.warning("\ud83d\udca5 [ToolError] tool=%s  error=%s", tool_name, exc)
             tool_messages.append(
                 ToolMessage(
                     content=json.dumps({"error": str(exc)}, ensure_ascii=False),

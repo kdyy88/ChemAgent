@@ -2,7 +2,8 @@
 
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { SSEThinking, WebSearchSourcesArtifact } from '@/lib/sse-types'
+import { CheckCircle2 } from 'lucide-react'
+import type { SSEThinking, SSEToolCall, WebSearchSourcesArtifact } from '@/lib/sse-types'
 import '@/lib/i18n/client'
 
 type TFn = (key: string, opts?: Record<string, unknown>) => string
@@ -29,12 +30,15 @@ interface DisplayEntry {
   count: number
   sourceQuery?: string
   sourceLinks: Array<{ title: string; url: string }>
+  toolLabel?: string
+  toolResult?: string
 }
 
 interface ResearchThinkingProps {
   steps: SSEThinking[]
   isStreaming: boolean
   webSources?: WebSearchSourcesArtifact[]
+  toolCalls?: SSEToolCall[]
 }
 
 function summarizeHeaderTitle(isStreaming: boolean, t: TFn): string {
@@ -201,11 +205,170 @@ function looksLikeSearchStep(raw: string): boolean {
   return /(web[_ -]?search|搜索|searching|looking up|查找|检索)/.test(text)
 }
 
+// ── Tool call helpers ────────────────────────────────────────────────────────
+
+/** Tools whose results are already surfaced elsewhere or are internal plumbing. */
+const TOOL_DISPLAY_SKIP = new Set([
+  'tool_run_sub_agent',
+  'tool_update_task_status',
+])
+
+function extractToolName(text: string): string | null {
+  const m = /\btool_[a-z_]+\b/.exec(text)
+  return m ? m[0] : null
+}
+
+function toolDisplayName(tool: string): string {
+  const map: Record<string, string> = {
+    tool_validate_smiles: 'SMILES 验证',
+    tool_pubchem_lookup: 'PubChem 查询',
+    tool_strip_salts: '脱盐 / 中和',
+    tool_evaluate_molecule: '分子评估',
+    tool_compute_descriptors: '描述符计算',
+    tool_compute_similarity: '相似度计算',
+    tool_murcko_scaffold: 'Murcko 骨架提取',
+    tool_compute_mol_properties: '分子属性计算',
+    tool_compute_partial_charges: '偏电荷计算',
+    tool_web_search: '网络检索',
+    tool_convert_format: '格式转换',
+    tool_build_3d_conformer: '3D 构象生成',
+    tool_prepare_pdbqt: 'PDBQT 预处理',
+    tool_substructure_search: '子结构 / PAINS 筛查',
+  }
+  return map[tool] ?? tool.replace(/^tool_/, '').replace(/_/g, ' ')
+}
+
+function fmtNum(v: unknown, decimals = 2): string {
+  return typeof v === 'number' ? v.toFixed(decimals) : String(v ?? '—')
+}
+
+function formatToolResult(tool: string, output: Record<string, unknown>): string {
+  switch (tool) {
+    case 'tool_validate_smiles': {
+      if (output.is_valid === false) return 'SMILES 格式有误，无法解析结构'
+      const parts = ['结构有效']
+      if (output.formula) parts.push(`分子式 ${output.formula}`)
+      if (output.canonical_smiles) parts.push('已标准化')
+      return parts.join('，')
+    }
+    case 'tool_pubchem_lookup': {
+      if (!output.found) return '未在 PubChem 中检索到该化合物'
+      const parts: string[] = []
+      if (output.name) parts.push(String(output.name))
+      if (output.formula) parts.push(`分子式 ${output.formula}`)
+      if (output.molecular_weight != null) parts.push(`MW ${fmtNum(output.molecular_weight, 1)}`)
+      return `已找到：${parts.join('，')}`
+    }
+    case 'tool_strip_salts': {
+      return output.had_salts
+        ? '已移除盐 / 溶剂碎片，保留母体结构'
+        : '未检测到盐组分，结构保持不变'
+    }
+    case 'tool_evaluate_molecule': {
+      const parts: string[] = []
+      if (output.qed != null) parts.push(`QED ${fmtNum(output.qed)}`)
+      const desc = typeof output.descriptors === 'object' && output.descriptors !== null
+        ? (output.descriptors as Record<string, unknown>)
+        : null
+      const saScore = output.sa_score ?? desc?.sa_score
+      if (saScore != null) parts.push(`SA Score ${fmtNum(saScore)}`)
+      const lipinski = typeof output.lipinski === 'object' && output.lipinski !== null
+        ? (output.lipinski as Record<string, unknown>)
+        : null
+      if (lipinski) parts.push(`Lipinski ${lipinski.passes ? '通过' : '未通过'}`)
+      return parts.length ? parts.join('，') : '评估完成'
+    }
+    case 'tool_compute_descriptors': {
+      const parts: string[] = []
+      const mw = output.molecular_weight ?? (output.descriptors as Record<string, unknown> | null)?.molecular_weight
+      const logp = output.logp ?? (output.descriptors as Record<string, unknown> | null)?.logp
+      const tpsa = output.tpsa ?? (output.descriptors as Record<string, unknown> | null)?.tpsa
+      const qed = output.qed ?? (output.descriptors as Record<string, unknown> | null)?.qed
+      if (mw != null) parts.push(`MW ${fmtNum(mw, 1)}`)
+      if (logp != null) parts.push(`LogP ${fmtNum(logp)}`)
+      if (tpsa != null) parts.push(`TPSA ${fmtNum(tpsa, 1)}`)
+      if (qed != null) parts.push(`QED ${fmtNum(qed)}`)
+      return parts.length ? parts.join('，') : '描述符已计算'
+    }
+    case 'tool_compute_similarity': {
+      const sim = output.tanimoto_similarity ?? output.similarity
+      return sim != null ? `Tanimoto 相似度 ${fmtNum(sim)}` : '相似度已计算'
+    }
+    case 'tool_murcko_scaffold': {
+      if (output.scaffold_smiles) {
+        const s = String(output.scaffold_smiles)
+        return `Murcko 骨架：${s.length > 40 ? s.slice(0, 40) + '…' : s}`
+      }
+      return '骨架提取完成'
+    }
+    case 'tool_compute_mol_properties': {
+      const parts: string[] = []
+      if (output.exact_mass != null) parts.push(`精确质量 ${fmtNum(output.exact_mass, 4)}`)
+      if (output.rotatable_bonds != null) parts.push(`可旋转键 ${output.rotatable_bonds} 个`)
+      return parts.length ? parts.join('，') : '分子属性计算完成'
+    }
+    case 'tool_compute_partial_charges': {
+      const n = Array.isArray(output.atoms) ? output.atoms.length : (output.atom_count ?? null)
+      return n != null ? `已计算 ${n} 个原子的 Gasteiger 偏电荷` : 'Gasteiger 偏电荷计算完成'
+    }
+    case 'tool_web_search': {
+      const n = Array.isArray(output.results) ? output.results.length : null
+      return n != null ? `检索到 ${n} 条资料` : '网络检索完成'
+    }
+    case 'tool_convert_format': {
+      const fmt = output.output_format ?? output.output_fmt
+      return fmt ? `已转换为 ${String(fmt).toUpperCase()} 格式` : '格式转换完成'
+    }
+    case 'tool_build_3d_conformer': {
+      const parts = ['3D 构象已生成']
+      if (output.energy_kcal_mol != null) parts.push(`力场能量 ${fmtNum(output.energy_kcal_mol)} kcal/mol`)
+      if (output.forcefield) parts.push(`力场 ${output.forcefield}`)
+      return parts.join('，')
+    }
+    case 'tool_prepare_pdbqt':
+      return 'PDBQT 文件已生成，可用于分子对接'
+    case 'tool_substructure_search': {
+      const hasPains = output.has_pains_alerts
+      if (hasPains === true) return '检测到 PAINS 警示结构'
+      if (hasPains === false) return '未检测到 PAINS 警示结构，结构安全'
+      return '子结构筛查完成'
+    }
+    default:
+      return '工具调用完成'
+  }
+}
+
+function isToolCallSuccessful(call: SSEToolCall): boolean {
+  if (!call.done || !call.output) return false
+  const err = call.output.error
+  return !(typeof err === 'string' && err.length > 0)
+}
+
+function buildToolCallQueue(toolCalls: SSEToolCall[]): Map<string, SSEToolCall[]> {
+  const queue = new Map<string, SSEToolCall[]>()
+  for (const call of toolCalls) {
+    if (TOOL_DISPLAY_SKIP.has(call.tool)) continue
+    if (!isToolCallSuccessful(call)) continue
+    const existing = queue.get(call.tool) ?? []
+    existing.push(call)
+    queue.set(call.tool, existing)
+  }
+  return queue
+}
+
+function dequeueToolCall(queue: Map<string, SSEToolCall[]>, toolName: string): SSEToolCall | null {
+  const list = queue.get(toolName)
+  if (!list || list.length === 0) return null
+  return list.shift() ?? null
+}
+
 function buildDisplayEntries(
   timeline: ThinkingGroup[],
   webSources?: WebSearchSourcesArtifact[],
+  toolCalls?: SSEToolCall[],
 ): DisplayEntry[] {
   let sourceCursor = 0
+  const toolQueue = buildToolCallQueue(toolCalls ?? [])
 
   return timeline.map((group) => {
     const raw = `${group.rawText}\n${group.detail}`.trim()
@@ -226,6 +389,21 @@ function buildDisplayEntries(
       url: source.url,
     }))
 
+    // Match completed tool calls to tool-category thinking groups.
+    // group.id == group_key == tool_name (e.g. "tool_validate_smiles") — use it directly.
+    let toolLabel: string | undefined
+    let toolResult: string | undefined
+    if (group.category === 'tool' && !isSubAgentReportStep(group)) {
+      const toolName = group.id.startsWith('tool_') ? group.id : extractToolName(group.rawText)
+      if (toolName && !TOOL_DISPLAY_SKIP.has(toolName)) {
+        const matched = dequeueToolCall(toolQueue, toolName)
+        if (matched?.output) {
+          toolLabel = toolDisplayName(toolName)
+          toolResult = formatToolResult(toolName, matched.output)
+        }
+      }
+    }
+
     return {
       id: group.id,
       title: isSubAgentReportStep(group) ? '子任务结果返回' : inferStageTitle(kind),
@@ -238,6 +416,8 @@ function buildDisplayEntries(
       count: group.count,
       sourceQuery: matchedSourceArtifact?.query,
       sourceLinks,
+      toolLabel,
+      toolResult,
     }
   })
 }
@@ -250,12 +430,12 @@ function statusTone(isStreaming: boolean): string {
   return isStreaming ? 'text-foreground/72' : 'text-muted-foreground/62'
 }
 
-export function ResearchThinking({ steps, isStreaming, webSources }: ResearchThinkingProps) {
+export function ResearchThinking({ steps, isStreaming, webSources, toolCalls }: ResearchThinkingProps) {
   const { t } = useTranslation('agent')
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tFn: TFn = (key, opts) => t(key as any, opts as any) as string
   const timeline = useMemo(() => groupThinkingSteps(steps, tFn), [steps, tFn])
-  const entries = useMemo(() => buildDisplayEntries(timeline, webSources), [timeline, webSources])
+  const entries = useMemo(() => buildDisplayEntries(timeline, webSources, toolCalls), [timeline, webSources, toolCalls])
   const headerTitle = summarizeHeaderTitle(isStreaming, tFn)
 
   if (entries.length === 0) return null
@@ -294,6 +474,15 @@ export function ResearchThinking({ steps, isStreaming, webSources }: ResearchThi
               </div>
 
               <p className="text-[11px] leading-relaxed text-muted-foreground/76">{entry.summary}</p>
+
+              {entry.toolLabel && entry.toolResult && (
+                <div className="flex items-center gap-1.5 text-[11px] leading-relaxed">
+                  <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500/80 dark:text-emerald-400/80" aria-hidden />
+                  <span className="font-medium text-emerald-700/80 dark:text-emerald-400/80">{entry.toolLabel}</span>
+                  <span className="text-muted-foreground/45">·</span>
+                  <span className="text-foreground/65">{entry.toolResult}</span>
+                </div>
+              )}
 
               {entry.reasoningText && (
                 <div className="border-l border-border/70 pl-3 pt-0.5">
