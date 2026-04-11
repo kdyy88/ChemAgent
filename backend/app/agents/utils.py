@@ -11,7 +11,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 
 from app.agents.config import build_llm_config
-from app.agents.state import MoleculeWorkspaceEntry, PlannedTaskItem, Task, TaskStatus
+from app.domain.schemas.agent import MoleculeWorkspaceEntry, PlannedTaskItem, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 

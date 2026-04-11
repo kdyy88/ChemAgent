@@ -63,11 +63,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.agents.runtime import initialize_graph_runtime, shutdown_graph_runtime
-from app.api.sse_chat import router as sse_chat_router
-from app.api.rdkit_api import router as rdkit_router
-from app.api.babel_api import router as babel_router
-from app.api.scratchpad_api import router as scratchpad_router
+from app.agents.main_agent.runtime import initialize_graph_runtime, shutdown_graph_runtime
+from app.api.v1.chat import router as sse_chat_router
+from app.api.v1.rdkit import router as rdkit_router
+from app.api.v1.babel import router as babel_router
+from app.api.v1.scratchpad import router as scratchpad_router
 from app.core.network import get_allowed_origins
 
 
@@ -97,10 +97,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(sse_chat_router, prefix="/api/chat")
-app.include_router(rdkit_router, prefix="/api")
-app.include_router(babel_router, prefix="/api")
-app.include_router(scratchpad_router, prefix="/api/scratchpad")
+app.include_router(sse_chat_router, prefix="/api/v1/chat")
+app.include_router(rdkit_router, prefix="/api/v1")
+app.include_router(babel_router, prefix="/api/v1")
+app.include_router(scratchpad_router, prefix="/api/v1/scratchpad")
 
 
 @app.get("/")
@@ -109,10 +109,10 @@ def read_root():
         {
             "name": "ChemAgent API",
             "status": "ok",
-            "websocket": "/api/chat/ws",
-            "sse_stream": "/api/chat/stream",
+            "websocket": "/api/v1/chat/ws",
+            "sse_stream": "/api/v1/chat/stream",
             "allowed_origins": allowed_origins,
-            "message": "Use /api/chat/stream (POST, SSE) for the LangGraph-powered experience.",
+            "message": "Use /api/v1/chat/stream (POST, SSE) for the LangGraph-powered experience.",
         }
     )
 @app.get("/health")

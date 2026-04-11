@@ -9,8 +9,8 @@ from langchain_core.messages import SystemMessage
 logger = logging.getLogger(__name__)
 
 from app.agents.prompts import get_system_prompt
-from app.agents.state import ChemState
-from app.agents.tool_registry import get_root_tools
+from app.domain.schemas.agent import ChemState
+from app.tools.registry import get_root_tools
 from app.agents.config import get_active_model_name, is_native_reasoning_model, _load_environment
 from app.agents.utils import build_llm, format_tasks_for_prompt, normalize_messages_for_api, sanitize_messages_for_state
 from app.agents.utils import format_molecule_workspace_for_prompt

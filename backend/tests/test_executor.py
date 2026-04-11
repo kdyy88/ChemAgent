@@ -14,7 +14,7 @@ from app.agents.nodes.executor import (
     tools_executor_node,
 )
 from app.agents.nodes.agent import chem_agent_node
-from app.agents.state import ChemState
+from app.domain.schemas.agent import ChemState
 from app.agents.utils import normalize_messages_for_api, sanitize_message_for_state
 
 

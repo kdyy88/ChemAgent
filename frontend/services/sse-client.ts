@@ -24,8 +24,8 @@ const API_BASE =
   (typeof window !== 'undefined' ? window.location.origin : '') ||
   'http://localhost:8000'
 
-const STREAM_URL = `${API_BASE}/api/chat/stream`
-const APPROVE_URL = `${API_BASE}/api/chat/approve`
+const STREAM_URL = `${API_BASE}/api/v1/chat/stream`
+const APPROVE_URL = `${API_BASE}/api/v1/chat/approve`
 const SILENT_TOOLS = new Set(['tool_update_task_status'])
 
 type ToolOutput = Record<string, unknown>
@@ -370,7 +370,7 @@ export class SSEClient {
 
   /**
    * Resume a heavy-tool Hard Breakpoint after the user makes a decision.
-   * POSTs to /api/chat/approve and streams the continuation exactly like
+  * POSTs to /api/v1/chat/approve and streams the continuation exactly like
    * sendMessage does, reusing the same handlers.
    */
   async sendApproval({ sessionId, turnId, approvalLabel, action, args = {}, planId, handlers }: SendApprovalArgs) {

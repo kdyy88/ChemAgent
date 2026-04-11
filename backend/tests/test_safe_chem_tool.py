@@ -6,7 +6,8 @@ import time
 import pytest
 from langchain_core.tools import tool
 
-from app.agents.decorators import CHEM_TIER_METADATA_KEY, chem_tool, safe_chem_tool
+from app.tools.decorators import chem_tool, safe_chem_tool
+from app.tools.metadata import CHEM_TIER_METADATA_KEY
 
 
 def _mock_crash() -> str:

@@ -4,8 +4,8 @@ from langchain_core.callbacks.manager import adispatch_custom_event
 from langchain_core.runnables import RunnableConfig
 
 from app.agents.utils import ToolPostprocessor, ToolResult, refresh_result, strip_binary_fields
-from app.chem.babel_ops import build_3d_conformer, convert_format, prepare_pdbqt
-from app.chem.rdkit_ops import compute_descriptors, substructure_match
+from app.services.chem_engine.babel_ops import build_3d_conformer, convert_format, prepare_pdbqt
+from app.services.chem_engine.rdkit_ops import compute_descriptors, substructure_match
 
 
 async def _resolve_smiles_for_postprocessor(
@@ -20,7 +20,7 @@ async def _resolve_smiles_for_postprocessor(
     if not artifact_id:
         return ""
 
-    from app.core.artifact_store import get_engine_artifact  # noqa: PLC0415
+    from app.domain.store.artifact_store import get_engine_artifact  # noqa: PLC0415
 
     record = await get_engine_artifact(artifact_id)
     if isinstance(record, dict):

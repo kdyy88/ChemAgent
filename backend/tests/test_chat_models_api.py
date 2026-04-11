@@ -6,12 +6,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.agents.config import is_parameter_compatible_model
-from app.api import sse_chat
+from app.api.v1 import chat as sse_chat
 
 
 def _build_client() -> TestClient:
     app = FastAPI()
-    app.include_router(sse_chat.router, prefix="/api/chat")
+    app.include_router(sse_chat.router, prefix="/api/v1/chat")
     return TestClient(app)
 
 
@@ -40,7 +40,7 @@ def test_list_models_returns_provider_catalog(monkeypatch) -> None:
     monkeypatch.setattr(sse_chat, "fetch_available_models", fake_fetch_available_models)
     client = _build_client()
 
-    response = client.get("/api/chat/models")
+    response = client.get("/api/v1/chat/models")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -82,7 +82,7 @@ def test_stream_chat_forwards_selected_model(monkeypatch) -> None:
 
     with client.stream(
         "POST",
-        "/api/chat/stream",
+        "/api/v1/chat/stream",
         json={
             "message": "Analyze aspirin",
             "session_id": "session-1",

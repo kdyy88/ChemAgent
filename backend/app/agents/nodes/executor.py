@@ -10,10 +10,10 @@ from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
-from app.agents.subagent_protocol import RecoveryAction
+from app.agents.contracts.protocol import RecoveryAction
 from app.agents.postprocessors import TOOL_POSTPROCESSORS
-from app.agents.state import ChemState, MoleculeWorkspaceEntry, Task, TaskStatus
-from app.agents.tool_registry import get_root_tools
+from app.domain.schemas.agent import ChemState, MoleculeWorkspaceEntry, Task, TaskStatus
+from app.tools.registry import get_root_tools
 from app.agents.utils import (
     apply_active_smiles_update,
     dispatch_task_update,
@@ -26,8 +26,8 @@ from app.agents.utils import (
     update_molecule_workspace,
     update_tasks,
 )
-from app.core.plan_store import read_plan_file
-from app.core.artifact_store import get_engine_artifact, get_engine_artifact_warning
+from app.domain.store.plan_store import read_plan_file
+from app.domain.store.artifact_store import get_engine_artifact, get_engine_artifact_warning
 
 _TOOL_LOOKUP = {tool.name: tool for tool in get_root_tools()}
 logger = logging.getLogger(__name__)

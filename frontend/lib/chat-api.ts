@@ -10,7 +10,7 @@ function resolveApiBaseUrl(): string {
 const BASE_URL = resolveApiBaseUrl()
 
 export async function fetchAvailableModels(): Promise<ChatModelCatalogResponse> {
-  const res = await fetch(`${BASE_URL}/api/chat/models`, { cache: 'no-store' })
+  const res = await fetch(`${BASE_URL}/api/v1/chat/models`, { cache: 'no-store' })
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`)
   return await res.json() as ChatModelCatalogResponse
 }

@@ -5,7 +5,7 @@ import logging
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
-from app.agents.state import ChemState, RouteDecision
+from app.domain.schemas.agent import ChemState, RouteDecision
 from app.agents.utils import build_llm, dispatch_task_update
 
 logger = logging.getLogger(__name__)

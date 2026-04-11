@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from app.agents.subagent_protocol import build_subagent_report_xml, parse_subagent_report_xml
-from app.agents.subagent_runtime_tools import tool_task_complete
+from app.agents.contracts.protocol import build_subagent_report_xml, parse_subagent_report_xml
+from app.agents.sub_agents.runtime_tools import tool_task_complete
 
 
 def test_subagent_report_xml_round_trip() -> None:

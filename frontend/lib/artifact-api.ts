@@ -5,7 +5,7 @@
  * strips large content (SDF, PDBQT) from tool_end events and stores them in
  * Redis with a 1-hour TTL.
  *
- * GET /api/chat/artifacts/{artifact_id}
+ * GET /api/v1/chat/artifacts/{artifact_id}
  * → { artifact_id: string, data: unknown }
  */
 
@@ -19,7 +19,7 @@ function resolveApiBaseUrl(): string {
 const BASE_URL = resolveApiBaseUrl()
 
 export async function fetchArtifact(artifactId: string): Promise<unknown> {
-  const res = await fetch(`${BASE_URL}/api/chat/artifacts/${encodeURIComponent(artifactId)}`)
+  const res = await fetch(`${BASE_URL}/api/v1/chat/artifacts/${encodeURIComponent(artifactId)}`)
   if (res.status === 404) throw new Error(`Artifact ${artifactId} not found or expired`)
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`)
   const json = await res.json() as { artifact_id: string; data: unknown }
@@ -36,7 +36,7 @@ export interface PlanDocument {
 }
 
 export async function fetchPlanDocument(sessionId: string, planId: string): Promise<PlanDocument> {
-  const url = new URL(`${BASE_URL}/api/chat/plans/${encodeURIComponent(planId)}`)
+  const url = new URL(`${BASE_URL}/api/v1/chat/plans/${encodeURIComponent(planId)}`)
   url.searchParams.set('session_id', sessionId)
   const res = await fetch(url.toString())
   if (res.status === 404) throw new Error(`Plan ${planId} not found or expired`)

@@ -37,7 +37,7 @@ def test_system_prompt_requires_structured_completion_over_response() -> None:
 
 
 def test_sub_agent_prompt_forbids_speculative_ring_naming() -> None:
-    from app.agents.sub_agent_prompts import SubAgentMode, get_sub_agent_prompt
+    from app.agents.sub_agents.prompts import SubAgentMode, get_sub_agent_prompt
 
     prompt = get_sub_agent_prompt(SubAgentMode.explore)
 

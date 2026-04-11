@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.agents.engine import (
+from app.agents.main_agent.engine import (
     ChemSessionEngine,
     _WITHHELD_ERROR_KEYWORDS,
     _extract_stream_text,
@@ -154,7 +154,7 @@ class TestInterceptAndCollapseArtifact:
             "tool": "prepare_pdbqt",
             "output": {"pdbqt_content": big_pdbqt, "status": "ok"},
         }
-        with patch("app.agents.engine.store_engine_artifact", new_callable=AsyncMock) as m:
+        with patch("app.agents.main_agent.engine.store_engine_artifact", new_callable=AsyncMock) as m:
             result = await engine._intercept_and_collapse_artifact(event)
         output = result["output"]
 
@@ -171,7 +171,7 @@ class TestInterceptAndCollapseArtifact:
             "tool": "build_3d_conformer",
             "output": {"sdf_content": "\n  Mrv\n...", "name": "caffeine"},
         }
-        with patch("app.agents.engine.store_engine_artifact", new_callable=AsyncMock) as m:
+        with patch("app.agents.main_agent.engine.store_engine_artifact", new_callable=AsyncMock) as m:
             result = await engine._intercept_and_collapse_artifact(event)
         assert "sdf_content" not in result["output"]
         assert m.called
@@ -182,14 +182,14 @@ class TestInterceptAndCollapseArtifact:
             "tool": "compute_mol_properties",
             "output": {"mw": 194.19, "hbd": 0},
         }
-        with patch("app.agents.engine.store_engine_artifact", new_callable=AsyncMock) as m:
+        with patch("app.agents.main_agent.engine.store_engine_artifact", new_callable=AsyncMock) as m:
             result = await engine._intercept_and_collapse_artifact(event)
         assert result["output"] == {"mw": 194.19, "hbd": 0}
         m.assert_not_called()
 
     async def test_non_dict_output_left_unchanged(self, engine: ChemSessionEngine) -> None:
         event = {"type": "tool_end", "tool": "any", "output": "ok"}
-        with patch("app.agents.engine.store_engine_artifact", new_callable=AsyncMock):
+        with patch("app.agents.main_agent.engine.store_engine_artifact", new_callable=AsyncMock):
             result = await engine._intercept_and_collapse_artifact(event)
         assert result["output"] == "ok"
 
@@ -202,7 +202,7 @@ class TestInterceptAndCollapseArtifact:
                 "sdf_content": "\n  Mrv\n",
             },
         }
-        with patch("app.agents.engine.store_engine_artifact", new_callable=AsyncMock) as m:
+        with patch("app.agents.main_agent.engine.store_engine_artifact", new_callable=AsyncMock) as m:
             result = await engine._intercept_and_collapse_artifact(event)
         assert m.call_count == 2
         ids = {v for k, v in result["output"].items() if k.endswith("_artifact_id")}
@@ -408,8 +408,8 @@ class TestSubmitMessageOuterLoop:
         mock_graph = _make_mock_graph([])
 
         with (
-            patch("app.agents.engine.get_compiled_graph", return_value=mock_graph),
-            patch("app.agents.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
+            patch("app.agents.main_agent.engine.get_compiled_graph", return_value=mock_graph),
+            patch("app.agents.main_agent.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
         ):
             events = await self._collect(engine, message="Hello", history=None)
 
@@ -432,8 +432,8 @@ class TestSubmitMessageOuterLoop:
         mock_graph = _make_mock_graph([lg_event])
 
         with (
-            patch("app.agents.engine.get_compiled_graph", return_value=mock_graph),
-            patch("app.agents.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
+            patch("app.agents.main_agent.engine.get_compiled_graph", return_value=mock_graph),
+            patch("app.agents.main_agent.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
         ):
             events = await self._collect(engine, message="draw carbon")
 
@@ -466,8 +466,8 @@ class TestSubmitMessageOuterLoop:
         mock_graph = _make_mock_graph([raw_tool_end])
 
         with (
-            patch("app.agents.engine.get_compiled_graph", return_value=mock_graph),
-            patch("app.agents.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
+            patch("app.agents.main_agent.engine.get_compiled_graph", return_value=mock_graph),
+            patch("app.agents.main_agent.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
         ):
             events = await self._collect(engine, message="prepare pdbqt")
 
@@ -518,8 +518,8 @@ class TestSubmitMessageOuterLoop:
         mock_graph.aget_state = AsyncMock(return_value=snapshot)
 
         with (
-            patch("app.agents.engine.get_compiled_graph", return_value=mock_graph),
-            patch("app.agents.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
+            patch("app.agents.main_agent.engine.get_compiled_graph", return_value=mock_graph),
+            patch("app.agents.main_agent.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
         ):
             events = await self._collect(
                 engine, message="C(C)(C)(C)(C)C check this"
@@ -540,7 +540,7 @@ class TestSubmitMessageOuterLoop:
         self, engine: ChemSessionEngine
     ) -> None:
         with patch(
-            "app.agents.engine.has_persisted_session",
+            "app.agents.main_agent.engine.has_persisted_session",
             new_callable=AsyncMock,
             return_value=False,
         ):
@@ -580,8 +580,8 @@ class TestSubmitMessageOuterLoop:
         mock_graph.aget_state = AsyncMock(return_value=snapshot)
 
         with (
-            patch("app.agents.engine.get_compiled_graph", return_value=mock_graph),
-            patch("app.agents.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
+            patch("app.agents.main_agent.engine.get_compiled_graph", return_value=mock_graph),
+            patch("app.agents.main_agent.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
         ):
             events = await self._collect(engine, message="为该分子先生成执行计划")
 
@@ -594,8 +594,8 @@ class TestSubmitMessageOuterLoop:
         self, engine: ChemSessionEngine
     ) -> None:
         with (
-            patch("app.agents.engine.update_plan_file") as update_plan_file,
-            patch("app.agents.engine.get_compiled_graph") as get_graph,
+            patch("app.agents.main_agent.engine.update_plan_file") as update_plan_file,
+            patch("app.agents.main_agent.engine.get_compiled_graph") as get_graph,
         ):
             update_plan_file.return_value = MagicMock(
                 plan_id="123e4567-e89b-12d3-a456-426614174000",
