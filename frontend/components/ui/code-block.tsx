@@ -1,8 +1,32 @@
 "use client"
 
+import { CHEM_LANG_IDS, CHEM_LANGS, type ChemLangId } from "@/lib/shiki-chem-langs"
 import { cn } from "@/lib/utils"
 import React, { useEffect, useState } from "react"
-import { codeToHtml } from "shiki"
+import { bundledLanguages, getSingletonHighlighter } from "shiki"
+
+/** Languages bundled in Shiki. */
+const BUNDLED = new Set(Object.keys(bundledLanguages))
+
+async function highlightCode(code: string, language: string, theme: string): Promise<string> {
+  const isChem = (CHEM_LANG_IDS as readonly string[]).includes(language)
+  const isKnown = isChem || BUNDLED.has(language)
+  const lang = isKnown ? language : "text"
+
+  const highlighter = await getSingletonHighlighter({ langs: [], themes: [theme] })
+
+  // Load the language if not already registered
+  const loaded = highlighter.getLoadedLanguages()
+  if (!loaded.includes(lang)) {
+    if (isChem) {
+      await highlighter.loadLanguage(CHEM_LANGS[language as ChemLangId])
+    } else if (lang !== "text") {
+      await highlighter.loadLanguage(lang as never)
+    }
+  }
+
+  return highlighter.codeToHtml(code, { lang: loaded.includes(lang) ? lang : "text", theme })
+}
 
 export type CodeBlockProps = {
   children?: React.ReactNode
@@ -50,8 +74,14 @@ function CodeBlockCode({
       }
 
       // code comes from LLM/tool output only — not raw user input
-      const html = await codeToHtml(code, { lang: language, theme })
-      if (!cancelled) setHighlightedHtml(html)
+      try {
+        const html = await highlightCode(code, language, theme)
+        if (!cancelled) setHighlightedHtml(html)
+      } catch {
+        // Language not bundled in Shiki — fall back to plain text highlight
+        const html = await highlightCode(code, "text", theme)
+        if (!cancelled) setHighlightedHtml(html)
+      }
     }
     highlight()
 

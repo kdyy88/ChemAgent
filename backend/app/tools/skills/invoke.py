@@ -30,13 +30,15 @@ from __future__ import annotations
 import json
 import logging
 
+from langchain_core.runnables import RunnableConfig
+
 from app.tools.decorators import chem_tool
 
 logger = logging.getLogger(__name__)
 
 
 @chem_tool(tier="L1")
-def tool_invoke_skill(skill_name: str, arguments: str = "{}") -> str:
+def tool_invoke_skill(skill_name: str, arguments: str = "{}", config: RunnableConfig | None = None) -> str:
     """Activate a registered skill by name and execute its SOP.
 
     Use this tool when the user's intent matches one of the skills listed in
@@ -77,11 +79,26 @@ def tool_invoke_skill(skill_name: str, arguments: str = "{}") -> str:
             ensure_ascii=False,
         )
 
+    # ── Validate required arguments (fail-fast) ────────────────────────────────
+    missing = [
+        arg.name for arg in manifest.arguments
+        if arg.required and arg.name not in parsed_args
+    ]
+    if missing:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": f"Missing required arguments for skill {skill_name!r}: {missing}. "
+                         "Use available tools to resolve them or ask the user.",
+            },
+            ensure_ascii=False,
+        )
+
     # ── Dispatch by context ────────────────────────────────────────────────────
     if manifest.context == "inline":
         return _invoke_inline(skill_name, parsed_args)
     else:
-        return _invoke_fork(skill_name, manifest, parsed_args)
+        return _invoke_fork(skill_name, manifest, parsed_args, config)
 
 
 # ── Inline execution ───────────────────────────────────────────────────────────
@@ -111,13 +128,18 @@ def _invoke_inline(skill_name: str, parsed_args: dict) -> str:
 # ── Fork execution ─────────────────────────────────────────────────────────────
 
 
-def _invoke_fork(skill_name: str, manifest, parsed_args: dict) -> str:  # type: ignore[type-arg]
+def _invoke_fork(
+    skill_name: str,
+    manifest,  # type: ignore[type-arg]
+    parsed_args: dict,
+    config: RunnableConfig | None = None,
+) -> str:
     """Delegate to an isolated sub-agent via tool_run_sub_agent (fork context).
 
-    The sub-agent loads the full skill SOP via
-    ``load_required_skill_markdown([skill_name])``—the existing path that reads
-    the complete SKILL.md.  This deliberately avoids injecting the SOP through
-    ``custom_instructions`` (max_length=2000 would be exceeded for rich skills).
+    Uses synchronous ``.invoke()``—safe because this function runs inside the
+    ``safe_chem_tool`` subprocess which has no running event loop.
+    ``config`` is forwarded so thread_id checkpointing and LangSmith tracing
+    remain intact across the parent → sub-agent boundary.
     """
     import asyncio  # noqa: PLC0415
 
@@ -126,23 +148,25 @@ def _invoke_fork(skill_name: str, manifest, parsed_args: dict) -> str:  # type: 
     task = parsed_args.get("task") or parsed_args.get("query") or skill_name
     smiles_policy = parsed_args.get("smiles_policy", "forbid_new")
 
-    # Build the custom_tools list: skill's declared tools + the fetch/reference pair
     custom_tools = list(manifest.tool_names or [])
     for always_available in ("tool_fetch_chemistry_api", "tool_read_skill_reference"):
         if always_available not in custom_tools:
             custom_tools.append(always_available)
 
+    invoke_input = {
+        "mode": "custom",
+        "task": str(task)[:1000],
+        "required_skills": [skill_name],
+        "custom_tools": custom_tools,
+        "smiles_policy": smiles_policy,
+    }
+
     try:
-        result = asyncio.get_event_loop().run_until_complete(
-            tool_run_sub_agent.ainvoke(
-                {
-                    "mode": "custom",
-                    "task": str(task)[:1000],
-                    "required_skills": [skill_name],
-                    "custom_tools": custom_tools,
-                    "smiles_policy": smiles_policy,
-                }
-            )
+        # Sync invoke is correct here: this code runs in a subprocess spawned by
+        # safe_chem_tool, which has no running event loop.  asyncio.run() is used
+        # as the underlying transport to avoid the deprecated get_event_loop() path.
+        result = asyncio.run(
+            tool_run_sub_agent.ainvoke(invoke_input, config=config)
         )
         return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001

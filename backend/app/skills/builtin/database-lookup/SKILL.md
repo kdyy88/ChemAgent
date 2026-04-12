@@ -1,9 +1,10 @@
 ---
 name: database-lookup
 description: Search public chemistry, drug, and biomedical databases via their REST APIs. Covers compounds (PubChem, ChEMBL, ZINC, ChEBI, BindingDB), drugs (DailyMed, FDA/OpenFDA, KEGG), proteins/structures (UniProt, PDB, AlphaFold, STRING, Reactome), and clinical data (Open Targets, ClinicalTrials.gov).
-whenToUse: Use when the user asks to look up compounds, drugs, proteins, targets, pathways, binding affinities, drug-target interactions, clinical trials, or any data from a public chemistry/biomedical database API. Also trigger when a database is mentioned by name, or the task involves molecular properties, pharmacology, ADMET cross-referencing, or purchasable compound searches.
+user-invocable: true
+argument-hint: "{\"query\": \"[搜索词]\", \"smiles\": \"[可选结构]\"}"
 metadata:
-  skill-author: K-Dense Inc.
+  when_to_use: Use when the user asks to look up compounds, drugs, proteins, targets, pathways, binding affinities, drug-target interactions, clinical trials, or any data from a public chemistry/biomedical database API. Also trigger when a database is mentioned by name, or the task involves molecular properties, pharmacology, ADMET cross-referencing, or purchasable compound searches.
 ---
 
 # Database Lookup (Chemistry & Biomedical)
@@ -178,25 +179,18 @@ Read the relevant reference file before making any API call.
 | ClinPGx (PharmGKB) | `references/clinpgx.md` | Pharmacogenomics |
 | ClinicalTrials.gov | `references/clinicaltrials.md` | Clinical trial registry |
 
-## Output Format
+## 5. Synthesis & Output Format (Crucial)
 
-Structure your response like this:
+You are an expert computational chemist and structural biologist. **DO NOT act like a simple web scraper.**
 
-```
-## Databases Queried
-- **PubChem** — /compound/name/aspirin/property/...
-- **Reactome** — /search/query?query=aspirin
-
-## Results
-
-### PubChem
-[raw JSON response]
-
-### Reactome
-[raw JSON response]
-```
-
-If results are very large, present the most relevant portion and note that additional data is available.
+1. **Blend Internal Knowledge with API Data:** First, structure your answer using your vast internal domain knowledge. For example, if asked about a protein (like TP53), use your knowledge to explain its biological context, its well-known domains (e.g., TAD, DBD, CTD), and classic structures (e.g., 1TSR). Then, use the API data to *verify* this information, extract the exact sequence, or provide the latest/most specific PDB IDs.
+2. **Scientist-Friendly Formatting:**
+   - Present information in a highly readable, structured, and educational manner (use Markdown tables, bold text, and clear sections).
+   - For long lists (like PDBs), categorize them logically (e.g., by domain, by method, or highlight the top 3 most representative ones) instead of dumping all of them.
+3. **NO Developer Logs:**
+   - **NEVER** output raw JSON blocks.
+   - **NEVER** output raw HTTP requests (like `GET https://...`).
+   - Simply acknowledge the data sources elegantly (e.g., "*Based on the latest data from UniProt and RCSB PDB...*").
 
 ## Adding New Databases
 

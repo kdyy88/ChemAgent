@@ -167,7 +167,7 @@ function TokenRing({
             <div className="flex flex-col items-end gap-0.5">
               <span className="text-[9px] uppercase tracking-widest text-muted-foreground/50">费用参考</span>
               <span className="text-[10px] text-muted-foreground/60 tabular-nums leading-none">
-                ≈ ${((sessionTotal / 1_000_000) * 3).toFixed(4)}
+                ≈ ${((sessionTotal / 1_000_000) * 1.75).toFixed(4)}
               </span>
             </div>
           </div>

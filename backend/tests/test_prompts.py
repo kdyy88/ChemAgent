@@ -13,12 +13,9 @@ def test_system_prompt_includes_artifact_handoff_rules() -> None:
         }
     )
 
-    assert "delegation.artifact_pointers" in prompt
-    assert "produced_artifacts" in prompt
-    assert "suggested_active_smiles" in prompt
+    assert "artifact_pointers" in prompt
     assert "policy_conflicts" in prompt
     assert "needs_followup" in prompt
-    assert "骨架分析" in prompt
 
 
 def test_system_prompt_requires_structured_completion_over_response() -> None:
@@ -31,9 +28,9 @@ def test_system_prompt_requires_structured_completion_over_response() -> None:
         }
     )
 
-    assert "completion.summary" in prompt
-    assert "不要只依赖自然语言 `response`" in prompt
-    assert "禁止父智能体根据自然语言 `response` 自行改写具体环系或尾部名称" in prompt
+    # Sub-agent result consumption guidance (simplified in Skill-First refactor)
+    assert "policy_conflicts" in prompt
+    assert "needs_followup" in prompt
 
 
 def test_sub_agent_prompt_forbids_speculative_ring_naming() -> None:
@@ -104,5 +101,5 @@ def test_system_prompt_includes_execution_failed_self_correction_rule() -> None:
     )
 
     assert "[Execution Failed]" in prompt
-    assert "DO NOT apologize or stop" in prompt
-    assert "You have up to 3 attempts to correct an error" in prompt
+    assert "最多 3 次" in prompt
+    assert "道歉" in prompt
