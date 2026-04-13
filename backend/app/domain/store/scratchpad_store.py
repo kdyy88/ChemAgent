@@ -13,7 +13,10 @@ logger = logging.getLogger(__name__)
 
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9._-]+$")
 _SAFE_SCRATCHPAD_ID = re.compile(r"^sp_[A-Za-z0-9]{12}$")
-_DEFAULT_ROOT = Path(os.getenv("CHEMAGENT_SCRATCHPAD_DIR", Path(__file__).resolve().parents[3] / ".scratchpad"))
+# Public constant so other modules (shell.py, prompts.py) can reference the
+# configured root without duplicating the env-var lookup.
+SCRATCHPAD_ROOT = Path(os.getenv("CHEMAGENT_SCRATCHPAD_DIR", Path(__file__).resolve().parents[3] / ".scratchpad"))
+_DEFAULT_ROOT = SCRATCHPAD_ROOT  # internal alias kept for backward compat
 
 
 def _sanitize_segment(value: str, *, label: str) -> str:

@@ -69,6 +69,16 @@ _EXPLORE_TOOLS: frozenset[str] = frozenset({
     "tool_invoke_skill",
     "tool_read_skill_reference",
     "tool_fetch_chemistry_api",
+    # File system: read-only
+    "tool_read_file",
+    # State management (safe, no I/O)
+    "tool_update_scratchpad",
+    "tool_create_molecule_node",
+    "tool_update_viewport",
+    # Diagnostics backfill (escape hatch for shell/sub-agent computed values)
+    "tool_patch_diagnostics",
+    # Molecule screening (reads injected tree, no I/O)
+    "tool_screen_molecules",
 })
 
 _PLAN_TOOLS: frozenset[str] = frozenset()  # no tools — pure LLM reasoning
@@ -96,6 +106,19 @@ _GENERAL_TOOLS: frozenset[str] = frozenset({
     "tool_invoke_skill",
     "tool_read_skill_reference",
     "tool_fetch_chemistry_api",
+    # File system: full CRUD + shell
+    "tool_read_file",
+    "tool_write_file",
+    "tool_edit_file",
+    "tool_run_shell",
+    # State management (safe, no I/O)
+    "tool_update_scratchpad",
+    "tool_create_molecule_node",
+    "tool_update_viewport",
+    # Diagnostics backfill + screening
+    "tool_patch_diagnostics",
+    # Molecule screening
+    "tool_screen_molecules",
 })
 
 # custom mode uses caller-provided list (validated at runtime)
@@ -134,6 +157,19 @@ _STATIC_TIER_OVERRIDES: dict[str, ChemToolTier] = {
     "tool_invoke_skill": "L1",
     "tool_read_skill_reference": "L1",
     "tool_fetch_chemistry_api": "L1",
+    # File / shell tools
+    "tool_read_file": "L1",
+    "tool_write_file": "L2",
+    "tool_edit_file": "L2",
+    "tool_run_shell": "L2",
+    # State management tools (pure state, no I/O)
+    "tool_update_scratchpad": "L1",
+    "tool_create_molecule_node": "L1",
+    "tool_update_viewport": "L1",
+    # Diagnostics backfill (escape hatch — pure state write, no I/O)
+    "tool_patch_diagnostics": "L1",
+    # Molecule screening (reads injected tree snapshot, no I/O)
+    "tool_screen_molecules": "L1",
 }
 
 

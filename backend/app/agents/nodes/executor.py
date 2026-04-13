@@ -14,6 +14,7 @@ from langgraph.types import interrupt
 from app.agents.contracts.protocol import RecoveryAction, NodeUpdate, NodeCreate  # noqa: F401 (NodeUpdate/NodeCreate used for type hint comments only)
 from app.agents.postprocessors import TOOL_POSTPROCESSORS
 from app.domain.schemas.agent import ChemState, MoleculeWorkspaceEntry, Task, TaskStatus
+from app.tools.metadata import DIAGNOSTIC_SCHEMA
 from app.tools.registry import get_root_tools
 from app.agents.utils import (
     apply_active_smiles_update,
@@ -33,6 +34,7 @@ from app.domain.store.artifact_store import get_engine_artifact, get_engine_arti
 _TOOL_LOOKUP = {tool.name: tool for tool in get_root_tools()}
 logger = logging.getLogger(__name__)
 _MAX_PARENT_ARTIFACT_IDS = 8
+_MAX_SUBTASK_RECOVERY_ATTEMPTS = 2
 _SUB_AGENT_VERBOSE_LOGS = os.environ.get("CHEMAGENT_SUB_AGENT_VERBOSE_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}
 
 # ---------------------------------------------------------------------------
@@ -100,7 +102,56 @@ def _auto_harvest_molecule_node(
     }
     if artifact_id not in node_create_ids and artifact_id not in current_tree:
         node_create_ids.append(artifact_id)
-_MAX_SUBTASK_RECOVERY_ATTEMPTS = 1
+
+
+def _auto_patch_diagnostics(
+    tool_name: str,
+    args: dict,
+    result: dict,
+    current_tree: dict,
+    molecule_tree_updates: dict,
+) -> None:
+    """If the tool result contains declared diagnostic keys, patch the matching
+    molecule_tree node's diagnostics in-place.  Only updates nodes that already
+    exist (created by tool_create_molecule_node or auto-harvest) — never creates
+    new nodes.  New tools only need a row in DIAGNOSTIC_SCHEMA; no code change."""
+    keys = DIAGNOSTIC_SCHEMA.get(tool_name)
+    if not keys:
+        return
+    if not isinstance(result, dict):
+        return
+
+    # Strategy 1: direct artifact_id lookup (fastest, most precise).
+    # Covers tool_compute_descriptors(artifact_id="mol_*", smiles=None) — the
+    # LLM's preferred calling pattern when nodes are already registered.
+    direct_aid = str(args.get("artifact_id") or "").strip()
+    if direct_aid and (direct_aid in current_tree or direct_aid in molecule_tree_updates):
+        aid = direct_aid
+    else:
+        # Strategy 2: SMILES hash fallback.
+        # Note: compute_descriptors() echoes the molecule under key "smiles"
+        # (not "canonical_smiles"), so both must be checked.
+        smiles = str(
+            args.get("smiles")
+            or args.get("input_smiles")
+            or result.get("canonical_smiles")
+            or result.get("smiles")
+            or ""
+        ).strip()
+        if not smiles:
+            return
+        aid = _smiles_to_artifact_id(smiles)
+        # Only patch nodes already registered — don't auto-create via this path.
+        if aid not in current_tree and aid not in molecule_tree_updates:
+            return
+    existing = dict(molecule_tree_updates.get(aid) or current_tree.get(aid) or {})
+    patch = {k: result[k] for k in keys if k in result}
+    if not patch:
+        return
+    molecule_tree_updates[aid] = {
+        **existing,
+        "diagnostics": {**(existing.get("diagnostics") or {}), **patch},
+    }
 
 # Tools that require explicit user approval before execution (Hard Breakpoint tier).
 # Add tool names here to gate them behind the ApprovalCard UI.
@@ -407,6 +458,11 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
             "evidence_revision": evidence_revision,
         }
 
+    file_read_state_updates: dict[str, dict] = {}
+    # State tool protocol accumulators (ScratchpadUpdate / ViewportUpdate)
+    scratchpad_updates: dict[str, Any] = {"established_rules": [], "failed_attempts": [], "research_goal": ""}
+    viewport_override: dict[str, Any] | None = None
+
     for tool_call in tool_calls:
         tool_name = tool_call["name"]
         tool_call_id = tool_call.get("id", "")
@@ -430,6 +486,20 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
         try:
             tool_config: RunnableConfig | dict = config
             logger.info("\ud83d\udd27 [ToolDispatch] tool=%s  args_keys=%s", tool_name, list(args.keys()))
+            # Inject current read_file_state into configurable for tool_edit_file
+            # and tool_write_file (the latter needs it for its exist-guard).
+            if tool_name in ("tool_edit_file", "tool_write_file"):
+                _rfs_configurable = dict((tool_config or {}).get("configurable") or {})
+                _rfs_configurable["read_file_state"] = {
+                    **(state.get("read_file_state") or {}),
+                    **file_read_state_updates,  # prefer freshly seen reads this turn
+                }
+                tool_config = {**dict(tool_config or {}), "configurable": _rfs_configurable}
+            # Inject live molecule_tree snapshot into tool_screen_molecules.
+            if tool_name == "tool_screen_molecules":
+                _sm_configurable = dict((tool_config or {}).get("configurable") or {})
+                _sm_configurable["molecule_tree"] = {**current_tree, **molecule_tree_updates}
+                tool_config = {**dict(tool_config or {}), "configurable": _sm_configurable}
             if tool_name == "tool_run_sub_agent":
                 args, requested_artifact_ids = _prepare_sub_agent_artifact_inputs(
                     args,
@@ -715,16 +785,93 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                         }
                     elif protocol_type == "NodeCreate":
                         aid = str(parsed["artifact_id"])
+                        # Merge with any existing node so that calling
+                        # tool_create_molecule_node on an already-auto-harvested
+                        # node enriches rather than overwrites it.
+                        _existing_node = dict(
+                            molecule_tree_updates.get(aid)
+                            or current_tree.get(aid)
+                            or {"artifact_id": aid, "smiles": "", "status": "staged"}
+                        )
                         molecule_tree_updates[aid] = {
+                            **_existing_node,
                             "artifact_id": aid,
-                            "smiles": str(parsed.get("smiles") or ""),
-                            "parent_id": parsed.get("parent_id"),
-                            "status": str(parsed.get("status") or "staged"),
-                            "diagnostics": dict(parsed.get("diagnostics") or {}),
+                            "smiles": str(parsed.get("smiles") or _existing_node.get("smiles") or ""),
+                            "parent_id": (
+                                parsed["parent_id"]
+                                if parsed.get("parent_id") is not None
+                                else _existing_node.get("parent_id")
+                            ),
+                            "creation_operation": (
+                                parsed.get("creation_operation") or _existing_node.get("creation_operation")
+                            ),
+                            "status": str(parsed.get("status") or _existing_node.get("status") or "staged"),
+                            "diagnostics": {
+                                **(_existing_node.get("diagnostics") or {}),
+                                **dict(parsed.get("diagnostics") or {}),
+                            },
+                            "aliases": list(dict.fromkeys(
+                                list(_existing_node.get("aliases") or [])
+                                + list(parsed.get("aliases") or [])
+                            )),
                         }
                         if aid not in node_create_ids:
                             node_create_ids.append(aid)
+                    elif protocol_type == "ScratchpadUpdate":
+                        scratchpad_updates["established_rules"].extend(
+                            list(parsed.get("established_rules") or [])
+                        )
+                        scratchpad_updates["failed_attempts"].extend(
+                            list(parsed.get("failed_attempts") or [])
+                        )
+                        new_goal = str(parsed.get("research_goal") or "").strip()
+                        if new_goal:
+                            scratchpad_updates["research_goal"] = new_goal
+                    elif protocol_type == "ViewportUpdate":
+                        viewport_override = {
+                            "focused_artifact_ids": list(
+                                dict.fromkeys(parsed.get("focused_artifact_ids") or [])
+                            ),
+                        }
+                        ref = parsed.get("reference_artifact_id")
+                        if ref:
+                            viewport_override["reference_artifact_id"] = str(ref)
+                    elif protocol_type == "BatchNodeUpdate":
+                        for _upd in (parsed.get("updates") or []):
+                            _upd_aid = str(_upd.get("artifact_id") or "").strip()
+                            if not _upd_aid:
+                                continue
+                            _upd_existing = dict(
+                                molecule_tree_updates.get(_upd_aid)
+                                or current_tree.get(_upd_aid)
+                                or {"artifact_id": _upd_aid, "smiles": "", "status": "staged"}
+                            )
+                            _upd_node = {
+                                **_upd_existing,
+                                "diagnostics": {
+                                    **(_upd_existing.get("diagnostics") or {}),
+                                    **dict(_upd.get("diagnostics") or {}),
+                                },
+                            }
+                            for _field in ("status", "aliases"):
+                                if _field in _upd:
+                                    _upd_node[_field] = _upd[_field]
+                            molecule_tree_updates[_upd_aid] = _upd_node
+                            # Only add non-rejected nodes to viewport accumulator
+                            if str(_upd.get("status") or "") != "rejected":
+                                if _upd_aid not in node_create_ids:
+                                    node_create_ids.append(_upd_aid)
                     else:
+                        # ── File protocol branch ──────────────────────────────
+                        file_protocol = (parsed or {}).get("__file_protocol__")
+                        if file_protocol == "FileRead":
+                            fp = str(parsed.get("path") or "")
+                            mt = parsed.get("mtime")
+                            if fp and mt is not None:
+                                file_read_state_updates[fp] = {"mtime": float(mt)}
+                            # Strip protocol meta from LLM-facing message.
+                            parsed = {k: v for k, v in parsed.items()
+                                      if k not in ("__file_protocol__", "path", "mtime")}
                         # ── Legacy path — unchanged ───────────────────────
                         new_active_smiles = apply_active_smiles_update(tool_name, parsed, new_active_smiles)
                         molecule_workspace = update_molecule_workspace(molecule_workspace, tool_name, parsed, args)
@@ -736,6 +883,12 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                         _auto_harvest_molecule_node(
                             tool_name, args, parsed,
                             current_tree, molecule_tree_updates, node_create_ids,
+                        )
+                        # Auto-patch diagnostics: write property results (tPSA, LogP
+                        # etc.) back into already-registered node.diagnostics.
+                        _auto_patch_diagnostics(
+                            tool_name, args, parsed,
+                            current_tree, molecule_tree_updates,
                         )
 
                 parsed = _sanitize_message_bus_payload(tool_name, parsed)
@@ -783,19 +936,54 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
         # Chem LSP protocol writes — only emitted when non-empty so unrelated
         # turns don't trigger unnecessary LangGraph reducer calls.
         **(({"molecule_tree": molecule_tree_updates}) if molecule_tree_updates else {}),
+        # File read state — checkpointer-persisted mtime window for edit guard.
+        **(({"read_file_state": file_read_state_updates}) if file_read_state_updates else {}),
+        # ── ScratchpadUpdate protocol writes ──────────────────────────────
         **(
             {
-                "viewport": {
-                    **({"focused_artifact_ids": [], **dict(state.get("viewport") or {})}),
-                    "focused_artifact_ids": list(
-                        dict.fromkeys(
-                            list((state.get("viewport") or {}).get("focused_artifact_ids") or [])
-                            + node_create_ids
-                        )
+                "scratchpad": {
+                    "research_goal": (
+                        scratchpad_updates["research_goal"]
+                        or str((state.get("scratchpad") or {}).get("research_goal") or "")
                     ),
+                    "established_rules": list(dict.fromkeys(
+                        list((state.get("scratchpad") or {}).get("established_rules") or [])
+                        + scratchpad_updates["established_rules"]
+                    )),
+                    "failed_attempts": list(dict.fromkeys(
+                        list((state.get("scratchpad") or {}).get("failed_attempts") or [])
+                        + scratchpad_updates["failed_attempts"]
+                    )),
                 }
             }
-            if node_create_ids
+            if (
+                scratchpad_updates["established_rules"]
+                or scratchpad_updates["failed_attempts"]
+                or scratchpad_updates["research_goal"]
+            )
             else {}
+        ),
+        # ── Viewport protocol writes ───────────────────────────────────────
+        # ViewportUpdate (explicit) takes priority over auto-accumulation.
+        # If the agent issued ViewportUpdate, use it exactly; otherwise fall
+        # back to appending new node_create_ids to the existing viewport.
+        **(
+            {"viewport": viewport_override}
+            if viewport_override is not None
+            else (
+                {
+                    "viewport": {
+                        **({"focused_artifact_ids": [], **dict(state.get("viewport") or {})}),
+                        "focused_artifact_ids": list(
+                            dict.fromkeys(
+                                list((state.get("viewport") or {}).get("focused_artifact_ids") or [])
+                                + node_create_ids
+                            )
+                        ),
+                    }
+                }
+                if node_create_ids
+                else {}
+            )
         ),
     }

@@ -548,8 +548,8 @@ def update_tasks(
 
 def normalize_messages_for_api(
     messages: Sequence[BaseMessage],
-    max_tool_history: int = 15,
-    max_tool_length: int = 15000,
+    max_tool_history: int = 10,
+    max_tool_length: int = 10000,
 ) -> list[BaseMessage]:
     """JIT in-memory sanitizer: produce a legally-sequenced message list for the
     LLM API without triggering any DB writes.

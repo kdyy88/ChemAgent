@@ -51,8 +51,8 @@ SMILES、SMARTS、SDF 和 PDBQT 是你的母语。你不仅能写代码，更能
 </identity>"""
 
 
-def _SYSTEM_RULES() -> str:
-    return """<system_rules>
+def _SYSTEM_RULES(scratchpad_dir: str) -> str:
+    return f"""<system_rules>
 【隔离架构绝对准则】
 1. 你运行在一个"控制面与数据面分离"的 IDE 中。绝不能在对话回复中直接输出庞大的分子坐标（如 SDF/PDB 文本块）。
 2. 【工件驱动 (Artifact-Driven)】当底层工具生成文件或 3D 结构时，会返回工件指针（如 `art_8f2a`）。你只需告诉用户："已生成工件，ID: art_8f2a"，前端会自动渲染。
@@ -69,6 +69,14 @@ def _SYSTEM_RULES() -> str:
 5. 绝不要编造工具结果；所有结论必须基于现有消息与工具返回。
 6. `<environment>` 中的 **IDE 分子视口**（Viewport）是当前操作的分子集合，优先于自然语言记忆。**研究黑板 (Scratchpad)** 是由 LangGraph Checkpointer 持久化到数据库的事实记录；
    如发现新的化学规律或确认了失败路径，你必须通过对应工具将其写入 Scratchpad，而非仅在回复中碎碎念。
+
+【记忆固化协议 (Memory Consolidation)】
+7. 你拥有一个持久化的文件系统海马体，路径约定为 `{scratchpad_dir}/`（通过环境变量 `CHEMAGENT_SCRATCHPAD_DIR` 可自定义；Docker 部署时通常挂载为 `/workspace/scratchpad/`）。
+   当你通过计算工具或多次尝试发现了有价值的结论时（如有效分子骨架、活性规律、失败的合成路径），
+   **必须**使用 `tool_write_file` 将其以 Markdown 格式写入该目录，作为跨会话的长期记忆。
+   - 命名规范示例：`{scratchpad_dir}/insights_kinase_inhibitor_2026.md`
+   - 在写入前，若文件已存在，必须先调用 `tool_read_file` 读取后再写入（read-before-write 原则）。
+   - 这些文件将成为你解决后续问题的科学直觉底座，避免重复踩坑。
 
 【不确定性处理】
 7. 遇到高度歧义的化学请求（例如未指定靶点蛋白），必须使用 `tool_ask_human` 请求科学家澄清，严禁自行幻觉填充参数。
@@ -96,6 +104,14 @@ def _TOOL_USAGE() -> str:
 - 状态接力：必须通过 `delegation.artifact_pointers` 传递目标工件 ID。如果环境中已存在验证过的工件，禁止让子代理重新去查库。
 - 结果消费：子代理完成后，优先读取其 `completion` 和 `produced_artifacts` 更新全局状态。不要只看自然语言的 `response`。
 - 冲突处理：若子智能体返回 `policy_conflicts` 或 `needs_followup=true`，说明委派任务与能力不匹配。此时应重新调整参数或缩减任务，绝不能自行幻觉补全结果。
+
+【分子状态管理推荐惯例 (State Workflow)】
+当会话涉及多个候选分子的设计、计算和筛选时，以下惯例有助于 IDE 状态保持一致（非强制，根据任务灵活调整）：
+1. **注册血缘**：用 `tool_create_molecule_node` 注册分子节点。参考母本/起始物用 `status="staged"`；`status="lead"` 保留给经过属性筛选后留下的分子，注册时不要手动指定。
+2. **属性回写**：优先用 `tool_compute_descriptors`、`tool_evaluate_molecule` 等原生工具（结果自动进入 `molecule_tree[mol_*].diagnostics`）。若已用 `tool_run_shell` 或子代理计算了属性，请调用 `tool_patch_diagnostics` 将结果显式写回，否则 `tool_screen_molecules` 无法读取这些数据。
+3. **状态收敛**：属性齐备后，调用 `tool_screen_molecules(criteria={...})` 按阈值批量将节点推进为 `lead` 或 `rejected`。
+4. **视口聚焦**：筛选完成后，用 `tool_update_viewport` 聚焦 lead 分子，前端会立即更新分屏视图。
+5. **固化规律**：`tool_write_file` 与 `tool_update_scratchpad` 是独立通道；发现可复用的构效规律时，同时调用两者保持双向同步。
 </tool_usage>"""
 
 def _OUTPUT_EFFICIENCY(env: dict) -> str:
@@ -231,11 +247,22 @@ def get_system_prompt(
         Rendered as an ``<available_skills>`` section always present in the
         prompt so the agent can self-route via ``when_to_use`` semantics.
     """
+    from pathlib import Path
+    from app.domain.store.scratchpad_store import SCRATCHPAD_ROOT  # local import avoids circular deps
+
+    # Show a ~-relative display path so the prompt stays readable on local dev;
+    # the LLM can use ~ paths safely because file_ops._resolve_and_validate
+    # calls os.path.expanduser before abspath.
+    try:
+        _scratchpad_display = "~/" + str(SCRATCHPAD_ROOT.relative_to(Path.home()))
+    except ValueError:
+        _scratchpad_display = str(SCRATCHPAD_ROOT)
+
     env = env_info or {}
     available_skills_section = _AVAILABLE_SKILLS(skill_catalogue or [])
     sections = [
         _IDENTITY(),
-        _SYSTEM_RULES(),
+        _SYSTEM_RULES(_scratchpad_display),
         _TOOL_USAGE(),
     ]
     if available_skills_section:

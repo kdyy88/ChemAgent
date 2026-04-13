@@ -52,6 +52,8 @@ services:
       PYTHONMALLOC: malloc
     ports:
       - "127.0.0.1:3030:3030"
+    volumes:
+      - ./backend/.scratchpad:/workspace/scratchpad
     deploy:
       resources:
         limits:
@@ -89,6 +91,8 @@ services:
       MALLOC_TRIM_THRESHOLD_: "65536"
       PYTHONMALLOC: malloc
     command: ["arq", "app.worker.WorkerSettings"]
+    volumes:
+      - ./backend/.scratchpad:/workspace/scratchpad
     deploy:
       resources:
         limits:

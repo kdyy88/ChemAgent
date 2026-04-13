@@ -27,6 +27,10 @@ from app.tools.rdkit import ALL_RDKIT_TOOLS
 from app.tools.skills.invoke import tool_invoke_skill
 from app.tools.skills.references import tool_read_skill_reference
 from app.tools.system.task_control import ALL_SYSTEM_CONTROL_TOOLS
+from app.tools.system.file_ops import ALL_FILE_OPS_TOOLS
+from app.tools.system.shell import ALL_SHELL_TOOLS
+from app.tools.system.state_tools import ALL_STATE_TOOLS
+from app.tools.system.screen_tools import ALL_SCREEN_TOOLS
 
 # Lazy import to avoid circular dependency:
 # lg_tools → tools/sub_agent → tool_registry → lg_tools
@@ -40,6 +44,10 @@ ALL_CHEM_TOOLS = [
     *ALL_PUBCHEM_TOOLS,
     *ALL_SYSTEM_CONTROL_TOOLS,
     *ALL_BABEL_TOOLS,
+    *ALL_FILE_OPS_TOOLS,
+    *ALL_SHELL_TOOLS,
+    *ALL_STATE_TOOLS,
+    *ALL_SCREEN_TOOLS,
     # Skills infrastructure
     tool_invoke_skill,
     tool_read_skill_reference,

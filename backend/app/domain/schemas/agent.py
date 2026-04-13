@@ -58,6 +58,24 @@ def merge_molecule_tree(
 
 
 # ---------------------------------------------------------------------------
+# 5a. File read state — tracks mtime of files read by the LLM this session.
+#     Stored in ChemState so the checkpointer persists and can time-travel it.
+#     Reducer: upsert (entries from new reads are merged on top of existing).
+# ---------------------------------------------------------------------------
+class FileReadEntry(TypedDict):
+    mtime: float
+
+
+def merge_file_read_state(
+    existing: dict[str, FileReadEntry] | None,
+    update: dict[str, FileReadEntry],
+) -> dict[str, FileReadEntry]:
+    if existing is None:
+        return update
+    return {**existing, **update}
+
+
+# ---------------------------------------------------------------------------
 # Legacy stub — 保留导出符号，避免 Phase 2 之前的 ImportError
 # MoleculeWorkspaceEntry 已被 MoleculeNode 取代；Phase 2 将移除全部引用
 # ---------------------------------------------------------------------------
@@ -96,6 +114,7 @@ class ChemState(TypedDict):
     viewport: WorkspaceViewport
     molecule_tree: Annotated[dict[str, MoleculeNode], merge_molecule_tree]
     scratchpad: ProjectScratchpad
+    read_file_state: Annotated[dict[str, FileReadEntry], merge_file_read_state]
     # --------------------
 
     artifacts: Annotated[list[dict], operator.add]
