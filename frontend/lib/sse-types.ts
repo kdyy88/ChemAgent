@@ -288,6 +288,7 @@ export interface SSESendMessageOptions {
   activeSmiles?: string | null
   interruptContext?: InterruptContext
   model?: string | null
+  skillsEnabled?: boolean
 }
 
 export interface SSEToolCall {

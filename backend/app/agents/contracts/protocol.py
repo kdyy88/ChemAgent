@@ -16,6 +16,41 @@ from app.domain.schemas.workflow import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Chem LSP Protocol — tool return contracts for state-driven writes
+# ---------------------------------------------------------------------------
+
+class NodeUpdate(BaseModel):
+    """L1 tools: update diagnostics / status on an existing molecule node.
+
+    Diagnostics are **merged** with any existing values — non-destructive.
+    If *status* is None the existing node status is preserved.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: str = Field(description="Target molecule's artifact_id in molecule_tree.")
+    diagnostics: dict[str, Any] = Field(default_factory=dict, description="Key-value diagnostic metrics to merge (e.g. logP, mw, warnings).")
+    status: str | None = Field(default=None, description="New MoleculeStatus; None preserves current status.")
+
+
+class NodeCreate(BaseModel):
+    """L2/L3 tools: register a new molecule branch in the tree.
+
+    The executor will append *artifact_id* to viewport.focused_artifact_ids.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: str = Field(description="Unique artifact ID for the new molecule (e.g. mol_01H...).")
+    smiles: str = Field(description="Canonical SMILES of the new molecule.")
+    parent_id: str | None = Field(default=None, description="Artifact ID of the precursor molecule (for scaffold-hop lineage).")
+    diagnostics: dict[str, Any] = Field(default_factory=dict, description="Initial diagnostic metrics.")
+    status: str = Field(default="staged", description="Initial MoleculeStatus.")
+
+
+# ---------------------------------------------------------------------------
+# Sub-agent protocol
+# ---------------------------------------------------------------------------
+
 class SubAgentDelegation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

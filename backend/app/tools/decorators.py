@@ -30,6 +30,49 @@ _TRACEBACK_LINE_LIMIT = 18
 _TRACEBACK_CHAR_LIMIT = 4000
 _SYNC_CALLABLE_REGISTRY: dict[str, Callable[..., Any]] = {}
 
+
+def _translate_protocol(result: Any) -> Any:
+    """If *result* is a Chem LSP protocol object, serialise it to annotated
+    JSON so that:
+    - The LLM sees a clean, human-readable tool result.
+    - The executor can detect ``__chem_protocol__`` and route the update
+      directly into ``molecule_tree`` / ``viewport`` without touching the
+      legacy ``active_smiles`` / ``molecule_workspace`` paths.
+
+    Non-protocol values are returned unchanged (backward compatible).
+    """
+    # Lazy import avoids circular dependency at module load time.
+    from app.agents.contracts.protocol import NodeCreate, NodeUpdate  # noqa: PLC0415
+
+    if isinstance(result, NodeUpdate):
+        return json.dumps(
+            {
+                "__chem_protocol__": "NodeUpdate",
+                "artifact_id": result.artifact_id,
+                "status": result.status,
+                "diagnostics": result.diagnostics,
+                "message": f"Molecule {result.artifact_id} diagnostics updated.",
+            },
+            ensure_ascii=False,
+        )
+    if isinstance(result, NodeCreate):
+        return json.dumps(
+            {
+                "__chem_protocol__": "NodeCreate",
+                "artifact_id": result.artifact_id,
+                "smiles": result.smiles,
+                "parent_id": result.parent_id,
+                "status": result.status,
+                "diagnostics": result.diagnostics,
+                "message": (
+                    f"New molecule {result.artifact_id} created"
+                    + (f" from {result.parent_id}." if result.parent_id else ".")
+                ),
+            },
+            ensure_ascii=False,
+        )
+    return result
+
 class TimeoutException(TimeoutError):
     """Raised when a chemistry tool exceeds its execution time budget."""
 
@@ -288,7 +331,18 @@ def chem_tool(
         if args_schema is not None:
             tool_kwargs["args_schema"] = args_schema
 
-        registered_tool = tool(**tool_kwargs)(safe_callable)
+        # Protocol translator wrapper: converts NodeUpdate / NodeCreate to
+        # annotated JSON; all other return values pass through unchanged.
+        if asyncio.iscoroutinefunction(func):
+            @wraps(func)
+            async def state_diff_wrapper(*args: Any, **kwargs: Any) -> Any:
+                return _translate_protocol(await safe_callable(*args, **kwargs))
+        else:
+            @wraps(func)
+            def state_diff_wrapper(*args: Any, **kwargs: Any) -> Any:  # type: ignore[misc]
+                return _translate_protocol(safe_callable(*args, **kwargs))
+
+        registered_tool = tool(**tool_kwargs)(state_diff_wrapper)
         existing_metadata = getattr(registered_tool, "metadata", None) or {}
         registered_tool.metadata = {**existing_metadata, **merged_metadata}
         return registered_tool

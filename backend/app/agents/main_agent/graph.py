@@ -6,6 +6,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agents.nodes import (
     chem_agent_node,
+    memory_consolidation_node,
     planner_node,
     route_from_agent,
     route_from_router,
@@ -22,6 +23,7 @@ def build_graph(checkpointer: Any | None = None) -> Any:
     graph.add_node("planner_node", planner_node)
     graph.add_node("chem_agent", chem_agent_node)
     graph.add_node("tools_executor", tools_executor_node)
+    graph.add_node("memory_consolidation", memory_consolidation_node)
 
     graph.add_edge(START, "task_router")
     graph.add_conditional_edges(
@@ -38,10 +40,11 @@ def build_graph(checkpointer: Any | None = None) -> Any:
         route_from_agent,
         {
             "tools_executor": "tools_executor",
-            "__end__": END,
+            "__end__": "memory_consolidation",
         },
     )
     graph.add_edge("tools_executor", "chem_agent")
+    graph.add_edge("memory_consolidation", END)
 
     return graph.compile(checkpointer=checkpointer)
 

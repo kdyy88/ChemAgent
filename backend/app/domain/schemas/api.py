@@ -82,6 +82,10 @@ class StreamChatRequest(BaseModel):
         default_factory=list,
         description="前序对话轮次消息，按时间正序排列（human/assistant 交替）",
     )
+    skills_enabled: bool = Field(
+        default=False,
+        description="是否在本轮对话中启用 Skills 模块（前端开关控制，默认关闭）",
+    )
 
 
 class ApproveToolRequest(BaseModel):

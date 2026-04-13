@@ -13,6 +13,8 @@ export type AppMode = 'copilot' | 'agent'
 interface UIState {
   appMode: AppMode
   setMode: (mode: AppMode) => void
+  skillsEnabled: boolean
+  toggleSkills: () => void
 }
 
 export const useUIStore = create<UIState>()(
@@ -20,6 +22,8 @@ export const useUIStore = create<UIState>()(
     (set) => ({
       appMode: 'copilot',
       setMode: (mode) => set({ appMode: mode }),
+      skillsEnabled: false,
+      toggleSkills: () => set((s) => ({ skillsEnabled: !s.skillsEnabled })),
     }),
     { name: 'chemagent-ui-mode' },
   ),

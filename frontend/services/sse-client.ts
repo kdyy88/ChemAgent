@@ -115,6 +115,7 @@ export class SSEClient {
           model: options.model ?? null,
           active_smiles: options.activeSmiles ?? null,
           interrupt_context: options.interruptContext ?? null,
+          skills_enabled: options.skillsEnabled ?? false,
         }),
         signal: ctrl.signal,
         openWhenHidden: true,

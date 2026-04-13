@@ -18,16 +18,17 @@
 
 ``env_info`` dict 约定键
 ------------------------
-  active_smiles          当前画布激活的 SMILES（str | None）
+  viewport_content       format_ide_workspace() 渲染的 Markdown 表格（str | None）
+  scratchpad_content     format_scratchpad() 渲染的 Markdown 列表（str | None）
   active_artifact_id     最近生成工件的 ID，如 "art_8f2a"（str | None）
-    artifact_warning       工件即将过期或已失效的警告文本（str | None）
-    molecule_workspace_summary  结构化分子工作集摘要（str | None）
+  artifact_warning       工件即将过期或已失效的警告文本（str | None）
   active_receptor_id     当前选中的靶点蛋白 ID（str | None）
   available_tool_namespaces  已挂载工具包列表（str | None）
   os                     运行环境描述（str | None）
   python_env             Python 环境描述（str | None）
   task_plan              已格式化的任务清单字符串，由
                          ``format_tasks_for_prompt()`` 生成（str | None）
+  is_native_reasoning_model  是否为原生推理模型（bool）
 """
 
 from __future__ import annotations
@@ -60,13 +61,14 @@ def _SYSTEM_RULES() -> str:
 3. 状态接力必须遵循严格的优先级：
    - 第一顺位：最新工具返回的 `artifact_id` 或 `produced_artifacts`（携带完整的 3D/手性/同位素信息）。
    - 第二顺位：最新工具返回的洗成/去盐/验证过的新 `SMILES` 字符串。
-   - 第三顺位：环境信息 `<environment>` 中提供的 `active_smiles`。
+   - 第三顺位：环境信息 `<environment>` 中 **IDE 分子视口**表记录的 SMILES。
    绝对禁止使用过期的输入 SMILES 覆盖最新产物。
 
 【化学严谨性】
 4. 在修改或推理分子结构前，必须验证价键合法性（Valence）、手性与芳香性。不要捏造违背第一性原理的结构。
 5. 绝不要编造工具结果；所有结论必须基于现有消息与工具返回。
-6. `<environment>` 中的"结构化分子工作集"是经过验证的稳定事实表。当较早的工具消息因 history limit 被裁剪时，优先依据该事实表，而非自然语言记忆。
+6. `<environment>` 中的 **IDE 分子视口**（Viewport）是当前操作的分子集合，优先于自然语言记忆。**研究黑板 (Scratchpad)** 是由 LangGraph Checkpointer 持久化到数据库的事实记录；
+   如发现新的化学规律或确认了失败路径，你必须通过对应工具将其写入 Scratchpad，而非仅在回复中碎碎念。
 
 【不确定性处理】
 7. 遇到高度歧义的化学请求（例如未指定靶点蛋白），必须使用 `tool_ask_human` 请求科学家澄清，严禁自行幻觉填充参数。
@@ -130,11 +132,11 @@ def _OUTPUT_EFFICIENCY(env: dict) -> str:
 
 
 def _ENVIRONMENT_INFO(env: dict) -> str:
-    active_smiles = env.get("active_smiles") or "（无）"
     active_artifact = env.get("active_artifact_id") or "None"
     artifact_warning = env.get("artifact_warning") or ""
     active_receptor = env.get("active_receptor_id") or "None"
-    molecule_workspace_summary = env.get("molecule_workspace_summary") or "- 当前没有结构化分子工作集。"
+    viewport_content = env.get("viewport_content") or "- 当前视口为空。"
+    scratchpad_content = env.get("scratchpad_content") or "- 研究黑板当前为空。"
     tool_ns = env.get("available_tool_namespaces") or "rdkit, babel"
     os_info = env.get("os") or "Linux/Docker"
     py_env = env.get("python_env") or "Python 3.11"
@@ -144,11 +146,14 @@ def _ENVIRONMENT_INFO(env: dict) -> str:
 - 操作系统: {os_info}
 - Python 环境: {py_env}
 - 当前挂载的工具包: {tool_ns}
-- 当前全局最新 SMILES (active_smiles): {active_smiles}
 - 当前画布激活的工件 (active_artifact_id): {active_artifact}
 {warning_line}- 当前选中的靶点蛋白 (active_receptor_id): {active_receptor}
-- 结构化分子工作集:
-{molecule_workspace_summary}
+
+研究黑板（持久化，由 Checkpointer 自动保存；请通过工具更新，勿仅在回复中描述）：
+{scratchpad_content}
+
+IDE 分子视口（当前 LLM 正在并行操作/对比的分子集合；当旧工具消息因 history limit 被裁剪时，以此表为准）：
+{viewport_content}
 </environment>"""
 
 
@@ -159,7 +164,8 @@ def _TASK_PLAN(env: dict) -> str:
     return f"""<task_plan>
 【任务清单】
 当你把某项任务标记为 `completed` 或 `failed` 时，如有明确阶段结论，请在 `tool_update_task_status` 中附带一句 `summary`，把该阶段的可复用产物写入状态。
-如果某个任务会在当前工作跨度内直接完成，可跳过单独的 `in_progress` 调用；只有跨多轮或长耗时阶段才需要显式标记 `in_progress`。
+在开始执行某项任务的工具调用之前，必须先调用 `tool_update_task_status(task_id, "in_progress")` 进行声明；不得推迟或省略此步骤。
+当工具结果确认该任务完成时，立即（在同一轮或下一轮）调用 `tool_update_task_status(task_id, "completed")`；禁止将多个任务的 completed 批量堆积到最后统一提交。
 已完成任务默认视为锁定；只有当新的工具证据、用户补充信息或实验结果出现时，才允许重新标记为 `in_progress`。
 {task_plan}
 </task_plan>"""

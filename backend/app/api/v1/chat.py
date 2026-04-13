@@ -81,6 +81,7 @@ async def stream_chat(req: StreamChatRequest) -> StreamingResponse:
             model=req.model,
             active_smiles=req.active_smiles,
             interrupt_context=req.interrupt_context,
+            skills_enabled=req.skills_enabled,
         ),
         media_type="text/event-stream",
         headers={

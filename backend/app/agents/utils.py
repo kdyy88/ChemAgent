@@ -11,7 +11,15 @@ from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 
 from app.agents.config import build_llm_config
-from app.domain.schemas.agent import MoleculeWorkspaceEntry, PlannedTaskItem, Task, TaskStatus
+from app.domain.schemas.agent import (
+    MoleculeNode,
+    MoleculeWorkspaceEntry,
+    PlannedTaskItem,
+    ProjectScratchpad,
+    Task,
+    TaskStatus,
+    WorkspaceViewport,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -375,6 +383,56 @@ def format_molecule_workspace_for_prompt(
 
     if len(entries) > limit:
         lines.append(f"- 其余 {len(entries) - limit} 个分子已省略，请按需要重新查询。")
+    return "\n".join(lines)
+
+
+def format_ide_workspace(
+    viewport: WorkspaceViewport,
+    tree: dict[str, MoleculeNode],
+) -> str:
+    """Render the focused viewport subset of molecule_tree as a Markdown table."""
+    focused_ids = (viewport or {}).get("focused_artifact_ids") or []
+    reference_id = (viewport or {}).get("reference_artifact_id")
+    if not focused_ids or not tree:
+        return "- 当前视口为空。请先通过工具搜索或生成分子。"
+    lines = [
+        "- 以下为当前 IDE 视口中的分子（优先以此表为准，旧工具消息因 history limit 被裁剪时尤甚）：\n",
+        "| Artifact ID | SMILES | 状态 | MW | 诊断信息 |",
+        "|---|---|---|---|---|",
+    ]
+    for aid in focused_ids:
+        node = tree.get(aid)
+        if not node:
+            continue
+        smiles = _compact_smiles(node.get("smiles", "?"))
+        status = node.get("status", "staged")
+        mw = node.get("molecular_weight", "—")
+        diag = node.get("diagnostics") or {}
+        diag_str = ", ".join(f"{k}={v}" for k, v in list(diag.items())[:4]) if diag else "—"
+        ref_marker = " ⭐" if aid == reference_id else ""
+        lines.append(f"| `{aid}`{ref_marker} | `{smiles}` | {status} | {mw} | {diag_str} |")
+    return "\n".join(lines)
+
+
+def format_scratchpad(scratchpad: ProjectScratchpad) -> str:
+    """Render the project scratchpad as Markdown for LLM injection."""
+    sp = scratchpad or {}
+    goal = sp.get("research_goal", "").strip()
+    rules = sp.get("established_rules") or []
+    failed = sp.get("failed_attempts") or []
+    if not goal and not rules and not failed:
+        return "- 研究黑板当前为空；如发现新的化学规律或已确认的失败路径，请通过工具将其写入。"
+    lines = []
+    if goal:
+        lines.append(f"- **核心目标**: {goal}")
+    if rules:
+        lines.append("- **已知化学规则/事实**:")
+        for r in rules:
+            lines.append(f"  - {r}")
+    if failed:
+        lines.append("- **已确认失败的路径**（勿重复尝试）:")
+        for f in failed:
+            lines.append(f"  - ❌ {f}")
     return "\n".join(lines)
 
 

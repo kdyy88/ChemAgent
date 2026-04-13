@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 import os
 import re
+from pathlib import Path
 
 from langchain_core.messages import SystemMessage
+from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger(__name__)
 
@@ -12,8 +14,14 @@ from app.agents.prompts import get_system_prompt
 from app.domain.schemas.agent import ChemState
 from app.tools.registry import get_root_tools
 from app.agents.config import get_active_model_name, is_native_reasoning_model, _load_environment
-from app.agents.utils import build_llm, format_tasks_for_prompt, normalize_messages_for_api, sanitize_messages_for_state
-from app.agents.utils import format_molecule_workspace_for_prompt
+from app.agents.utils import (
+    build_llm,
+    format_ide_workspace,
+    format_scratchpad,
+    format_tasks_for_prompt,
+    normalize_messages_for_api,
+    sanitize_messages_for_state,
+)
 from app.skills.loader import load_skill_catalogue
 
 # Loaded lazily so dotenv is applied before the flag is read.
@@ -23,6 +31,43 @@ _load_environment()
 _LOG_LLM_IO = os.environ.get("CHEMAGENT_LOG_LLM_IO", "").strip().lower() in {"1", "true", "yes", "on"}
 _LOG_LLM_IO_FULL = os.environ.get("CHEMAGENT_LOG_LLM_IO_FULL", "").strip().lower() in {"1", "true", "yes", "on"}
 
+# ── Per-session file logging ──────────────────────────────────────────────────
+# Default: <project_root>/logs/sessions/  (four levels up from this file).
+# Override with CHEMAGENT_LOG_DIR env var.
+_LOG_DIR = Path(
+    os.environ.get(
+        "CHEMAGENT_LOG_DIR",
+        str(Path(__file__).resolve().parents[4] / "logs" / "sessions"),
+    )
+)
+
+_session_file_handlers: dict[str, logging.FileHandler] = {}
+
+
+def _get_session_logger(session_id: str) -> logging.Logger:
+    """Return (or create) a file-backed Logger for *session_id*.
+
+    Writes to ``<_LOG_DIR>/session_<session_id>.log`` in append mode.
+    ``propagate=False`` prevents double-printing to the uvicorn console.
+    """
+    name = f"chemagent.session.{session_id}"
+    slog = logging.getLogger(name)
+    if session_id not in _session_file_handlers:
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(
+            _LOG_DIR / f"session_{session_id}.log",
+            mode="a",
+            encoding="utf-8",
+        )
+        fh.setFormatter(
+            logging.Formatter("%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+        )
+        slog.addHandler(fh)
+        slog.setLevel(logging.DEBUG)
+        slog.propagate = False
+        _session_file_handlers[session_id] = fh
+    return slog
+
 
 def _preview_text(value: str, limit: int = 220) -> str:
     compact = re.sub(r"\s+", " ", (value or "")).strip()
@@ -31,7 +76,8 @@ def _preview_text(value: str, limit: int = 220) -> str:
     return compact[:limit] + " ...[truncated]"
 
 
-def _log_prompt_summary(prompt_messages: list[SystemMessage]) -> None:
+def _log_prompt_summary(prompt_messages: list[SystemMessage], *logs: logging.Logger) -> None:
+    _logs = logs if logs else (logger,)
     role_counts: dict[str, int] = {}
     total_chars = 0
     preview_lines: list[str] = []
@@ -47,27 +93,30 @@ def _log_prompt_summary(prompt_messages: list[SystemMessage]) -> None:
                 f"msg[{index}] role={role} chars={len(content)} preview={_preview_text(content)}"
             )
 
-    logger.info(
-        "📨 [LLM Input Summary] messages=%d total_chars=%d roles=%s\n%s",
-        len(prompt_messages),
-        total_chars,
-        role_counts,
-        "\n".join(preview_lines),
-    )
+    for _l in _logs:
+        _l.info(
+            "📨 [LLM Input Summary] messages=%d total_chars=%d roles=%s\n%s",
+            len(prompt_messages),
+            total_chars,
+            role_counts,
+            "\n".join(preview_lines),
+        )
 
 
-def _log_response_summary(response: object) -> None:
+def _log_response_summary(response: object, *logs: logging.Logger) -> None:
+    _logs = logs if logs else (logger,)
     resp_text = response.content if isinstance(response.content, str) else str(response.content)
     tool_calls = list(getattr(response, "tool_calls", None) or [])
-    logger.info(
-        "📩 [LLM Output Summary] chars=%d tool_calls=%d preview=%s",
-        len(resp_text),
-        len(tool_calls),
-        _preview_text(resp_text),
-    )
+    for _l in _logs:
+        _l.info(
+            "📩 [LLM Output Summary] chars=%d tool_calls=%d preview=%s",
+            len(resp_text),
+            len(tool_calls),
+            _preview_text(resp_text),
+        )
 
 
-async def chem_agent_node(state: ChemState) -> dict:
+async def chem_agent_node(state: ChemState, config: RunnableConfig = None) -> dict:  # type: ignore[assignment]
     selected_model = state.get("selected_model")
     llm = build_llm(model=selected_model)
     llm_with_tools = llm.bind_tools(get_root_tools())
@@ -83,61 +132,84 @@ async def chem_agent_node(state: ChemState) -> dict:
     active_artifact_id = artifacts[-1].get("artifact_id") if artifacts else None
     artifact_warning = state.get("artifact_expiry_warning")
 
+    viewport = state.get("viewport") or {"focused_artifact_ids": []}
+    molecule_tree = state.get("molecule_tree") or {}
+    scratchpad = state.get("scratchpad") or {}
+
     env_info = {
-        "active_smiles": state.get("active_smiles"),
         "active_artifact_id": active_artifact_id,
         "artifact_warning": artifact_warning,
-        "molecule_workspace_summary": format_molecule_workspace_for_prompt(
-            state.get("molecule_workspace"),
-            state.get("active_smiles"),
-        ),
+        "viewport_content": format_ide_workspace(viewport, molecule_tree),
+        "scratchpad_content": format_scratchpad(scratchpad),
         "task_plan": format_tasks_for_prompt(state.get("tasks")),
         "model_name": get_active_model_name(selected_model),
         "is_native_reasoning_model": is_native_reasoning_model(get_active_model_name(selected_model)),
     }
 
+    # ── Session-scoped file logger ────────────────────────────────────────────
+    cfg = (config or {}).get("configurable") or {}
+    session_id: str = cfg.get("session_id") or "unknown"
+    turn_id: str = cfg.get("turn_id") or "?"
+
+    slog = _get_session_logger(session_id) if (_LOG_LLM_IO or _LOG_LLM_IO_FULL) else None
+    _log_targets: tuple[logging.Logger, ...] = (logger, slog) if slog else (logger,)
+
+    if slog:
+        slog.info("=" * 72)
+        slog.info("TURN %-36s  model=%s", turn_id, get_active_model_name(selected_model))
+        slog.info("=" * 72)
+
     prompt_messages = [
-        SystemMessage(content=get_system_prompt(env_info, skill_catalogue=load_skill_catalogue())),
+        SystemMessage(content=get_system_prompt(env_info, skill_catalogue=load_skill_catalogue() if state.get("skills_enabled", False) else [])),
         *safe_messages,
     ]
 
     if _LOG_LLM_IO and not _LOG_LLM_IO_FULL:
-        _log_prompt_summary(prompt_messages)
+        _log_prompt_summary(prompt_messages, *_log_targets)
     elif _LOG_LLM_IO_FULL:
         for i, msg in enumerate(prompt_messages):
             role = getattr(msg, "type", type(msg).__name__)
             content = msg.content if isinstance(msg.content, str) else str(msg.content)
-            logger.info("📨 [LLM Input] msg[%d] role=%s:\n%s", i, role, content)
+            for _l in _log_targets:
+                _l.info("📨 [LLM Input] msg[%d] role=%s:\n%s", i, role, content)
 
     response = await llm_with_tools.ainvoke(prompt_messages)
 
     if _LOG_LLM_IO and not _LOG_LLM_IO_FULL:
-        _log_response_summary(response)
+        _log_response_summary(response, *_log_targets)
         # Log tool calls if present
         if getattr(response, "tool_calls", None):
             for tc in response.tool_calls:
-                logger.info("🔧 [LLM Output] tool_call: %s args=%s", tc.get("name"), tc.get("args"))
+                for _l in _log_targets:
+                    _l.info("🔧 [LLM Output] tool_call: %s args=%s", tc.get("name"), tc.get("args"))
     elif _LOG_LLM_IO_FULL:
         # Log text content
         resp_text = response.content if isinstance(response.content, str) else str(response.content)
-        logger.info("📩 [LLM Output] content:\n%s", resp_text)
+        for _l in _log_targets:
+            _l.info("📩 [LLM Output] content:\n%s", resp_text)
         # Log tool calls if present
         if getattr(response, "tool_calls", None):
             for tc in response.tool_calls:
-                logger.info("🔧 [LLM Output] tool_call: %s args=%s", tc.get("name"), tc.get("args"))
+                for _l in _log_targets:
+                    _l.info("🔧 [LLM Output] tool_call: %s args=%s", tc.get("name"), tc.get("args"))
         # Log reasoning / thinking content if present (native reasoning models)
         thinking = None
         if hasattr(response, "additional_kwargs"):
             thinking = response.additional_kwargs.get("reasoning") or response.additional_kwargs.get("thinking")
         if thinking:
-            logger.info("🧠 [LLM Reasoning]:\n%s", thinking)
+            for _l in _log_targets:
+                _l.info("🧠 [LLM Reasoning]:\n%s", thinking)
 
     if hasattr(response, "usage_metadata") and response.usage_metadata:
         in_tok = response.usage_metadata.get("input_tokens", 0)
         total_tok = response.usage_metadata.get("total_tokens", 0)
         logger.info("📊 [Context Monitor] input=%d total=%d", in_tok, total_tok)
+        if slog:
+            slog.info("📊 [Context Monitor] input=%d total=%d", in_tok, total_tok)
         if total_tok > 100_000:
             logger.warning("🚨 [Context Monitor] Approaching context limit (total=%d)", total_tok)
+            if slog:
+                slog.warning("🚨 [Context Monitor] Approaching context limit (total=%d)", total_tok)
 
     return {"messages": await sanitize_messages_for_state([response], source="chem_agent")}
 
@@ -145,3 +217,110 @@ async def chem_agent_node(state: ChemState) -> dict:
 def route_from_agent(state: ChemState) -> str:
     last_message = state["messages"][-1]
     return "tools_executor" if getattr(last_message, "tool_calls", None) else "__end__"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Meta-Cognitive Reflection — Memory Consolidation Node
+# ---------------------------------------------------------------------------
+
+import json as _json  # noqa: E402
+import os as _os
+from typing import Any as _Any
+
+from langchain_core.messages import HumanMessage as _HumanMessage
+from pydantic import BaseModel as _BaseModel
+from pydantic import Field as _Field
+
+_CONCLUSIVE_STATUSES = frozenset({"rejected", "lead", "exploring"})
+_MAX_CONSOLIDATION_PAYLOAD_CHARS = 6_000
+
+_CONSOLIDATION_SYSTEM_PROMPT = """\
+你是一位资深计算化学审阅员。你的唯一任务是从当前分子实验结果中提炼出高度浓缩的科学知识，追加到项目黑板。
+
+规则：
+- 不要重复黑板已有的条目。
+- 每条规律或教训必须极度简练（一句话，<=20 字中文），直接说结论。
+- 例如："卤代衍生物 logP 普遍超标" 或 "吲哚核心改善了不含氯取代基的结合亲和力"。
+- 如果没有新发现，返回空列表即可。
+"""
+
+
+class KnowledgeExtraction(_BaseModel):
+    new_rules: list[str] = _Field(
+        default_factory=list,
+        description="New design rules from lead molecules. Single sentence each. Omit duplicates.",
+    )
+    new_failed_attempts: list[str] = _Field(
+        default_factory=list,
+        description="Failure lessons from rejected molecules. Single sentence each. Omit duplicates.",
+    )
+    updated_goal: str | None = _Field(
+        default=None,
+        description="Updated research goal only if intent clearly shifted. None = unchanged.",
+    )
+
+
+async def memory_consolidation_node(
+    state: ChemState, config: RunnableConfig = None  # type: ignore[assignment]
+) -> dict[str, _Any]:
+    """Phase 4 reflection node: scan molecule_tree, distil discoveries into scratchpad.
+
+    Returns an empty dict (no-op) when there is nothing new to learn, so it
+    never delays low-value turns.
+    """
+    tree: dict = state.get("molecule_tree") or {}
+    current_scratchpad: dict = dict(state.get("scratchpad") or {})
+
+    # 1. Only reflect when some molecules have definitive outcomes.
+    conclusive_nodes = {
+        aid: node
+        for aid, node in tree.items()
+        if isinstance(node, dict) and node.get("status") in _CONCLUSIVE_STATUSES
+    }
+    if not conclusive_nodes:
+        logger.debug("[consolidation] No conclusive nodes — skipping.")
+        return {}
+
+    # 2. Build payload (capped to control token spend).
+    human_content = (
+        f"【现有黑板内容】：\n{_json.dumps(current_scratchpad, ensure_ascii=False, indent=2)}\n\n"
+        f"【当前有结论的分子诊断结果】：\n{_json.dumps(conclusive_nodes, ensure_ascii=False, indent=2)}"
+    )
+    if len(human_content) > _MAX_CONSOLIDATION_PAYLOAD_CHARS:
+        human_content = human_content[:_MAX_CONSOLIDATION_PAYLOAD_CHARS] + "\n…[内容已截断]"
+
+    # 3. Structured-output call. CHEMAGENT_CONSOLIDATION_MODEL allows routing to a
+    #    lighter/cheaper model (e.g., gpt-4o-mini) independently of the main agent.
+    model = _os.environ.get("CHEMAGENT_CONSOLIDATION_MODEL") or state.get("selected_model")
+    llm = build_llm(structured_schema=KnowledgeExtraction, model=model)
+
+    try:
+        extraction: KnowledgeExtraction = await llm.ainvoke([
+            SystemMessage(content=_CONSOLIDATION_SYSTEM_PROMPT),
+            _HumanMessage(content=human_content),
+        ])
+    except Exception:  # noqa: BLE001
+        logger.warning("[consolidation] LLM call failed — scratchpad unchanged.", exc_info=True)
+        return {}
+
+    # 4. Skip state write when nothing new was extracted.
+    if not extraction.new_rules and not extraction.new_failed_attempts and not extraction.updated_goal:
+        logger.debug("[consolidation] Nothing new extracted.")
+        return {}
+
+    # 5. Append-only merge into scratchpad.
+    updated: dict = dict(current_scratchpad)
+    if extraction.updated_goal:
+        updated["research_goal"] = extraction.updated_goal
+    if extraction.new_rules:
+        updated["established_rules"] = list(updated.get("established_rules") or []) + extraction.new_rules
+    if extraction.new_failed_attempts:
+        updated["failed_attempts"] = list(updated.get("failed_attempts") or []) + extraction.new_failed_attempts
+
+    logger.info(
+        "[consolidation] +%d rules  +%d failures  goal_changed=%s",
+        len(extraction.new_rules),
+        len(extraction.new_failed_attempts),
+        bool(extraction.updated_goal),
+    )
+    return {"scratchpad": updated}

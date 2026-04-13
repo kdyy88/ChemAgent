@@ -31,7 +31,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
 
 from app.agents.main_agent.runtime import get_compiled_graph, has_persisted_session
-from app.domain.schemas.agent import ChemState
+from app.domain.schemas.agent import ChemState, MoleculeNode
 from app.domain.store.artifact_store import store_engine_artifact
 from app.domain.store.plan_store import update_plan_file
 from app.agents.main_agent.engine_sse import (
@@ -90,6 +90,29 @@ def _graph_recursion_limit() -> int:
 
 
 # ── Engine ─────────────────────────────────────────────────────────────────────
+
+
+import hashlib
+
+
+def _seed_state_from_smiles(
+    active_smiles: str | None,
+) -> tuple[dict, dict]:
+    """Derive initial viewport + molecule_tree from a seed SMILES supplied by the frontend.
+
+    Returns (viewport_dict, molecule_tree_dict). When active_smiles is None or empty
+    both dicts are empty / unpopulated so the LLM starts with a blank IDE workspace.
+    """
+    if not active_smiles:
+        return {"focused_artifact_ids": []}, {}
+    smiles_hash = hashlib.md5(active_smiles.encode()).hexdigest()[:8]
+    artifact_id = f"mol_seed_{smiles_hash}"
+    node: MoleculeNode = {
+        "artifact_id": artifact_id,
+        "smiles": active_smiles,
+        "status": "staged",
+    }
+    return {"focused_artifact_ids": [artifact_id]}, {artifact_id: node}
 
 
 class ChemSessionEngine:
@@ -183,6 +206,7 @@ class ChemSessionEngine:
         model: str | None = None,
         active_smiles: str | None = None,
         interrupt_context: dict | None = None,
+        skills_enabled: bool = False,
     ) -> AsyncGenerator[str, None]:
         """【外层生成器】驱动单次用户交互的全生命周期。
 
@@ -230,19 +254,22 @@ class ChemSessionEngine:
 
         initial_messages = [*history_messages, HumanMessage(content=message)]
 
+        _viewport, _molecule_tree = _seed_state_from_smiles(active_smiles)
         initial_state: ChemState = {
             "messages": initial_messages,
             "selected_model": model,
             "artifacts": [],
-            "molecule_workspace": [],
+            "viewport": _viewport,
+            "molecule_tree": _molecule_tree,
+            "scratchpad": {},
             "tasks": [],
             "is_complex": False,
-            "active_smiles": active_smiles,
             "evidence_revision": 0,
             "sub_agent_result": None,
             "active_subtasks": {},
             "active_subtask_id": None,
             "subtask_control": None,
+            "skills_enabled": skills_enabled,
         }
 
         # Resolve graph input: normal turn vs. HITL resume.

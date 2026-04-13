@@ -22,11 +22,12 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useWorkspaceStore } from '@/store/workspaceStore'
 import { useSseStore } from '@/store/sseStore'
+import { useUIStore } from '@/store/uiStore'
 import '@/lib/i18n/client'
 
 interface SSEChatInputProps {
   isStreaming: boolean
-  sendMessage: (message: string, options?: { activeSmiles?: string | null }) => Promise<void>
+  sendMessage: (message: string, options?: import('@/lib/sse-types').SSESendMessageOptions) => Promise<void>
 }
 
 function formatTokenCount(value: number): string {
@@ -190,6 +191,8 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
   const [chatSmiles, setChatSmiles] = useState<string | null>(null)
   const { currentSmiles } = useWorkspaceStore()
   const turns = useSseStore((s) => s.turns)
+  const skillsEnabled = useUIStore((s) => s.skillsEnabled)
+  const toggleSkills = useUIStore((s) => s.toggleSkills)
   const sessionUsage = useSseStore((s) => s.sessionUsage)
   const lastCallUsage = turns.at(-1)?.usage
   const availableModels = useSseStore((s) => s.availableModels)
@@ -225,7 +228,7 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
     const trimmed = value.trim()
     if (!trimmed || isFullyDisabled) return
     setValue('')
-    await sendMessage(trimmed, { activeSmiles: chatSmiles ?? null })
+    await sendMessage(trimmed, { activeSmiles: chatSmiles ?? null, skillsEnabled })
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -354,6 +357,31 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+
+          {/* Skills toggle */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                onClick={toggleSkills}
+                disabled={isFullyDisabled}
+                aria-label={skillsEnabled ? 'Skills 已启用' : 'Skills 已禁用'}
+                className={[
+                  'h-8 w-8 rounded-xl transition-colors',
+                  skillsEnabled
+                    ? 'border border-primary/30 bg-primary/15 text-primary hover:bg-primary/20'
+                    : 'text-muted-foreground hover:bg-primary/10 hover:text-primary disabled:opacity-40',
+                ].join(' ')}
+              >
+                <FlaskConical className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={8}>
+              <p className="text-xs">{skillsEnabled ? 'Skills 已启用' : 'Skills 已禁用（点击开启）'}</p>
+            </TooltipContent>
+          </Tooltip>
 
           {/* Model selector */}
           <DropdownMenu>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -10,7 +11,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
-from app.agents.contracts.protocol import RecoveryAction
+from app.agents.contracts.protocol import RecoveryAction, NodeUpdate, NodeCreate  # noqa: F401 (NodeUpdate/NodeCreate used for type hint comments only)
 from app.agents.postprocessors import TOOL_POSTPROCESSORS
 from app.domain.schemas.agent import ChemState, MoleculeWorkspaceEntry, Task, TaskStatus
 from app.tools.registry import get_root_tools
@@ -33,6 +34,72 @@ _TOOL_LOOKUP = {tool.name: tool for tool in get_root_tools()}
 logger = logging.getLogger(__name__)
 _MAX_PARENT_ARTIFACT_IDS = 8
 _SUB_AGENT_VERBOSE_LOGS = os.environ.get("CHEMAGENT_SUB_AGENT_VERBOSE_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+# ---------------------------------------------------------------------------
+# Auto-harvest: tools in this set trigger automatic molecule_tree population
+# when they succeed (is_valid=true) and carry a 'smiles' argument.  This lets
+# Phase 3 viewport/molecule_tree stay populated without requiring every tool
+# implementation to explicitly return NodeCreate/NodeUpdate.
+# ---------------------------------------------------------------------------
+_HARVEST_TOOLS = frozenset({
+    "tool_render_smiles",
+    "tool_build_3d_conformer",
+    "tool_evaluate_molecule",
+    "tool_compute_mol_properties",
+})
+
+
+def _smiles_to_artifact_id(canonical_smiles: str) -> str:
+    """Stable artifact ID from canonical SMILES (matches engine.py convention)."""
+    return "mol_" + hashlib.md5(canonical_smiles.encode()).hexdigest()[:8]
+
+
+def _auto_harvest_molecule_node(
+    tool_name: str,
+    args: dict,
+    parsed: Any,
+    current_tree: dict,
+    molecule_tree_updates: dict,
+    node_create_ids: list,
+) -> None:
+    """Inspect a legacy-path tool result and auto-register a MoleculeNode when
+    a valid SMILES was processed.  No-ops silently if conditions aren't met."""
+    if tool_name not in _HARVEST_TOOLS:
+        return
+    if not isinstance(parsed, dict):
+        return
+    if not parsed.get("is_valid"):
+        return
+
+    # Prefer canonical SMILES from result; fall back to raw input arg.
+    smiles = str(parsed.get("canonical_smiles") or parsed.get("smiles") or args.get("smiles") or "").strip()
+    if not smiles:
+        return
+
+    artifact_id = _smiles_to_artifact_id(smiles)
+    # Don't overwrite nodes that already have a richer status set by the LLM.
+    if artifact_id in molecule_tree_updates:
+        return
+
+    # Build the node, preserving any existing tree entry for this molecule.
+    existing = dict(current_tree.get(artifact_id) or {})
+    compound_name: str = str(
+        args.get("compound_name") or args.get("name") or parsed.get("compound_name") or ""
+    ).strip()
+    aliases: list[str] = list(existing.get("aliases") or [])
+    if compound_name and compound_name not in aliases:
+        aliases.append(compound_name)
+
+    molecule_tree_updates[artifact_id] = {
+        **existing,
+        "artifact_id": artifact_id,
+        "smiles": smiles,
+        "status": existing.get("status") or "staged",
+        "aliases": aliases,
+        "diagnostics": existing.get("diagnostics") or {},
+    }
+    if artifact_id not in node_create_ids and artifact_id not in current_tree:
+        node_create_ids.append(artifact_id)
 _MAX_SUBTASK_RECOVERY_ATTEMPTS = 1
 
 # Tools that require explicit user approval before execution (Hard Breakpoint tier).
@@ -240,6 +307,11 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
     artifacts: list[dict] = []
     tool_messages: list[ToolMessage] = []
     tool_calls = list(getattr(last_message, "tool_calls", []))
+
+    # Protocol accumulators for Chem LSP (Phase 3)
+    current_tree: dict[str, Any] = dict(state.get("molecule_tree") or {})
+    molecule_tree_updates: dict[str, Any] = {}
+    node_create_ids: list[str] = []
 
     # ── Heavy-tool approval gate (Hard Breakpoint) ─────────────────────────
     # If any pending tool_call is registered in HEAVY_TOOLS, pause the graph
@@ -631,11 +703,40 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                         recommended_action = str(failure.get("recommended_action") or RecoveryAction.spawn_new_task.value)
                         parsed["parent_decision"] = recommended_action
                 else:
-                    new_active_smiles = apply_active_smiles_update(tool_name, parsed, new_active_smiles)
-                    molecule_workspace = update_molecule_workspace(molecule_workspace, tool_name, parsed, args)
-                    postprocessor = TOOL_POSTPROCESSORS.get(tool_name)
-                    if postprocessor is not None:
-                        parsed = await postprocessor(parsed, args, artifacts, config)
+                    # ── Chem LSP protocol branch ───────────────────────────
+                    protocol_type = (parsed or {}).get("__chem_protocol__")
+                    if protocol_type == "NodeUpdate":
+                        aid = str(parsed["artifact_id"])
+                        existing = dict(current_tree.get(aid) or {"artifact_id": aid, "smiles": "", "status": "staged"})
+                        molecule_tree_updates[aid] = {
+                            **existing,
+                            "diagnostics": {**(existing.get("diagnostics") or {}), **dict(parsed.get("diagnostics") or {})},
+                            **(({"status": parsed["status"]}) if parsed.get("status") else {}),
+                        }
+                    elif protocol_type == "NodeCreate":
+                        aid = str(parsed["artifact_id"])
+                        molecule_tree_updates[aid] = {
+                            "artifact_id": aid,
+                            "smiles": str(parsed.get("smiles") or ""),
+                            "parent_id": parsed.get("parent_id"),
+                            "status": str(parsed.get("status") or "staged"),
+                            "diagnostics": dict(parsed.get("diagnostics") or {}),
+                        }
+                        if aid not in node_create_ids:
+                            node_create_ids.append(aid)
+                    else:
+                        # ── Legacy path — unchanged ───────────────────────
+                        new_active_smiles = apply_active_smiles_update(tool_name, parsed, new_active_smiles)
+                        molecule_workspace = update_molecule_workspace(molecule_workspace, tool_name, parsed, args)
+                        postprocessor = TOOL_POSTPROCESSORS.get(tool_name)
+                        if postprocessor is not None:
+                            parsed = await postprocessor(parsed, args, artifacts, config)
+                        # Auto-harvest: register a MoleculeNode for tools that
+                        # consume a SMILES and return a validated structure.
+                        _auto_harvest_molecule_node(
+                            tool_name, args, parsed,
+                            current_tree, molecule_tree_updates, node_create_ids,
+                        )
 
                 parsed = _sanitize_message_bus_payload(tool_name, parsed)
 
@@ -679,4 +780,22 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
         "active_subtasks": active_subtasks,
         "active_subtask_id": active_subtask_id,
         "artifact_expiry_warning": artifact_expiry_warning,
+        # Chem LSP protocol writes — only emitted when non-empty so unrelated
+        # turns don't trigger unnecessary LangGraph reducer calls.
+        **(({"molecule_tree": molecule_tree_updates}) if molecule_tree_updates else {}),
+        **(
+            {
+                "viewport": {
+                    **({"focused_artifact_ids": [], **dict(state.get("viewport") or {})}),
+                    "focused_artifact_ids": list(
+                        dict.fromkeys(
+                            list((state.get("viewport") or {}).get("focused_artifact_ids") or [])
+                            + node_create_ids
+                        )
+                    ),
+                }
+            }
+            if node_create_ids
+            else {}
+        ),
     }

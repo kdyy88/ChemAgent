@@ -10,33 +10,70 @@ from typing_extensions import NotRequired, TypedDict
 
 
 TaskStatus = Literal["pending", "in_progress", "completed", "failed"]
+MoleculeStatus = Literal["staged", "exploring", "rejected", "lead"]
 
 
+# ---------------------------------------------------------------------------
+# 1. 项目黑板 (IDE README) — 驻留在根状态，由 Checkpointer 自动持久化
+# ---------------------------------------------------------------------------
+class ProjectScratchpad(TypedDict):
+    research_goal: NotRequired[str]             # 本次会话的研究总目标
+    established_rules: NotRequired[list[str]]   # 通过实验归纳出的化学规则
+    failed_attempts: NotRequired[list[str]]     # 已验证失败的路径，防止重复踩坑
+
+
+# ---------------------------------------------------------------------------
+# 2. 分子节点 (Git for Molecules) — molecule_tree 的叶节点
+# ---------------------------------------------------------------------------
+class MoleculeNode(TypedDict):
+    artifact_id: str                                 # 唯一工件指针 (e.g., mol_01H...)
+    smiles: str                                      # 化学 DSL 源码
+    parent_id: NotRequired[str | None]               # 演进血缘 (骨架跃迁的起点)
+    creation_operation: NotRequired[str]             # e.g., "scaffold_hop_to_indole"
+    status: NotRequired[MoleculeStatus]
+    diagnostics: NotRequired[dict[str, Any]]         # LSP 诊断结果 (e.g., {"logP": 2.5, "warnings": []})
+    aliases: NotRequired[list[str]]
+    molecular_weight: NotRequired[float | str]
+
+
+# ---------------------------------------------------------------------------
+# 3. 多光标视口 (Viewport) — LLM 当前正在对比/操作的分子集合
+# ---------------------------------------------------------------------------
+class WorkspaceViewport(TypedDict):
+    focused_artifact_ids: list[str]                  # 当前焦点分子集
+    reference_artifact_id: NotRequired[str | None]   # 参考母本
+
+
+# ---------------------------------------------------------------------------
+# 4. molecule_tree reducer — upsert 语义，支持单节点增量更新
+#    LangGraph 在第一次写入时以 (None, update) 调用 reducer，需防御处理
+# ---------------------------------------------------------------------------
+def merge_molecule_tree(
+    existing: dict[str, MoleculeNode] | None,
+    update: dict[str, MoleculeNode],
+) -> dict[str, MoleculeNode]:
+    if existing is None:
+        return update
+    return {**existing, **update}
+
+
+# ---------------------------------------------------------------------------
+# Legacy stub — 保留导出符号，避免 Phase 2 之前的 ImportError
+# MoleculeWorkspaceEntry 已被 MoleculeNode 取代；Phase 2 将移除全部引用
+# ---------------------------------------------------------------------------
+class MoleculeWorkspaceEntry(TypedDict):
+    key: str
+
+
+# ---------------------------------------------------------------------------
+# 保留原有定义
+# ---------------------------------------------------------------------------
 class Task(TypedDict):
     id: str
     description: str
     status: TaskStatus
     summary: NotRequired[str]
     completion_revision: NotRequired[int]
-
-
-class MoleculeWorkspaceEntry(TypedDict):
-    key: str
-    primary_name: NotRequired[str]
-    aliases: NotRequired[list[str]]
-    canonical_smiles: NotRequired[str]
-    isomeric_smiles: NotRequired[str]
-    formula: NotRequired[str]
-    molecular_weight: NotRequired[float | str]
-    iupac_name: NotRequired[str]
-    artifact_ids: NotRequired[list[str]]
-    parent_artifact_ids: NotRequired[list[str]]
-    scaffold_smiles: NotRequired[str]
-    generic_scaffold_smiles: NotRequired[str]
-    descriptors: NotRequired[dict]
-    lipinski: NotRequired[dict]
-    validation: NotRequired[dict]
-    source_tools: NotRequired[list[str]]
 
 
 class SubtaskStatePointer(TypedDict):
@@ -48,12 +85,21 @@ class SubtaskStatePointer(TypedDict):
     execution_task_id: NotRequired[str]
 
 
+# ---------------------------------------------------------------------------
+# 5. ChemState — 系统状态机核心
+# ---------------------------------------------------------------------------
 class ChemState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     selected_model: str | None
-    active_smiles: str | None
+
+    # --- [核心重构区] ---
+    viewport: WorkspaceViewport
+    molecule_tree: Annotated[dict[str, MoleculeNode], merge_molecule_tree]
+    scratchpad: ProjectScratchpad
+    # --------------------
+
     artifacts: Annotated[list[dict], operator.add]
-    molecule_workspace: list[MoleculeWorkspaceEntry]
+
     tasks: list[Task]
     is_complex: bool
     evidence_revision: int
@@ -62,6 +108,7 @@ class ChemState(TypedDict):
     active_subtask_id: str | None
     subtask_control: dict[str, Any] | None
     artifact_expiry_warning: NotRequired[str | None]
+    skills_enabled: bool
 
 
 class RouteDecision(BaseModel):
@@ -81,4 +128,4 @@ class PlannedTaskItem(BaseModel):
 class PlanStructure(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    tasks: list[PlannedTaskItem] = Field(description="按顺序排列的 3-5 个子任务，每项都必须是简短标签式描述。")
+    tasks: list[PlannedTaskItem] = Field(description="按顺序排列的 3-8 个子任务，每项都必须是简短标签式描述。")

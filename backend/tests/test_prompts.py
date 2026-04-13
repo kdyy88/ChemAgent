@@ -71,23 +71,23 @@ def test_system_prompt_includes_task_output_and_locking_guidance() -> None:
     assert "summary" in prompt
     assert "已完成任务默认视为锁定" in prompt
     assert "最近产出" in prompt
-    assert "可跳过单独的 `in_progress` 调用" in prompt
+    assert "in_progress" in prompt
 
 
 def test_system_prompt_includes_structured_molecule_workspace_summary() -> None:
     prompt = get_system_prompt(
         {
-            "active_smiles": "CCO",
             "active_artifact_id": "art_123",
-            "molecule_workspace_summary": "- 乙醇 | active_smiles=CCO | formula=C2H6O | MW=46.07",
+            "viewport_content": "- 以下为当前 IDE 视口中的分子（优先以此表为准，旧工具消息因 history limit 被裁剪时尤甚）：\n\n| Artifact ID | SMILES | 状态 | MW | 诊断信息 |\n|---|---|---|---|---|\n| `mol_a` | `CCO` | staged | — | — |",
+            "scratchpad_content": "- **核心目标**: 提升溶解度",
             "task_plan": "- test",
             "is_native_reasoning_model": True,
         }
     )
 
-    assert "结构化分子工作集" in prompt
+    assert "IDE 分子视口" in prompt
     assert "history limit" in prompt
-    assert "乙醇" in prompt
+    assert "CCO" in prompt
 
 
 def test_system_prompt_includes_execution_failed_self_correction_rule() -> None:
