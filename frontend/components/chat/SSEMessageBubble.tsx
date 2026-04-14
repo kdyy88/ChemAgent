@@ -87,8 +87,8 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
     <div className="flex flex-col gap-3">
       {/* User bubble — right-aligned */}
       <div className="flex justify-end">
-        <Message className="max-w-[75%]">
-          <MessageContent className="rounded-2xl bg-primary text-primary-foreground px-4 py-2.5 text-sm leading-relaxed shadow-sm">
+        <Message className="max-w-[78%]">
+          <MessageContent className="rounded-xl rounded-br-sm bg-primary text-primary-foreground px-3.5 py-2.5 text-[13px] leading-relaxed shadow-sm">
             {turn.userMessage}
           </MessageContent>
         </Message>
@@ -97,13 +97,13 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
       {/* Agent response — left-aligned */}
       <Message className="items-start gap-2.5">
         {/* Avatar */}
-        <div className="shrink-0 mt-0.5 flex h-7 w-7 items-center justify-center rounded-full bg-muted border" aria-hidden="true">
-          <FlaskConical className="h-3.5 w-3.5 text-muted-foreground" />
+        <div className="shrink-0 mt-0.5 flex h-6 w-6 items-center justify-center rounded-lg bg-primary/10 border border-primary/15" aria-hidden="true">
+          <FlaskConical className="h-3 w-3 text-primary" />
         </div>
 
         {/* Content column */}
         <div className="flex flex-col gap-2 min-w-0 flex-1">
-          <span className="text-xs font-medium text-muted-foreground">ChemAgent</span>
+          <span className="text-[11px] font-medium text-muted-foreground/60 tracking-wide">ChemAgent</span>
 
           {/* Thinking panel — auto-expands while streaming, collapses on completion */}
           {turn.thinkingSteps.length > 0 && (
@@ -144,14 +144,14 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
           {/* Assistant text */}
           {turn.assistantText ? (
             isStreaming ? (
-              <div className="rounded-2xl border bg-card px-4 py-3 text-sm leading-relaxed shadow-sm">
+              <div className="rounded-xl border border-border/60 bg-card/80 px-4 py-3 text-[13px] leading-relaxed">
                 <span className="whitespace-pre-wrap">{turn.assistantText}</span>
-                <span className="inline-block w-3 h-3.5 border-l-2 border-primary ml-0.5 align-middle animate-[blink_1s_ease-in-out_infinite]" aria-hidden="true" />
+                <span className="inline-block w-2.5 h-3.5 border-l-2 border-primary ml-0.5 align-middle animate-[blink_1s_ease-in-out_infinite]" aria-hidden="true" />
               </div>
             ) : (
               <MessageContent
                 markdown
-                className="rounded-2xl border bg-card px-4 py-3 text-sm leading-relaxed shadow-sm prose prose-sm dark:prose-invert max-w-none"
+                className="rounded-xl border border-border/50 bg-card/80 px-4 py-3 text-[13px] leading-relaxed prose prose-sm dark:prose-invert max-w-none"
               >
                 {turn.assistantText}
               </MessageContent>
@@ -183,12 +183,12 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
           )}
 
           {isStreaming && (
-            <div className="flex items-center gap-2 rounded-full border border-border/70 bg-muted/45 px-3 py-1.5 text-xs text-muted-foreground/78 shadow-sm backdrop-blur-sm w-fit">
-              <LoaderCircle className="h-3.5 w-3.5 animate-spin text-foreground/62" />
-              <span className="font-medium text-foreground/70">
+            <div className="flex items-center gap-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-1.5 w-fit">
+              <LoaderCircle className="h-3 w-3 animate-spin text-primary/70" />
+              <span className="text-[12px] font-medium text-foreground/60">
                 {turn.statusLabel || (isPlanning ? 'Thinking · Planning…' : 'Thinking…')}
               </span>
-              <span className="rounded-full bg-background/80 px-1.5 py-0.5 font-mono tabular-nums text-[10px] text-muted-foreground/72">
+              <span className="font-mono tabular-nums text-[10px] text-muted-foreground/50">
                 {streamElapsedSeconds}s
               </span>
             </div>
@@ -196,7 +196,7 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
 
           {/* Shadow errors */}
           {turn.shadowErrors.length > 0 && (
-            <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 flex items-start gap-2 text-xs text-destructive">
+            <div className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2.5 flex items-start gap-2 text-[12px] text-destructive">
               <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
               <div className="flex flex-col gap-0.5">
                 {turn.shadowErrors.map((e, i) => (

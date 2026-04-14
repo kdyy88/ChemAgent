@@ -15,6 +15,8 @@ interface UIState {
   setMode: (mode: AppMode) => void
   skillsEnabled: boolean
   toggleSkills: () => void
+  isSidebarExpanded: boolean
+  toggleSidebar: () => void
 }
 
 export const useUIStore = create<UIState>()(
@@ -24,6 +26,8 @@ export const useUIStore = create<UIState>()(
       setMode: (mode) => set({ appMode: mode }),
       skillsEnabled: false,
       toggleSkills: () => set((s) => ({ skillsEnabled: !s.skillsEnabled })),
+      isSidebarExpanded: true,
+      toggleSidebar: () => set((s) => ({ isSidebarExpanded: !s.isSidebarExpanded })),
     }),
     { name: 'chemagent-ui-mode' },
   ),

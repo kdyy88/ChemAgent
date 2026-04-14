@@ -53,17 +53,17 @@ export function CopilotSidebar() {
   }
 
   return (
-    <div className="relative flex h-full flex-col bg-background">
+    <div className="relative flex h-full flex-col bg-background/50">
 
       {/* ── Header ──────────────────────────────────────────────────────────── */}
-      <header className="shrink-0 flex items-center gap-2.5 px-4 py-2.5 border-b border-border/50 bg-background">
+      <header className="shrink-0 flex items-center gap-2.5 px-4 h-11 border-b border-border/70 bg-transparent">
         {/* Brand mark */}
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-muted/60">
-          <FlaskConical className="h-3.5 w-3.5 text-primary" aria-hidden />
+        <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary/10 border border-primary/15">
+          <FlaskConical className="h-3 w-3 text-primary" aria-hidden />
         </div>
         <span
           className="font-semibold text-foreground"
-          style={{ fontSize: 13.5, letterSpacing: '-0.25px' }}
+          style={{ fontSize: 13, letterSpacing: '-0.02em' }}
         >
           ChemAgent
         </span>
@@ -79,8 +79,8 @@ export function CopilotSidebar() {
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.8 }}
                 transition={{ duration: 0.15 }}
-                className="inline-flex items-center rounded-full bg-sky-50 dark:bg-sky-950/60 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-sky-600 dark:text-sky-400"
-                style={{ letterSpacing: '0.125px' }}
+                className="inline-flex items-center rounded-md bg-primary/10 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-primary border border-primary/15"
+                style={{ letterSpacing: '0.02em' }}
               >
                 {t('copilot.turns', { count: turns.length })}
               </motion.span>
@@ -146,13 +146,13 @@ export function CopilotSidebar() {
                   {capabilities.map((cap) => (
                     <span
                       key={cap}
-                      className="rounded-full bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400"
+                      className="rounded-md bg-primary/10 text-primary"
                       style={{
-                        padding: '3px 9px',
+                        padding: '2px 8px',
                         fontSize: 11,
                         fontWeight: 600,
-                        letterSpacing: '0.125px',
-                        border: '1px solid rgba(0, 117, 222, 0.14)',
+                        letterSpacing: '0.02em',
+                        border: '1px solid oklch(var(--primary) / 0.20)',
                       }}
                     >
                       {cap}
@@ -241,7 +241,7 @@ export function CopilotSidebar() {
       </div>
 
       {/* ── Footer ───────────────────────────────────────────────────────────── */}
-      <div className="shrink-0 border-t border-border/50 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+      <div className="shrink-0 border-t border-border/70 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <AnimatePresence initial={false}>
           {latestTasks.length > 0 && (
             <motion.div
@@ -249,7 +249,7 @@ export function CopilotSidebar() {
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
               exit={{ opacity: 0, height: 0 }}
-              transition={{ duration: 0.25, ease: 'easeOut' }}
+              transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
               className="overflow-hidden px-4 pt-3"
             >
               <TaskTracker tasks={latestTasks} isStreaming={isStreaming} />
@@ -257,7 +257,7 @@ export function CopilotSidebar() {
           )}
         </AnimatePresence>
 
-        <div className="p-4 pt-3">
+        <div className="p-3">
           <SSEChatInput isStreaming={isStreaming} sendMessage={sendMessage} />
         </div>
       </div>

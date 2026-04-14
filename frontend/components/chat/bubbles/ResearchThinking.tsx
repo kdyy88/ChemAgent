@@ -377,12 +377,30 @@ function buildDisplayEntries(
   webSources?: WebSearchSourcesArtifact[],
   toolCalls?: SSEToolCall[],
 ): DisplayEntry[] {
-  let sourceCursor = 0
+  const webSourceQueue = [...(webSources ?? [])]
   const toolQueue = buildToolCallQueue(toolCalls ?? [])
+  const hasExplicitWebSearchStep = timeline.some((group) => {
+    if (group.category !== 'tool') return false
+    const toolName =
+      group.id.startsWith('tool_')
+        ? group.id
+        : (extractToolName(group.rawText)
+            ?? extractToolName(group.id)
+            ?? extractToolName(group.detail))
+    return toolName === 'tool_web_search'
+  })
 
   return timeline.map((group) => {
     const raw = `${group.rawText}\n${group.detail}`.trim()
     const kind = inferStageKind(raw)
+    const toolName =
+      (group.category === 'tool' || (isSubAgentStep(group) && group.id.includes('::tool'))) && !isSubAgentReportStep(group)
+        ? (group.id.startsWith('tool_')
+            ? group.id
+            : (extractToolName(group.rawText)
+                ?? extractToolName(group.id)
+                ?? extractToolName(group.detail)))
+        : null
     const reasoningText =
       group.category === 'llm' ||
       group.source === 'llm_reasoning' ||
@@ -393,11 +411,11 @@ function buildDisplayEntries(
         ? toDisplayText(group.rawText)
         : ''
     const matchedSourceArtifact =
-      kind === 'research' && looksLikeSearchStep(raw) ? webSources?.[sourceCursor] : undefined
-
-    if (matchedSourceArtifact) {
-      sourceCursor += 1
-    }
+      toolName === 'tool_web_search'
+        ? webSourceQueue.shift()
+        : (!hasExplicitWebSearchStep && kind === 'research' && looksLikeSearchStep(raw)
+            ? webSourceQueue.shift()
+            : undefined)
 
     const sourceLinks = (matchedSourceArtifact?.sources || []).map((source) => ({
       title: source.title || source.url,
@@ -410,13 +428,7 @@ function buildDisplayEntries(
     let toolResult: string | undefined
     // Also match tool calls for sub-agent tool steps — their group.id is 'sub_agent::tool_foo'
     // so we need additional fallbacks beyond just checking group.id.startsWith('tool_').
-    if ((group.category === 'tool' || (isSubAgentStep(group) && group.id.includes('::tool'))) && !isSubAgentReportStep(group)) {
-      const toolName =
-        group.id.startsWith('tool_')
-          ? group.id
-          : (extractToolName(group.rawText)
-              ?? extractToolName(group.id)
-              ?? extractToolName(group.detail))
+    if (toolName) {
       if (toolName && !TOOL_DISPLAY_SKIP.has(toolName)) {
         const matched = dequeueToolCall(toolQueue, toolName)
         if (matched?.output) {

@@ -20,16 +20,16 @@ export function SSEMessageList({ turns }: SSEMessageListProps) {
       <ChatContainerRoot className="h-full">
         <ChatContainerContent className="max-w-5xl mx-auto w-full px-4 py-6 gap-6">
           {turns.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
-              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted">
-                <FlaskConical className="h-8 w-8 text-muted-foreground" />
+            <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-border/50 bg-muted/30">
+                <FlaskConical className="h-5 w-5 text-muted-foreground/50" />
               </div>
               <div className="space-y-1">
-                <p className="text-base font-medium text-foreground">
+                <p className="text-[13px] font-medium text-foreground/70">
                   Ask me about any chemical compound
                 </p>
-                <p className="text-sm text-muted-foreground">
-                  Try entering a name like &ldquo;Aspirin&rdquo; or &ldquo;Ibuprofen&rdquo;
+                <p className="text-[12px] text-muted-foreground/50">
+                  Try &ldquo;Aspirin&rdquo; or &ldquo;CC(=O)Oc1ccccc1C(=O)O&rdquo;
                 </p>
               </div>
             </div>

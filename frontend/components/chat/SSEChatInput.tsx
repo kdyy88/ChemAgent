@@ -261,9 +261,9 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
     >
       {/* Approval notice */}
       {isApprovalPending && (
-        <div className="flex items-center gap-1.5 px-3 pt-2.5 text-xs text-orange-500 dark:text-orange-400">
-          <span>⏸</span>
-          <span>请先处理上方的审批请求，再发送新消息</span>
+        <div className="flex items-center gap-1.5 px-3 pt-2.5 text-[12px] text-amber-500 dark:text-amber-400">
+          <span aria-hidden="true">⏸</span>
+          <span className="font-medium">请先处理上方的审批请求，再发送新消息</span>
         </div>
       )}
 
@@ -272,7 +272,7 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
         <div className="flex items-center gap-2 px-3 pt-2.5 pb-0.5">
           <Badge
             variant="outline"
-            className="h-6 gap-1.5 rounded-full border-primary/25 bg-primary/8 px-2.5 font-mono text-[11px] text-primary"
+            className="h-6 gap-1.5 rounded-md border-primary/20 bg-primary/8 px-2 font-mono text-[11px] text-primary"
             title={chatSmiles}
           >
             <FlaskConical className="h-3 w-3 shrink-0" />
@@ -280,10 +280,10 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
             <button
               onClick={handleRemoveSmiles}
               disabled={isFullyDisabled}
-              className="ml-0.5 -mr-1 flex h-4 w-4 items-center justify-center rounded-full transition-colors hover:bg-primary/20 disabled:opacity-40"
+              className="ml-0.5 -mr-0.5 flex h-3.5 w-3.5 items-center justify-center rounded transition-colors hover:bg-primary/20 disabled:opacity-40"
               aria-label="Remove SMILES"
             >
-              <X className="h-2.5 w-2.5" />
+              <X className="h-2 w-2" />
             </button>
           </Badge>
         </div>
@@ -304,11 +304,11 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
                 type="button"
                 size="icon"
                 variant="ghost"
-                className="h-8 w-8 rounded-xl text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary disabled:opacity-40"
+                className="h-7 w-7 rounded-md text-muted-foreground/60 transition-colors hover:bg-muted/50 hover:text-primary disabled:opacity-40"
                 disabled={isFullyDisabled}
                 aria-label={t('input.add_datasource')}
               >
-                <Plus className="h-4 w-4" />
+                <Plus className="h-3.5 w-3.5" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
@@ -369,13 +369,13 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
                 disabled={isFullyDisabled}
                 aria-label={skillsEnabled ? 'Skills 已启用' : 'Skills 已禁用'}
                 className={[
-                  'h-8 w-8 rounded-xl transition-colors',
+                  'h-7 w-7 rounded-md transition-all duration-150',
                   skillsEnabled
-                    ? 'border border-primary/30 bg-primary/15 text-primary hover:bg-primary/20'
-                    : 'text-muted-foreground hover:bg-primary/10 hover:text-primary disabled:opacity-40',
+                    ? 'border border-primary/25 bg-primary/12 text-primary hover:bg-primary/20'
+                    : 'text-muted-foreground/60 hover:bg-muted/50 hover:text-primary disabled:opacity-40',
                 ].join(' ')}
               >
-                <FlaskConical className="h-4 w-4" />
+                <FlaskConical className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="top" sideOffset={8}>
@@ -390,14 +390,14 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
                 type="button"
                 size="sm"
                 variant="ghost"
-                className="h-8 max-w-44 gap-1.5 rounded-xl border border-border/50 bg-muted/40 px-2.5 text-xs font-medium text-muted-foreground shadow-none transition-colors hover:bg-primary/10 hover:text-primary disabled:opacity-40"
+                className="h-7 max-w-44 gap-1.5 rounded-md border border-border/50 bg-muted/30 px-2 text-[11px] font-medium text-muted-foreground/70 shadow-none transition-colors hover:bg-muted/60 hover:text-foreground disabled:opacity-40"
                 disabled={isModelLocked || modelsStatus === 'loading' || availableModels.length === 0}
                 aria-label="选择模型"
                 title={selectedModel?.id ?? modelButtonLabel}
               >
-                <Cpu className="h-3 w-3 shrink-0 opacity-70" />
+                <Cpu className="h-3 w-3 shrink-0 opacity-60" />
                 <span className="truncate">{modelButtonLabel}</span>
-                <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+                <ChevronDown className="h-2.5 w-2.5 shrink-0 opacity-50" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
@@ -452,13 +452,12 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
 
           {/* Send / streaming indicator */}
           {isStreaming ? (
-            <div className="flex h-8 w-8 items-center justify-center">
-              {/* Animated pulse dots */}
+            <div className="flex h-7 w-7 items-center justify-center">
               <span className="flex gap-0.5">
                 {[0, 1, 2].map((i) => (
                   <span
                     key={i}
-                    className="block h-1.5 w-1.5 rounded-full bg-primary"
+                    className="block h-1 w-1 rounded-full bg-primary/70"
                     style={{
                       animation: 'bounce 1.2s ease-in-out infinite',
                       animationDelay: `${i * 0.2}s`,
@@ -472,11 +471,11 @@ export function SSEChatInput({ isStreaming, sendMessage }: SSEChatInputProps) {
               type="button"
               onClick={handleSubmit}
               size="icon"
-              className="h-8 w-8 rounded-xl bg-primary text-primary-foreground shadow-sm transition-all hover:bg-primary/90 hover:shadow-md disabled:opacity-30"
+              className="h-7 w-7 rounded-md bg-primary text-primary-foreground transition-all hover:bg-primary/90 disabled:opacity-25"
               disabled={!canSend}
               aria-label={t('input.send')}
             >
-              <Send className="h-3.5 w-3.5" />
+              <Send className="h-3 w-3" />
             </Button>
           )}
         </div>

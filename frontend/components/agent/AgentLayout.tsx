@@ -41,10 +41,10 @@ export function AgentLayout() {
   }, [])
 
   return (
-    <div ref={containerRef} className="flex h-full w-full overflow-hidden">
+    <div ref={containerRef} className="flex h-full w-full overflow-hidden bg-background relative z-10 z-index-[1]">
       {/* ── Left: Chat panel ── */}
       <div
-        className="flex-none h-full overflow-hidden"
+        className="flex-none h-full bg-background overflow-hidden"
         style={{ width: leftWidth }}
       >
         <AgentChatPanel />
@@ -59,20 +59,14 @@ export function AgentLayout() {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         className="
-          relative z-10 flex-none w-1 cursor-col-resize
-          bg-border/50 hover:bg-primary/50 active:bg-primary
-          transition-colors duration-150
-          after:absolute after:inset-y-0 after:-left-1.5 after:-right-1.5
+          relative z-10 flex-none w-[1px] md:w-[2px] cursor-col-resize
+          bg-border/60 hover:bg-primary/50 active:bg-primary/50 hover:w-[3px] active:w-[3px]
+          transition-all duration-150 -ml-[1px]
         "
-      >
-        {/* Visual pill */}
-        <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 flex items-center justify-center">
-          <div className="h-8 w-1 rounded-full bg-border group-hover:bg-primary/70" />
-        </div>
-      </div>
+      />
 
       {/* ── Right: Artifact canvas ── */}
-      <div className="flex-1 h-full min-w-0 overflow-hidden">
+      <div className="flex-1 h-full min-w-0 bg-background overflow-hidden">
         <ArtifactCanvas />
       </div>
     </div>

@@ -68,14 +68,14 @@ export function ArtifactCanvas() {
   const displayCount = items.length
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden">
+    <div className="flex h-full w-full flex-col overflow-hidden bg-background">
       {/* ── Header bar ── */}
-      <div className="shrink-0 flex items-center gap-2 border-b bg-background/80 px-4 py-2.5 backdrop-blur">
-        <span className="text-xs font-semibold tracking-tight text-foreground/80 uppercase">
+      <div className="shrink-0 flex items-center gap-2.5 border-b border-border/70 bg-background/80 px-4 h-11 backdrop-blur-sm">
+        <span className="text-[11px] font-semibold tracking-[0.08em] text-muted-foreground/60 uppercase">
           Artifact Canvas
         </span>
         {displayCount > 0 && (
-          <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+          <span className="ml-auto text-[11px] text-muted-foreground/50 tabular-nums font-medium">
             {displayCount} result{displayCount !== 1 ? 's' : ''}
           </span>
         )}
@@ -84,16 +84,18 @@ export function ArtifactCanvas() {
       {/* ── Canvas body ── */}
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {items.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-center select-none">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-dashed border-border/60 text-muted-foreground/40">
-              <ImageOff className="h-6 w-6" />
+          <div className="flex h-full flex-col items-center justify-center gap-4 text-center select-none">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-border/50 bg-muted/30 text-muted-foreground/30">
+              <ImageOff className="h-5 w-5" />
             </div>
-            <p className="text-sm text-muted-foreground/60">
-              Agent 执行结果将在这里展示
-            </p>
-            <p className="text-xs text-muted-foreground/40">
-              Molecule images, SDF files, search results…
-            </p>
+            <div className="space-y-1">
+              <p className="text-[13px] font-medium text-muted-foreground/60">
+                Agent 执行结果将在这里展示
+              </p>
+              <p className="text-[11px] text-muted-foreground/35">
+                Molecule images · SDF files · Search results
+              </p>
+            </div>
           </div>
         ) : (
           <div className="columns-1 gap-3 sm:columns-2 xl:columns-3">

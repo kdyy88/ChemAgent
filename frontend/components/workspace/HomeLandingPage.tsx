@@ -2,164 +2,150 @@
 
 import { useTranslation } from 'react-i18next'
 import { motion, type Variants } from 'framer-motion'
-import { Beaker, BrainCircuit, Network } from 'lucide-react'
+import { Beaker, BrainCircuit, Network, ArrowRight } from 'lucide-react'
 import '@/lib/i18n/client'
 
 export function HomeLandingPage() {
   const { t } = useTranslation('common')
+
   const containerVariants: Variants = {
     hidden: { opacity: 0 },
     visible: {
       opacity: 1,
-      transition: {
-        staggerChildren: 0.15,
-        delayChildren: 0.2,
-      },
+      transition: { staggerChildren: 0.1, delayChildren: 0.1 },
     },
   }
 
   const itemVariants: Variants = {
-    hidden: { opacity: 0, y: 20 },
-    visible: { opacity: 1, y: 0, transition: { type: 'spring', stiffness: 120, damping: 20 } },
+    hidden: { opacity: 0, y: 16 },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.45, ease: [0.25, 0.1, 0.25, 1] } },
   }
 
   return (
-    <div className="relative w-full h-full overflow-hidden flex flex-col items-center justify-center bg-background/50">
-      {/* Radial teal glow — background atmosphere */}
-      <div className="pointer-events-none absolute inset-0 -z-10">
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[500px] w-[500px] rounded-full bg-primary/8 blur-[80px]" />
-        <div className="absolute top-1/4 right-1/4 h-[250px] w-[250px] rounded-full bg-primary/5 blur-[60px]" />
+    <div className="relative w-full h-full overflow-hidden flex flex-col items-center justify-center">
+      {/* Ambient background glow */}
+      <div className="pointer-events-none absolute inset-0 -z-10" aria-hidden="true">
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[480px] w-[480px] rounded-full bg-primary/6 blur-[100px]" />
+        <div className="absolute top-[20%] right-[20%] h-[200px] w-[200px] rounded-full bg-primary/4 blur-[70px]" />
       </div>
 
-      {/* Main Content */}
-      <div className="z-10 flex flex-col items-center max-w-4xl px-6 text-center">
-        <motion.div
-          variants={containerVariants}
-          initial="hidden"
-          animate="visible"
-          className="flex flex-col items-center"
-        >
-          {/* Badge */}
-          <motion.div variants={itemVariants} className="mb-6">
-            {/* Decorative molecular hex ring */}
+      <motion.div
+        variants={containerVariants}
+        initial="hidden"
+        animate="visible"
+        className="flex flex-col items-center max-w-3xl px-8 text-center gap-8"
+      >
+        {/* Mark + badge row */}
+        <motion.div variants={itemVariants} className="flex flex-col items-center gap-4">
+          {/* Geometric molecular mark */}
+          <div className="relative">
             <svg
-              className="mx-auto mb-4 w-16 h-16 text-primary/30"
-              viewBox="0 0 64 64"
+              className="w-12 h-12 text-primary/50"
+              viewBox="0 0 48 48"
               fill="none"
-              stroke="currentColor"
-              strokeWidth="1"
               aria-hidden="true"
             >
-              <polygon points="32,4 58,18 58,46 32,60 6,46 6,18" strokeLinejoin="round" />
-              <polygon points="32,14 50,24 50,44 32,54 14,44 14,24" strokeLinejoin="round" opacity="0.5" />
-              <circle cx="32" cy="32" r="5" fill="currentColor" opacity="0.4" />
-              {[0,1,2,3,4,5].map(i => {
+              <polygon
+                points="24,3 44,15 44,33 24,45 4,33 4,15"
+                stroke="currentColor"
+                strokeWidth="1"
+                strokeLinejoin="round"
+                fill="none"
+              />
+              <polygon
+                points="24,11 37,18.5 37,29.5 24,37 11,29.5 11,18.5"
+                stroke="currentColor"
+                strokeWidth="1"
+                strokeLinejoin="round"
+                fill="currentColor"
+                fillOpacity="0.08"
+              />
+              <circle cx="24" cy="24" r="3.5" fill="currentColor" fillOpacity="0.6" />
+              {[0, 1, 2, 3, 4, 5].map(i => {
                 const angle = (i * 60 - 90) * Math.PI / 180
-                const x = 32 + 19 * Math.cos(angle)
-                const y = 32 + 19 * Math.sin(angle)
-                return <circle key={i} cx={x} cy={y} r="2.5" fill="currentColor" opacity="0.5" />
+                return (
+                  <circle
+                    key={i}
+                    cx={24 + 13 * Math.cos(angle)}
+                    cy={24 + 13 * Math.sin(angle)}
+                    r="1.8"
+                    fill="currentColor"
+                    fillOpacity="0.45"
+                  />
+                )
               })}
             </svg>
-            <span className="inline-flex items-center rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary tracking-wide shadow-sm shadow-primary/10 backdrop-blur-sm">
-              <SparklesIcon className="mr-1.5 h-3.5 w-3.5" />
-              v2.0 · Molecular Workspace Engine
-            </span>
-          </motion.div>
+          </div>
 
-          {/* Title */}
-          <motion.h1
-            variants={itemVariants}
-            className="font-display text-5xl md:text-6xl font-bold tracking-tight mb-6 text-balance"
-          >
-            <span className="bg-gradient-to-r from-foreground via-foreground to-foreground/60 bg-clip-text text-transparent">
-              Chem
-            </span>
-            <span className="bg-gradient-to-r from-primary via-primary to-primary/70 bg-clip-text text-transparent">
-              Agent
-            </span>{" "}
-            <span className="bg-gradient-to-br from-foreground/80 to-foreground/40 bg-clip-text text-transparent font-light">
-              Workspace
-            </span>
-          </motion.h1>
-
-          {/* Subtitle */}
-          <motion.p
-            variants={itemVariants}
-            className="text-base md:text-lg text-muted-foreground font-light max-w-xl mb-12 leading-relaxed text-pretty"
-          >
-            {t('home.subtitle')}
-            <br />
-            <span className="text-xs tracking-widest font-mono text-muted-foreground/60 uppercase mt-1 block">
-              {t('home.subtitle_tagline')}
-            </span>
-          </motion.p>
-
-          {/* Feature Cards */}
-          <motion.div 
-            variants={containerVariants}
-            className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full max-w-3xl"
-          >
-            <FeatureCard 
-              icon={<Beaker className="h-5 w-5" />}
-              title={t('home.feature1_title')}
-              description={t('home.feature1_desc')}
-            />
-            <FeatureCard 
-              icon={<BrainCircuit className="h-5 w-5" />}
-              title={t('home.feature2_title')}
-              description={t('home.feature2_desc')}
-            />
-            <FeatureCard 
-              icon={<Network className="h-5 w-5" />}
-              title={t('home.feature3_title')}
-              description={t('home.feature3_desc')}
-            />
-          </motion.div>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/8 px-3 py-1 text-[11px] font-semibold text-primary tracking-[0.04em] uppercase">
+            v2.0 · Molecular Workspace Engine
+          </span>
         </motion.div>
-      </div>
 
-      {/* Aesthetic gradients */}
-      
+        {/* Headline */}
+        <motion.div variants={itemVariants} className="space-y-3">
+          <h1 className="font-display text-4xl md:text-5xl font-bold tracking-[-0.04em] leading-[1.05] text-foreground">
+            Chem<span className="text-primary">Agent</span>
+            <br />
+            <span className="text-foreground/40 font-light tracking-[-0.02em]">Workspace</span>
+          </h1>
+          <p className="text-[15px] text-muted-foreground leading-relaxed max-w-sm mx-auto">
+            {t('home.subtitle')}
+          </p>
+          <p className="text-[11px] tracking-[0.1em] font-mono text-muted-foreground/40 uppercase">
+            {t('home.subtitle_tagline')}
+          </p>
+        </motion.div>
+
+        {/* Feature cards — horizontal strip */}
+        <motion.div
+          variants={containerVariants}
+          className="grid grid-cols-1 md:grid-cols-3 gap-3 w-full"
+        >
+          <FeatureCard
+            icon={<Beaker className="h-4 w-4" />}
+            title={t('home.feature1_title')}
+            description={t('home.feature1_desc')}
+          />
+          <FeatureCard
+            icon={<BrainCircuit className="h-4 w-4" />}
+            title={t('home.feature2_title')}
+            description={t('home.feature2_desc')}
+          />
+          <FeatureCard
+            icon={<Network className="h-4 w-4" />}
+            title={t('home.feature3_title')}
+            description={t('home.feature3_desc')}
+          />
+        </motion.div>
+
+        {/* CTA hint */}
+        <motion.p variants={itemVariants} className="flex items-center gap-1.5 text-[12px] text-muted-foreground/50 select-none">
+          <ArrowRight className="h-3 w-3" aria-hidden="true" />
+          从左侧选择工具开始使用，或在右侧面板与 AI 对话
+        </motion.p>
+      </motion.div>
     </div>
   )
 }
 
-function FeatureCard({ icon, title, description }: { icon: React.ReactNode, title: string, description: string }) {
+function FeatureCard({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
   return (
     <motion.div
       variants={{
-        hidden: { opacity: 0, y: 20 },
-        visible: { opacity: 1, y: 0 }
+        hidden: { opacity: 0, y: 12 },
+        visible: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.25, 0.1, 0.25, 1] } },
       }}
-      whileHover={{ y: -4 }}
-      className="group relative flex flex-col p-5 rounded-xl bg-card/60 backdrop-blur-md border border-border hover:border-primary/40 shadow-sm hover:shadow-primary/10 hover:shadow-lg transition-all duration-300 overflow-hidden text-left"
+      className="group flex flex-col gap-2.5 p-4 rounded-xl bg-card/70 border border-border/60 hover:border-primary/30 hover:bg-card/90 transition-all duration-200 text-left"
     >
-      {/* Teal left-border accent */}
-      <div className="absolute left-0 top-4 bottom-4 w-[2px] rounded-r bg-primary/40 group-hover:bg-primary transition-colors duration-300" />
-
-      <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary group-hover:bg-primary/15 transition-colors duration-300 ml-2">
+      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary group-hover:bg-primary/15 transition-colors duration-200">
         {icon}
       </div>
-      <h3 className="mb-1.5 text-sm font-semibold ml-2">{title}</h3>
-      <p className="text-xs text-muted-foreground leading-relaxed ml-2">
-        {description}
-      </p>
+      <div>
+        <h3 className="text-[13px] font-semibold text-foreground leading-snug mb-1">{title}</h3>
+        <p className="text-[12px] text-muted-foreground leading-relaxed">{description}</p>
+      </div>
     </motion.div>
   )
 }
 
-function SparklesIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      {...props}
-    >
-      <path d="M9.937 15.5A2 2 0 008.5 14.063l-6.135-1.582a.5.5 0 010-.962L8.5 9.936A2 2 0 009.937 8.5l1.582-6.135a.5.5 0 01.963 0L14.063 8.5A2 2 0 0015.5 9.937l6.135 1.581a.5.5 0 010 .964L15.5 14.063a2 2 0 00-1.437 1.437l-1.582 6.135a.5.5 0 01-.963 0z" />
-    </svg>
-  )
-}

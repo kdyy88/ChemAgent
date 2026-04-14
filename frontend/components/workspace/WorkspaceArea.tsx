@@ -44,15 +44,21 @@ export function WorkspaceArea() {
   }
 
   return (
-    <div className="flex flex-col h-full bg-background overflow-hidden p-6 sm:p-8 md:p-10 lg:p-12 gap-0">
-      <div className="shrink-0 pb-6 mb-6 border-b">
-        <h2 className="text-xl font-semibold flex items-center gap-2">
-          <FlaskConical className="h-6 w-6 text-primary" />
-          {TOOL_TITLES[activeFunctionId] || '化学主工作台'}
-        </h2>
-        <p className="text-sm text-muted-foreground mt-2">
-          核心流程操作区 · 左侧选择任务功能
-        </p>
+    <div className="flex flex-col h-full bg-background overflow-hidden px-6 sm:px-8 md:px-10 lg:px-12 pt-8">
+      <div className="shrink-0 pb-5 mb-5 border-b border-border/60">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/15">
+            <FlaskConical className="h-4 w-4 text-primary" />
+          </div>
+          <div>
+            <h2 className="text-[15px] font-semibold tracking-[-0.01em] text-foreground">
+              {TOOL_TITLES[activeFunctionId] || '化学主工作台'}
+            </h2>
+            <p className="text-[12px] text-muted-foreground/60 mt-0.5">
+              核心流程操作区
+            </p>
+          </div>
+        </div>
       </div>
 
       <div className="flex-1 flex flex-col gap-4 min-h-0 pb-8 overflow-y-auto p-2 scrollbar-thin max-w-4xl overflow-x-hidden">

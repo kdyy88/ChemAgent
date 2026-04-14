@@ -85,39 +85,39 @@ export function TaskTracker({ tasks, isStreaming }: TaskTrackerProps) {
   const headerIconClass = isDone ? 'text-emerald-600' : 'text-sky-600 animate-spin'
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border/70 bg-muted/30 shadow-sm transition-all duration-200">
-      <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs">
+    <div className="overflow-hidden rounded-lg border border-border/60 bg-muted/20 transition-all duration-200">
+      <div className="flex items-center justify-between gap-2 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-          <HeaderIcon className={`h-3.5 w-3.5 shrink-0 ${headerIconClass}`} />
-          <span className="truncate font-medium text-foreground/90">{summary}</span>
+          <HeaderIcon className={`h-3 w-3 shrink-0 ${headerIconClass}`} />
+          <span className="truncate text-[12px] font-medium text-foreground/80">{summary}</span>
         </div>
         <button
           type="button"
           onClick={() => setIsExpanded((expanded) => !expanded)}
-          className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-background/80 hover:text-foreground"
+          className="rounded-md w-5 h-5 flex items-center justify-center text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-foreground"
           aria-expanded={isExpanded}
           aria-label={isExpanded ? '折叠任务详情' : '展开任务详情'}
         >
-          {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+          {isExpanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
         </button>
       </div>
 
       {isExpanded && (
-        <div className="max-h-40 space-y-1.5 overflow-y-auto border-t bg-background/55 px-3 pb-2 pt-2">
+        <div className="max-h-40 space-y-1 overflow-y-auto border-t border-border/50 bg-background/40 px-3 pb-2.5 pt-2">
           {sortedTasks.map((task) => {
           const meta = STATUS_META[task.status]
           const Icon = meta.Icon
           return (
             <div
               key={task.id}
-              className="flex items-center gap-2 text-[11px] text-muted-foreground"
+              className="flex items-center gap-2"
             >
               <Icon className={`h-3 w-3 shrink-0 ${meta.dotClass}`} />
-              <span className="text-[10px] uppercase tracking-[0.08em] text-muted-foreground/80">
+              <span className="text-[10px] font-mono text-muted-foreground/50">
                 {task.id}.
               </span>
-              <span className={`min-w-0 truncate ${meta.itemClass ?? ''}`}>{task.description}</span>
-              <span className="ml-auto shrink-0 text-[10px] uppercase tracking-[0.08em] text-muted-foreground/75">
+              <span className={`min-w-0 truncate text-[11px] text-muted-foreground/70 ${meta.itemClass ?? ''}`}>{task.description}</span>
+              <span className="ml-auto shrink-0 text-[10px] uppercase tracking-[0.08em] text-muted-foreground/50">
                 {meta.label}
               </span>
             </div>
