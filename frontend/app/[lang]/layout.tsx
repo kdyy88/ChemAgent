@@ -46,18 +46,16 @@ export default async function LocaleLayout({
   const locale: Locale = isSupportedLocale(lang) ? lang : DEFAULT_LOCALE
 
   return (
-    <html lang={locale} suppressHydrationWarning>
-      <body className={`${geistSans.variable} ${geistMono.variable} ${syne.variable} antialiased`}>
-        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
-          <QueryProvider>
-            <ProgressBarProvider>
-              <TooltipProvider>
-                <I18nProvider locale={locale}>{children}</I18nProvider>
-              </TooltipProvider>
-            </ProgressBarProvider>
-          </QueryProvider>
-        </ThemeProvider>
-      </body>
-    </html>
+    <div className={`${geistSans.variable} ${geistMono.variable} ${syne.variable} antialiased`}>
+      <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
+        <QueryProvider>
+          <ProgressBarProvider>
+            <TooltipProvider>
+              <I18nProvider locale={locale}>{children}</I18nProvider>
+            </TooltipProvider>
+          </ProgressBarProvider>
+        </QueryProvider>
+      </ThemeProvider>
+    </div>
   )
 }

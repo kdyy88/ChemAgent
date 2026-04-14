@@ -16,6 +16,7 @@ from app.agents.nodes.executor import (
 from app.agents.nodes.agent import chem_agent_node
 from app.domain.schemas.agent import ChemState
 from app.agents.utils import normalize_messages_for_api, sanitize_message_for_state
+from app.domain.schemas.workspace import WorkspaceProjection
 
 
 def test_collect_recent_artifact_ids_returns_deduplicated_recent_list() -> None:
@@ -630,6 +631,138 @@ async def test_chem_agent_preserves_long_natural_language_report_in_state() -> N
 
 
 @pytest.mark.asyncio
+async def test_chem_agent_drains_pending_worker_tasks_into_workspace_updates() -> None:
+    state = cast(ChemState, {
+        "messages": [AIMessage(content="prior turn")],
+        "active_smiles": "CCO",
+        "artifacts": [],
+        "molecule_workspace": [],
+        "tasks": [],
+        "is_complex": False,
+        "evidence_revision": 0,
+        "workspace_projection": {
+            "project_id": "project-async",
+            "workspace_id": "ws_async",
+            "version": 1,
+            "nodes": {
+                "mol_root": {
+                    "node_id": "mol_root",
+                    "handle": "root_molecule",
+                    "canonical_smiles": "CCO",
+                    "display_name": "ethanol",
+                    "parent_node_id": None,
+                    "origin": "root_commit",
+                    "status": "active",
+                    "diagnostics": {},
+                    "artifact_ids": [],
+                    "hover_text": "",
+                }
+            },
+            "relations": {},
+            "handle_bindings": {
+                "root_molecule": {
+                    "handle": "root_molecule",
+                    "node_id": "mol_root",
+                    "bound_at_version": 1,
+                }
+            },
+            "viewport": {"focused_handles": ["root_molecule"], "reference_handle": "root_molecule"},
+            "rules": [],
+            "async_jobs": {
+                "job_call-conf-1": {
+                    "job_id": "job_call-conf-1",
+                    "job_type": "tool_build_3d_conformer",
+                    "target_handle": "root_molecule",
+                    "target_node_id": "mol_root",
+                    "base_workspace_version": 1,
+                    "status": "running",
+                    "stale_reason": "",
+                    "artifact_id": None,
+                    "result_summary": "",
+                }
+            },
+        },
+        "pending_worker_tasks": [
+            {
+                "task_id": "task_conf_1",
+                "task_name": "babel.build_3d_conformer",
+                "tool_name": "tool_build_3d_conformer",
+                "workspace_job_id": "job_call-conf-1",
+                "workspace_target_handle": "root_molecule",
+                "project_id": "project-async",
+                "workspace_id": "ws_async",
+                "workspace_version": 1,
+            }
+        ],
+    })
+
+    class _FakeBoundLlm:
+        def bind_tools(self, tools):
+            return self
+
+        async def ainvoke(self, prompt_messages):
+            assert any(getattr(msg, "type", "") == "tool" for msg in prompt_messages)
+            return AIMessage(content="Background result acknowledged")
+
+    async def _fake_drain_pending_worker_tasks(state: ChemState, config: dict):  # noqa: ARG001
+        return {
+            "messages": [ToolMessage(content=json.dumps({"status": "success"}, ensure_ascii=False), tool_call_id="task_conf_1", name="tool_build_3d_conformer")],
+            "artifacts": [{"kind": "conformer_sdf", "artifact_id": "art_conf_1", "smiles": "CCO"}],
+            "workspace_events": [{"type": "job.completed", "job_id": "job_call-conf-1", "status": "completed"}],
+            "workspace_projection": {
+                "project_id": "project-async",
+                "workspace_id": "ws_async",
+                "version": 2,
+                "nodes": {
+                    "mol_root": {
+                        "node_id": "mol_root",
+                        "handle": "root_molecule",
+                        "canonical_smiles": "CCO",
+                        "display_name": "ethanol",
+                        "parent_node_id": None,
+                        "origin": "root_commit",
+                        "status": "active",
+                        "diagnostics": {"conformer_status": "ready", "energy_kcal_mol": -7.2},
+                        "artifact_ids": ["art_conf_1"],
+                        "hover_text": "3D构象已生成，SDF 文件已发送给用户",
+                    }
+                },
+                "relations": {},
+                "handle_bindings": {
+                    "root_molecule": {"handle": "root_molecule", "node_id": "mol_root", "bound_at_version": 1}
+                },
+                "viewport": {"focused_handles": ["root_molecule"], "reference_handle": "root_molecule"},
+                "rules": [],
+                "async_jobs": {
+                    "job_call-conf-1": {
+                        "job_id": "job_call-conf-1",
+                        "job_type": "tool_build_3d_conformer",
+                        "target_handle": "root_molecule",
+                        "target_node_id": "mol_root",
+                        "base_workspace_version": 1,
+                        "status": "completed",
+                        "stale_reason": "",
+                        "artifact_id": "art_conf_1",
+                        "result_summary": "3D构象已生成，SDF 文件已发送给用户",
+                    }
+                },
+            },
+            "pending_worker_tasks": [],
+            "tool_events": [],
+        }
+
+    with patch("app.agents.nodes.agent.build_llm", return_value=_FakeBoundLlm()), \
+         patch("app.agents.nodes.agent.drain_pending_worker_tasks", new=_fake_drain_pending_worker_tasks), \
+         patch("app.agents.postprocessors.adispatch_custom_event", new=AsyncMock()):
+        result = await chem_agent_node(state, {"configurable": {"thread_id": "project-async"}})
+
+    assert result["pending_worker_tasks"] == []
+    assert any(event["type"] == "job.completed" for event in result["workspace_events"])
+    assert len(result["messages"]) == 2
+    assert result["artifacts"]
+
+
+@pytest.mark.asyncio
 async def test_sanitize_ai_tool_call_args_passes_through_unchanged() -> None:
     huge_sdf = "HEADER    PROTEIN\n" + ("ATOM      1  C   LIG A   1      10.000  10.000  10.000\n" * 200)
     message = AIMessage(
@@ -857,6 +990,335 @@ async def test_pubchem_lookup_updates_structured_molecule_workspace() -> None:
     assert result["active_smiles"] == "CC(C1=C(C=CC(=C1Cl)F)Cl)OC2=C(N=CC(=C2)C3=CN(N=C3)C4CCNCC4)N"
     assert result["molecule_workspace"][0]["primary_name"] == "capmatinib"
     assert result["molecule_workspace"][0]["formula"] == "C23H17Cl2FN4O"
+
+
+@pytest.mark.asyncio
+async def test_node_create_protocol_updates_workspace_projection_and_events() -> None:
+    state = cast(ChemState, {
+        "messages": [
+            AIMessage(
+                content="Create root node",
+                tool_calls=[
+                    {
+                        "name": "tool_create_molecule_node",
+                        "id": "call-root-node",
+                        "args": {"smiles": "CCO"},
+                    }
+                ],
+            )
+        ],
+        "active_smiles": None,
+        "artifacts": [],
+        "molecule_workspace": [],
+        "tasks": [],
+        "is_complex": False,
+        "evidence_revision": 0,
+    })
+
+    class _FakeStateTool:
+        name = "tool_create_molecule_node"
+
+        async def ainvoke(self, args: dict, config: dict | None = None):  # noqa: ARG002
+            return json.dumps(
+                {
+                    "__chem_protocol__": "NodeCreate",
+                    "artifact_id": "mol_root",
+                    "smiles": args["smiles"],
+                    "status": "staged",
+                    "aliases": ["Ibrutinib"],
+                },
+                ensure_ascii=False,
+            )
+
+    with patch.dict("app.agents.nodes.executor._TOOL_LOOKUP", {"tool_create_molecule_node": _FakeStateTool()}):
+        result = await tools_executor_node(state, {"configurable": {"thread_id": "project-alpha"}})
+
+    workspace = result["workspace_projection"]
+    assert isinstance(workspace, WorkspaceProjection)
+    assert workspace.viewport.reference_handle == "root_molecule"
+    assert workspace.viewport.focused_handles == ["root_molecule"]
+    assert workspace.handle_bindings["root_molecule"].node_id == "mol_root"
+    assert any(event["type"] == "molecule.upserted" for event in result["workspace_events"])
+    assert any(event["type"] == "workspace.delta" for event in result["workspace_events"])
+
+
+@pytest.mark.asyncio
+async def test_invalid_parent_protocol_is_rejected_in_workspace_projection() -> None:
+    state = cast(ChemState, {
+        "messages": [
+            AIMessage(
+                content="Create invalid child node",
+                tool_calls=[
+                    {
+                        "name": "tool_create_molecule_node",
+                        "id": "call-invalid-child",
+                        "args": {"smiles": "CCN"},
+                    }
+                ],
+            )
+        ],
+        "active_smiles": None,
+        "artifacts": [],
+        "molecule_workspace": [],
+        "tasks": [],
+        "is_complex": False,
+        "evidence_revision": 0,
+    })
+
+    class _FakeStateTool:
+        name = "tool_create_molecule_node"
+
+        async def ainvoke(self, args: dict, config: dict | None = None):  # noqa: ARG002
+            return json.dumps(
+                {
+                    "__chem_protocol__": "NodeCreate",
+                    "artifact_id": "mol_child",
+                    "smiles": args["smiles"],
+                    "parent_id": "mol_missing_parent",
+                    "status": "staged",
+                },
+                ensure_ascii=False,
+            )
+
+    with patch.dict("app.agents.nodes.executor._TOOL_LOOKUP", {"tool_create_molecule_node": _FakeStateTool()}):
+        result = await tools_executor_node(state, {"configurable": {"thread_id": "project-beta"}})
+
+    workspace = result["workspace_projection"]
+    assert isinstance(workspace, WorkspaceProjection)
+    assert workspace.nodes == {}
+    assert any(event["type"] == "workspace.delta" and event.get("status") == "rejected" for event in result["workspace_events"])
+
+
+@pytest.mark.asyncio
+async def test_build_3d_conformer_emits_job_lifecycle_and_updates_workspace_projection() -> None:
+    state = cast(ChemState, {
+        "messages": [
+            AIMessage(
+                content="Generate 3D conformer",
+                tool_calls=[
+                    {
+                        "name": "tool_build_3d_conformer",
+                        "id": "call-conf-1",
+                        "args": {"smiles": "CCO", "name": "ethanol"},
+                    }
+                ],
+            )
+        ],
+        "active_smiles": "CCO",
+        "artifacts": [{"artifact_id": "art_existing"}],
+        "molecule_workspace": [],
+        "tasks": [],
+        "is_complex": False,
+        "evidence_revision": 0,
+        "workspace_projection": {
+            "project_id": "project-async",
+            "workspace_id": "ws_async",
+            "version": 1,
+            "nodes": {
+                "mol_root": {
+                    "node_id": "mol_root",
+                    "handle": "root_molecule",
+                    "canonical_smiles": "CCO",
+                    "display_name": "ethanol",
+                    "parent_node_id": None,
+                    "origin": "root_commit",
+                    "status": "active",
+                    "diagnostics": {},
+                    "artifact_ids": [],
+                    "hover_text": "",
+                }
+            },
+            "relations": {},
+            "handle_bindings": {
+                "root_molecule": {
+                    "handle": "root_molecule",
+                    "node_id": "mol_root",
+                    "bound_at_version": 1,
+                }
+            },
+            "viewport": {"focused_handles": ["root_molecule"], "reference_handle": "root_molecule"},
+            "rules": [],
+            "async_jobs": {},
+        },
+    })
+
+    with patch(
+        "app.agents.nodes.executor.submit_async_tool_task",
+        new=AsyncMock(
+            return_value={
+                "is_valid": True,
+                "smiles": "CCO",
+                "name": "ethanol",
+                "energy_kcal_mol": -7.2,
+                "message": "3D构象已生成，SDF 文件已发送给用户",
+            }
+        ),
+    ), patch("app.agents.postprocessors.adispatch_custom_event", new=AsyncMock()):
+        result = await tools_executor_node(state, {"configurable": {"thread_id": "project-async"}})
+
+    workspace = result["workspace_projection"]
+    root_node = workspace.nodes[workspace.handle_bindings["root_molecule"].node_id]
+    assert any(event["type"] == "job.started" for event in result["workspace_events"])
+    assert any(event["type"] == "job.completed" for event in result["workspace_events"])
+    assert root_node.diagnostics["conformer_status"] == "ready"
+    assert root_node.diagnostics["energy_kcal_mol"] == -7.2
+
+
+@pytest.mark.asyncio
+async def test_prepare_pdbqt_emits_job_lifecycle_and_updates_workspace_projection() -> None:
+    state = cast(ChemState, {
+        "messages": [
+            AIMessage(
+                content="Prepare PDBQT",
+                tool_calls=[
+                    {
+                        "name": "tool_prepare_pdbqt",
+                        "id": "call-pdbqt-1",
+                        "args": {"smiles": "CCO", "name": "ethanol"},
+                    }
+                ],
+            )
+        ],
+        "active_smiles": "CCO",
+        "artifacts": [{"artifact_id": "art_existing"}],
+        "molecule_workspace": [],
+        "tasks": [],
+        "is_complex": False,
+        "evidence_revision": 0,
+        "workspace_projection": {
+            "project_id": "project-async",
+            "workspace_id": "ws_async",
+            "version": 1,
+            "nodes": {
+                "mol_root": {
+                    "node_id": "mol_root",
+                    "handle": "root_molecule",
+                    "canonical_smiles": "CCO",
+                    "display_name": "ethanol",
+                    "parent_node_id": None,
+                    "origin": "root_commit",
+                    "status": "active",
+                    "diagnostics": {},
+                    "artifact_ids": [],
+                    "hover_text": "",
+                }
+            },
+            "relations": {},
+            "handle_bindings": {
+                "root_molecule": {
+                    "handle": "root_molecule",
+                    "node_id": "mol_root",
+                    "bound_at_version": 1,
+                }
+            },
+            "viewport": {"focused_handles": ["root_molecule"], "reference_handle": "root_molecule"},
+            "rules": [],
+            "async_jobs": {},
+        },
+    })
+
+    with patch(
+        "app.agents.nodes.executor.submit_async_tool_task",
+        new=AsyncMock(
+            return_value={
+                "is_valid": True,
+                "smiles": "CCO",
+                "name": "ethanol",
+                "rotatable_bonds": 2,
+                "message": "PDBQT 文件已生成，结果已发送给用户",
+            }
+        ),
+    ), patch("app.agents.postprocessors.adispatch_custom_event", new=AsyncMock()):
+        result = await tools_executor_node(state, {"configurable": {"thread_id": "project-async"}})
+
+    workspace = result["workspace_projection"]
+    root_node = workspace.nodes[workspace.handle_bindings["root_molecule"].node_id]
+    assert any(event["type"] == "job.started" for event in result["workspace_events"])
+    assert any(event["type"] == "job.completed" for event in result["workspace_events"])
+    assert root_node.diagnostics["pdbqt_status"] == "ready"
+    assert root_node.diagnostics["rotatable_bonds"] == 2
+
+
+@pytest.mark.asyncio
+async def test_build_3d_conformer_queues_pending_worker_task_when_worker_submission_deferred() -> None:
+    state = cast(ChemState, {
+        "messages": [
+            AIMessage(
+                content="Generate 3D conformer",
+                tool_calls=[
+                    {
+                        "name": "tool_build_3d_conformer",
+                        "id": "call-conf-queued",
+                        "args": {"smiles": "CCO", "name": "ethanol"},
+                    }
+                ],
+            )
+        ],
+        "active_smiles": "CCO",
+        "artifacts": [],
+        "molecule_workspace": [],
+        "tasks": [],
+        "is_complex": False,
+        "evidence_revision": 0,
+        "workspace_projection": {
+            "project_id": "project-async",
+            "workspace_id": "ws_async",
+            "version": 1,
+            "nodes": {
+                "mol_root": {
+                    "node_id": "mol_root",
+                    "handle": "root_molecule",
+                    "canonical_smiles": "CCO",
+                    "display_name": "ethanol",
+                    "parent_node_id": None,
+                    "origin": "root_commit",
+                    "status": "active",
+                    "diagnostics": {},
+                    "artifact_ids": [],
+                    "hover_text": "",
+                }
+            },
+            "relations": {},
+            "handle_bindings": {
+                "root_molecule": {
+                    "handle": "root_molecule",
+                    "node_id": "mol_root",
+                    "bound_at_version": 1,
+                }
+            },
+            "viewport": {"focused_handles": ["root_molecule"], "reference_handle": "root_molecule"},
+            "rules": [],
+            "async_jobs": {},
+        },
+    })
+
+    with patch(
+        "app.agents.nodes.executor.submit_async_tool_task",
+        new=AsyncMock(
+            return_value={
+                "status": "queued",
+                "is_valid": True,
+                "message": "3D构象任务已提交，正在后台生成。",
+                "task_id": "task_conf_queued",
+                "task_name": "babel.build_3d_conformer",
+                "__async_task__": {
+                    "task_id": "task_conf_queued",
+                    "task_name": "babel.build_3d_conformer",
+                    "task_context": {
+                        "project_id": "project-async",
+                        "workspace_id": "ws_async",
+                        "workspace_version": 2,
+                    },
+                },
+            }
+        ),
+    ):
+        result = await tools_executor_node(state, {"configurable": {"thread_id": "project-async"}})
+
+    assert result["pending_worker_tasks"][0]["task_id"] == "task_conf_queued"
+    assert any(event["type"] == "job.started" for event in result["workspace_events"])
+    assert any(event["type"] == "job.progress" and event.get("status") == "queued" for event in result["workspace_events"])
+    assert not any(event["type"] == "job.completed" for event in result["workspace_events"])
 
 
 @pytest.mark.asyncio

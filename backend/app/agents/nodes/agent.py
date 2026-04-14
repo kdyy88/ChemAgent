@@ -11,12 +11,14 @@ from langchain_core.runnables import RunnableConfig
 logger = logging.getLogger(__name__)
 
 from app.agents.prompts import get_system_prompt
+from app.agents.pending_jobs import drain_pending_worker_tasks
 from app.domain.schemas.agent import ChemState
 from app.tools.registry import get_root_tools
 from app.agents.config import get_active_model_name, is_native_reasoning_model, _load_environment
 from app.agents.utils import (
     build_llm,
     format_ide_workspace,
+    format_workspace_projection,
     format_scratchpad,
     format_tasks_for_prompt,
     normalize_messages_for_api,
@@ -121,6 +123,13 @@ async def chem_agent_node(state: ChemState, config: RunnableConfig = None) -> di
     llm = build_llm(model=selected_model)
     llm_with_tools = llm.bind_tools(get_root_tools())
 
+    pending_drain = await drain_pending_worker_tasks(state, config)
+    drained_messages = pending_drain["messages"]
+    drained_artifacts = pending_drain["artifacts"]
+    drained_workspace_events = pending_drain["workspace_events"]
+    drained_workspace_projection = pending_drain["workspace_projection"]
+    remaining_pending_tasks = pending_drain["pending_worker_tasks"]
+
     # ⚡ JIT normalization: fix any broken message sequences (e.g. dangling
     # tool_calls left by a user-interrupted request) in memory before the API
     # call.  The sanitized list is never written back to the checkpointer, so
@@ -135,11 +144,16 @@ async def chem_agent_node(state: ChemState, config: RunnableConfig = None) -> di
     viewport = state.get("viewport") or {"focused_artifact_ids": []}
     molecule_tree = state.get("molecule_tree") or {}
     scratchpad = state.get("scratchpad") or {}
+    workspace_projection = drained_workspace_projection or state.get("workspace_projection")
 
     env_info = {
         "active_artifact_id": active_artifact_id,
         "artifact_warning": artifact_warning,
-        "viewport_content": format_ide_workspace(viewport, molecule_tree),
+        "viewport_content": (
+            format_workspace_projection(workspace_projection)
+            if workspace_projection
+            else format_ide_workspace(viewport, molecule_tree)
+        ),
         "scratchpad_content": format_scratchpad(scratchpad),
         "task_plan": format_tasks_for_prompt(state.get("tasks")),
         "model_name": get_active_model_name(selected_model),
@@ -162,6 +176,7 @@ async def chem_agent_node(state: ChemState, config: RunnableConfig = None) -> di
     prompt_messages = [
         SystemMessage(content=get_system_prompt(env_info, skill_catalogue=load_skill_catalogue() if state.get("skills_enabled", False) else [])),
         *safe_messages,
+        *drained_messages,
     ]
 
     if _LOG_LLM_IO and not _LOG_LLM_IO_FULL:
@@ -211,7 +226,17 @@ async def chem_agent_node(state: ChemState, config: RunnableConfig = None) -> di
             if slog:
                 slog.warning("🚨 [Context Monitor] Approaching context limit (total=%d)", total_tok)
 
-    return {"messages": await sanitize_messages_for_state([response], source="chem_agent")}
+    result: dict[str, object] = {
+        "messages": await sanitize_messages_for_state([*drained_messages, response], source="chem_agent"),
+    }
+    if drained_artifacts:
+        result["artifacts"] = drained_artifacts
+    if drained_workspace_events:
+        result["workspace_events"] = drained_workspace_events
+        result["workspace_projection"] = drained_workspace_projection
+    if remaining_pending_tasks or state.get("pending_worker_tasks"):
+        result["pending_worker_tasks"] = remaining_pending_tasks
+    return result
 
 
 def route_from_agent(state: ChemState) -> str:

@@ -23,7 +23,7 @@ import logging
 import os
 import traceback
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, cast
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -31,9 +31,15 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
 
 from app.agents.main_agent.runtime import get_compiled_graph, has_persisted_session
+from app.agents.pending_jobs import drain_pending_worker_tasks
+from app.agents.utils import sanitize_messages_for_state
 from app.domain.schemas.agent import ChemState, MoleculeNode
+from app.domain.schemas.workspace import CreateRootMoleculeCommand
 from app.domain.store.artifact_store import store_engine_artifact
 from app.domain.store.plan_store import update_plan_file
+from app.services.task_runner.bridge import submit_task_to_worker, wait_for_task_result
+from app.services.workspace import complete_workspace_job, ensure_workspace_projection, start_workspace_job
+from app.services.workspace.applicator import WorkspaceApplicator
 from app.agents.main_agent.engine_sse import (
     _ARTIFACT_COLLAPSE_KEYS,
     _ChemRetrySignal,
@@ -270,6 +276,16 @@ class ChemSessionEngine:
             "active_subtask_id": None,
             "subtask_control": None,
             "skills_enabled": skills_enabled,
+            "workspace_projection": ensure_workspace_projection(
+                {
+                    "viewport": _viewport,
+                    "molecule_tree": _molecule_tree,
+                    "scratchpad": {},
+                },
+                project_id=session_id,
+            ).model_dump(),
+            "workspace_events": [],
+            "pending_worker_tasks": [],
         }
 
         # Resolve graph input: normal turn vs. HITL resume.
@@ -515,6 +531,218 @@ class ChemSessionEngine:
             tb = traceback.format_exc()
             yield self._sse(self._event_payload("error", error=str(exc), traceback=tb))
 
+    async def poll_pending_jobs(self) -> AsyncGenerator[str, None]:
+        graph_config = {
+            "configurable": {
+                "thread_id": self.session_id,
+                "session_id": self.session_id,
+                "turn_id": self.turn_id,
+            },
+            "recursion_limit": _graph_recursion_limit(),
+        }
+
+        yield self._sse(self._event_payload("run_started", message="[pending_jobs.poll]"))
+
+        if not await has_persisted_session(self.session_id):
+            yield self._sse(self._event_payload("error", error="No persisted LangGraph session was found for pending job polling."))
+            return
+
+        graph = get_compiled_graph()
+        snapshot = await graph.aget_state(graph_config)
+        state = snapshot.values if isinstance(snapshot.values, dict) else {}
+        drain = await drain_pending_worker_tasks(cast(ChemState, state), graph_config)
+
+        messages = list(drain["messages"] or [])
+        artifacts = list(drain["artifacts"] or [])
+        workspace_events = list(drain["workspace_events"] or [])
+        pending_worker_tasks = list(drain["pending_worker_tasks"] or [])
+        workspace_projection = drain["workspace_projection"]
+
+        if messages or artifacts or workspace_events or state.get("pending_worker_tasks") != pending_worker_tasks:
+            update_payload: dict[str, Any] = {
+                "pending_worker_tasks": pending_worker_tasks,
+                "workspace_projection": workspace_projection,
+            }
+            if messages:
+                update_payload["messages"] = await sanitize_messages_for_state(messages, source="pending_job_poll")
+            if artifacts:
+                update_payload["artifacts"] = artifacts
+            await graph.aupdate_state(graph_config, update_payload, as_node="chem_agent")
+
+        for workspace_event in workspace_events:
+            if not isinstance(workspace_event, dict):
+                continue
+            event_type = str(workspace_event.get("type") or "").strip()
+            if not event_type:
+                continue
+            payload = {k: v for k, v in workspace_event.items() if k != "type"}
+            yield self._sse(self._event_payload(event_type, **payload))
+
+        for artifact in artifacts:
+            if isinstance(artifact, dict):
+                yield self._sse(self._event_payload("artifact", **artifact))
+
+        for tool_event in list(drain.get("tool_events") or []):
+            if not isinstance(tool_event, dict):
+                continue
+            yield self._sse(
+                self._event_payload(
+                    "tool_end",
+                    tool=str(tool_event.get("tool_name") or ""),
+                    output=tool_event.get("output") or {},
+                )
+            )
+
+        checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id")
+        yield self._sse(self._event_payload("done", checkpoint_id=checkpoint_id, pending_count=len(pending_worker_tasks)))
+
+    async def run_mvp_conformer_smoke(
+        self,
+        *,
+        smiles: str,
+        name: str = "",
+        forcefield: str = "mmff94",
+        steps: int = 500,
+    ) -> AsyncGenerator[str, None]:
+        normalized_smiles = smiles.strip()
+        if not normalized_smiles:
+            yield self._sse(self._event_payload("error", error="smiles is required for the MVP conformer smoke test."))
+            return
+
+        workspace = WorkspaceApplicator.create(project_id=self.session_id)
+        workspace = WorkspaceApplicator.create_root_molecule(
+            workspace,
+            CreateRootMoleculeCommand(
+                canonical_smiles=normalized_smiles,
+                display_name=name or normalized_smiles,
+                handle="root_molecule",
+            ),
+        )
+
+        yield self._sse(self._event_payload("run_started", message="[mvp.conformer.smoke]"))
+        yield self._sse(self._event_payload("workspace.snapshot", workspace=workspace.model_dump(), version=workspace.version))
+        yield self._sse(
+            self._event_payload(
+                "tool_start",
+                tool="tool_build_3d_conformer",
+                input={
+                    "smiles": normalized_smiles,
+                    "name": name,
+                    "forcefield": forcefield,
+                    "steps": steps,
+                },
+            )
+        )
+
+        job_id = f"job_mvp_{uuid4().hex[:12]}"
+        workspace, start_events = start_workspace_job(
+            workspace,
+            job_id=job_id,
+            job_type="tool_build_3d_conformer",
+            target_handle="root_molecule",
+        )
+        for event in start_events:
+            event_type = str(event.get("type") or "").strip()
+            payload = {k: v for k, v in event.items() if k != "type"}
+            yield self._sse(self._event_payload(event_type, **payload))
+
+        submission = await submit_task_to_worker(
+            "babel.build_3d_conformer",
+            {
+                "smiles": normalized_smiles,
+                "name": name,
+                "forcefield": forcefield,
+                "steps": steps,
+            },
+            task_context={
+                "workspace_job_id": job_id,
+                "workspace_target_handle": "root_molecule",
+                "workspace_id": workspace.workspace_id,
+                "project_id": workspace.project_id,
+                "workspace_version": workspace.version,
+            },
+        )
+
+        if submission.get("status") == "queued":
+            yield self._sse(
+                self._event_payload(
+                    "job.progress",
+                    job_id=job_id,
+                    status="queued",
+                    target_handle="root_molecule",
+                    version=workspace.version,
+                )
+            )
+            envelope = await wait_for_task_result(
+                submission["task_id"],
+                task_name="babel.build_3d_conformer",
+                kwargs={
+                    "smiles": normalized_smiles,
+                    "name": name,
+                    "forcefield": forcefield,
+                    "steps": steps,
+                },
+                task_context=dict(submission.get("task_context") or {}),
+                timeout=120.0,
+            )
+        else:
+            yield self._sse(
+                self._event_payload(
+                    "job.progress",
+                    job_id=job_id,
+                    status="running",
+                    target_handle="root_molecule",
+                    version=workspace.version,
+                )
+            )
+            envelope = submission
+
+        result = dict(envelope.get("result") or {})
+        artifact_payload = None
+        if result.get("sdf_content"):
+            artifact_payload = {
+                "kind": "conformer_sdf",
+                "title": result.get("name") or "3D 构象 SDF",
+                "smiles": result.get("smiles"),
+                "sdf_content": result.get("sdf_content"),
+                "energy": result.get("energy_kcal_mol"),
+            }
+            yield self._sse(self._event_payload("artifact", **artifact_payload))
+
+        diagnostics = {
+            "conformer_status": "ready" if result.get("is_valid", True) else "failed",
+        }
+        if result.get("energy_kcal_mol") is not None:
+            diagnostics["energy_kcal_mol"] = result.get("energy_kcal_mol")
+
+        workspace, completion_events = complete_workspace_job(
+            workspace,
+            job_id=job_id,
+            diagnostics=diagnostics,
+            artifact_id=None,
+            hover_text=str(result.get("message") or "3D构象已生成，SDF 文件已发送给用户"),
+            result_summary=str(result.get("message") or "3D构象已生成，SDF 文件已发送给用户"),
+        )
+        yield self._sse(
+            self._event_payload(
+                "tool_end",
+                tool="tool_build_3d_conformer",
+                output={
+                    "status": "success" if result.get("is_valid", True) else "failed",
+                    "smiles": result.get("smiles"),
+                    "name": result.get("name"),
+                    "energy_kcal_mol": result.get("energy_kcal_mol"),
+                    "has_artifact": artifact_payload is not None,
+                },
+            )
+        )
+        for event in completion_events:
+            event_type = str(event.get("type") or "").strip()
+            payload = {k: v for k, v in event.items() if k != "type"}
+            yield self._sse(self._event_payload(event_type, **payload))
+        yield self._sse(self._event_payload("workspace.snapshot", workspace=workspace.model_dump(), version=workspace.version))
+        yield self._sse(self._event_payload("done", pending_count=0))
+
     # ── LangGraph event parser ─────────────────────────────────────────────────
 
     def _parse_langgraph_event(self, event: dict[str, Any]) -> list[dict]:
@@ -646,6 +874,17 @@ class ChemSessionEngine:
                         group_key=node_name,
                     )
                 )
+
+            chain_output = event.get("data", {}).get("output")
+            if isinstance(chain_output, dict):
+                for workspace_event in list(chain_output.get("workspace_events") or []):
+                    if not isinstance(workspace_event, dict):
+                        continue
+                    event_type = str(workspace_event.get("type") or "").strip()
+                    if not event_type:
+                        continue
+                    payload = {k: v for k, v in workspace_event.items() if k != "type"}
+                    results.append(self._event_payload(event_type, **payload))
 
         # ── 3. Tool lifecycle events ───────────────────────────────────────────
         elif event_name == "on_tool_start":

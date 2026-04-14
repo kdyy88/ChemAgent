@@ -17,8 +17,21 @@ ServerEventType = Literal[
     "run.failed",
     "turn.status",
     "assistant.message",
+    "assistant.delta",
+    "assistant.done",
     "tool.call",
     "tool.result",
+    "workspace.snapshot",
+    "workspace.delta",
+    "molecule.upserted",
+    "relation.upserted",
+    "viewport.changed",
+    "rules.updated",
+    "job.started",
+    "job.progress",
+    "job.completed",
+    "job.failed",
+    "artifact.ready",
 ]
 
 
@@ -97,6 +110,20 @@ class ApproveToolRequest(BaseModel):
         default=None,
         description="修改后的工具参数（仅在 action=modify 时有效）",
     )
+
+
+class PendingJobsRequest(BaseModel):
+    session_id: str = Field(..., description="会话 ID，用于定位持久化 LangGraph 状态")
+    turn_id: str = Field(default_factory=lambda: uuid4().hex)
+
+
+class MvpConformerSmokeRequest(BaseModel):
+    session_id: str = Field(default_factory=lambda: uuid4().hex)
+    turn_id: str = Field(default_factory=lambda: uuid4().hex)
+    smiles: str = Field(..., description="用于 smoke test 的标准 SMILES")
+    name: str = Field(default="", description="可选化合物名称")
+    forcefield: str = Field(default="mmff94", description="Open Babel 力场")
+    steps: int = Field(default=500, ge=10, le=5000, description="优化步数")
 
 
 class ModelCatalogItem(BaseModel):

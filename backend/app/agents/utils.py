@@ -20,6 +20,7 @@ from app.domain.schemas.agent import (
     TaskStatus,
     WorkspaceViewport,
 )
+from app.domain.schemas.workspace import WorkspaceProjection
 
 logger = logging.getLogger(__name__)
 
@@ -411,6 +412,45 @@ def format_ide_workspace(
         diag_str = ", ".join(f"{k}={v}" for k, v in list(diag.items())[:4]) if diag else "—"
         ref_marker = " ⭐" if aid == reference_id else ""
         lines.append(f"| `{aid}`{ref_marker} | `{smiles}` | {status} | {mw} | {diag_str} |")
+    return "\n".join(lines)
+
+
+def format_workspace_projection(workspace_projection: dict[str, Any] | WorkspaceProjection | None) -> str:
+    if not workspace_projection:
+        return "- 当前 workspace projection 为空。请先通过工具搜索或生成分子。"
+
+    if isinstance(workspace_projection, WorkspaceProjection):
+        workspace = workspace_projection
+    else:
+        try:
+            workspace = WorkspaceProjection.model_validate(workspace_projection)
+        except Exception:
+            return "- 当前 workspace projection 暂不可用，已回退到旧视图。"
+
+    focused_handles = list(workspace.viewport.focused_handles or [])
+    if not focused_handles:
+        focused_handles = list(workspace.handle_bindings.keys())[:8]
+    if not focused_handles:
+        return "- 当前 workspace projection 为空。请先通过工具搜索或生成分子。"
+
+    lines = [
+        f"- 以下为当前 Workspace Projection 视图（version={workspace.version}，优先于 legacy molecule_tree）：\n",
+        "| Handle | Node ID | SMILES | 状态 | 诊断信息 |",
+        "|---|---|---|---|---|",
+    ]
+    reference_handle = workspace.viewport.reference_handle
+    for handle in focused_handles:
+        binding = workspace.handle_bindings.get(handle)
+        if binding is None:
+            continue
+        node = workspace.nodes.get(binding.node_id)
+        if node is None:
+            continue
+        smiles = _compact_smiles(node.canonical_smiles)
+        diag = node.diagnostics or {}
+        diag_str = ", ".join(f"{k}={v}" for k, v in list(diag.items())[:4]) if diag else "—"
+        ref_marker = " ⭐" if handle == reference_handle else ""
+        lines.append(f"| `{handle}`{ref_marker} | `{node.node_id}` | `{smiles}` | {node.status} | {diag_str} |")
     return "\n".join(lines)
 
 

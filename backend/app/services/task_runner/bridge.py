@@ -16,6 +16,56 @@ from app.services.task_runner.registry import TASK_DISPATCH
 log = logging.getLogger(__name__)
 
 
+def _build_task_envelope(
+    task_id: str,
+    task_name: str,
+    result: dict[str, Any] | None,
+    *,
+    task_context: dict[str, Any] | None = None,
+    delivery: str,
+    status: str | None = None,
+    fallback_reason: str = "",
+) -> dict[str, Any]:
+    normalized_result = dict(result or {})
+    return {
+        "task_id": task_id,
+        "task_name": task_name,
+        "status": status or ("completed" if normalized_result.get("is_valid", True) else "failed"),
+        "result": normalized_result,
+        "task_context": dict(task_context or {}),
+        "delivery": delivery,
+        "fallback_reason": fallback_reason,
+    }
+
+
+def _normalize_task_envelope(
+    payload: dict[str, Any],
+    *,
+    task_id: str,
+    task_name: str,
+    task_context: dict[str, Any] | None,
+    delivery: str,
+) -> dict[str, Any]:
+    if isinstance(payload.get("result"), dict) and payload.get("task_id"):
+        envelope = dict(payload)
+        envelope.setdefault("task_name", task_name)
+        envelope.setdefault("task_context", dict(task_context or {}))
+        envelope.setdefault("delivery", delivery)
+        envelope.setdefault("fallback_reason", "")
+        envelope.setdefault(
+            "status",
+            "completed" if envelope["result"].get("is_valid", True) else "failed",
+        )
+        return envelope
+    return _build_task_envelope(
+        task_id,
+        task_name,
+        payload,
+        task_context=task_context,
+        delivery=delivery,
+    )
+
+
 async def _run_direct(task_name: str, kwargs: dict[str, Any]) -> dict[str, Any]:
     """Execute a chem task in-process (thread pool) without Redis.
 
@@ -29,40 +79,88 @@ async def _run_direct(task_name: str, kwargs: dict[str, Any]) -> dict[str, Any]:
     return await asyncio.to_thread(spec.fn, **kw)
 
 
-async def run_via_worker(
+async def submit_task_to_worker(
     task_name: str,
     kwargs: dict[str, Any],
     *,
-    timeout: float = 5.0,
+    task_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     task_id = f"task_{uuid4().hex}"
 
-    # ── Try Redis/ARQ path ───────────────────────────────────────────────────
     try:
         arq_pool = await get_arq_pool()
-        await arq_pool.enqueue_job("run_chem_task", task_name, kwargs, task_id, _job_id=task_id)
+        await arq_pool.enqueue_job(
+            "run_chem_task",
+            task_name,
+            kwargs,
+            task_id,
+            dict(task_context or {}),
+            _job_id=task_id,
+        )
+        return _build_task_envelope(
+            task_id,
+            task_name,
+            None,
+            task_context=task_context,
+            delivery="worker",
+            status="queued",
+        )
     except Exception as exc:
-        # Redis unavailable (local dev without Docker) — fall back to direct
-        # in-process execution so all endpoints still work.
         log.debug("Redis unavailable (%s) — running %s directly", exc, task_name)
-        return await _run_direct(task_name, kwargs)
+        direct_result = await _run_direct(task_name, kwargs)
+        return _build_task_envelope(
+            task_id,
+            task_name,
+            direct_result,
+            task_context=task_context,
+            delivery="direct",
+            fallback_reason=str(exc),
+        )
 
-    # ── Poll Redis for result ────────────────────────────────────────────────
+
+async def poll_task_result(
+    task_id: str,
+    *,
+    task_name: str = "",
+    task_context: dict[str, Any] | None = None,
+    delete_after_read: bool = True,
+) -> dict[str, Any] | None:
+    result = await read_task_result(task_id)
+    if result is None:
+        return None
+    if delete_after_read:
+        await delete_task_result(task_id)
+    return _normalize_task_envelope(
+        result,
+        task_id=task_id,
+        task_name=task_name,
+        task_context=task_context,
+        delivery="worker",
+    )
+
+
+async def wait_for_task_result(
+    task_id: str,
+    *,
+    task_name: str = "",
+    kwargs: dict[str, Any] | None = None,
+    task_context: dict[str, Any] | None = None,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
     poll_interval = get_poll_interval_seconds()
 
     try:
         async with asyncio.timeout(timeout):
             while True:
-                result = await read_task_result(task_id)
-                if result is not None:
-                    await delete_task_result(task_id)
-                    return result
+                envelope = await poll_task_result(
+                    task_id,
+                    task_name=task_name,
+                    task_context=task_context,
+                )
+                if envelope is not None:
+                    return envelope
                 await asyncio.sleep(poll_interval)
     except TimeoutError:
-        # ARQ worker is not consuming jobs (worker not started in local dev).
-        # Attempt to abort the queued job so it isn't executed redundantly once
-        # the worker comes online.  abort_job may not be available in all arq
-        # versions; swallow any error so the fallback path is never blocked.
         try:
             arq_pool = await get_arq_pool()
             await arq_pool.abort_job(task_id)
@@ -70,4 +168,38 @@ async def run_via_worker(
             log.debug("Could not abort ARQ job %s: %s", task_id, abort_exc)
 
         log.debug("ARQ worker not responding after %.1fs — running %s directly", timeout, task_name)
-        return await _run_direct(task_name, kwargs)
+        direct_result = await _run_direct(task_name, dict(kwargs or {}))
+        return _build_task_envelope(
+            task_id,
+            task_name,
+            direct_result,
+            task_context=task_context,
+            delivery="direct",
+            fallback_reason="timeout",
+        )
+
+
+async def run_via_worker(
+    task_name: str,
+    kwargs: dict[str, Any],
+    *,
+    timeout: float = 5.0,
+    task_context: dict[str, Any] | None = None,
+    return_envelope: bool = False,
+) -> dict[str, Any]:
+    submission = await submit_task_to_worker(
+        task_name,
+        kwargs,
+        task_context=task_context,
+    )
+    if submission["status"] != "queued":
+        return submission if return_envelope else submission["result"]
+
+    envelope = await wait_for_task_result(
+        submission["task_id"],
+        task_name=task_name,
+        kwargs=kwargs,
+        task_context=task_context,
+        timeout=timeout,
+    )
+    return envelope if return_envelope else envelope["result"]

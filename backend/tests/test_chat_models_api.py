@@ -107,3 +107,59 @@ def test_model_catalog_whitelist_only_keeps_gpt_reasoning_models() -> None:
     assert is_parameter_compatible_model("o3") is False
     assert is_parameter_compatible_model("claude-3-7-sonnet") is False
     assert is_parameter_compatible_model("text-embedding-3-large") is False
+
+
+def test_poll_pending_jobs_streams_engine_output(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeEngine:
+        def __init__(self, session_id: str, turn_id: str):
+            captured["session_id"] = session_id
+            captured["turn_id"] = turn_id
+
+        async def poll_pending_jobs(self) -> AsyncGenerator[str, None]:
+            yield 'data: {"type":"done","session_id":"session-1","turn_id":"turn-poll"}\n\n'
+
+    monkeypatch.setattr(sse_chat, "ChemSessionEngine", FakeEngine)
+    client = _build_client()
+
+    with client.stream(
+        "POST",
+        "/api/v1/chat/pending/poll",
+        json={"session_id": "session-1", "turn_id": "turn-poll"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert '"type":"done"' in body
+    assert captured["session_id"] == "session-1"
+    assert captured["turn_id"] == "turn-poll"
+
+
+def test_mvp_conformer_smoke_streams_engine_output(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeEngine:
+        def __init__(self, session_id: str, turn_id: str):
+            captured["session_id"] = session_id
+            captured["turn_id"] = turn_id
+
+        async def run_mvp_conformer_smoke(self, **kwargs) -> AsyncGenerator[str, None]:
+            captured.update(kwargs)
+            yield 'data: {"type":"job.started","session_id":"session-1","turn_id":"turn-mvp"}\n\n'
+            yield 'data: {"type":"done","session_id":"session-1","turn_id":"turn-mvp"}\n\n'
+
+    monkeypatch.setattr(sse_chat, "ChemSessionEngine", FakeEngine)
+    client = _build_client()
+
+    with client.stream(
+        "POST",
+        "/api/v1/chat/mvp/conformer",
+        json={"session_id": "session-1", "turn_id": "turn-mvp", "smiles": "CCO", "name": "ethanol"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert '"type":"job.started"' in body
+    assert captured["smiles"] == "CCO"
+    assert captured["name"] == "ethanol"

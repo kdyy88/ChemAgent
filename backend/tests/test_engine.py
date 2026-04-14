@@ -312,6 +312,27 @@ class TestParseLanggraphEvent:
         ends = [r for r in results if r["type"] == "node_end"]
         assert len(ends) == 1
 
+    def test_tools_executor_chain_end_emits_workspace_events(
+        self, engine: ChemSessionEngine
+    ) -> None:
+        event = {
+            "event": "on_chain_end",
+            "name": "tools_executor",
+            "metadata": {"langgraph_node": "tools_executor"},
+            "data": {
+                "output": {
+                    "workspace_events": [
+                        {"type": "workspace.delta", "scope": "graph", "version": 3},
+                        {"type": "molecule.upserted", "node_id": "mol_root", "handle": "root_molecule"},
+                    ]
+                }
+            },
+        }
+        results = engine._parse_langgraph_event(event)
+        assert any(r["type"] == "node_end" for r in results)
+        assert any(r["type"] == "workspace.delta" and r["scope"] == "graph" for r in results)
+        assert any(r["type"] == "molecule.upserted" and r["node_id"] == "mol_root" for r in results)
+
     def test_tool_start_event(self, engine: ChemSessionEngine) -> None:
         event = {
             "event": "on_tool_start",
@@ -440,6 +461,137 @@ class TestSubmitMessageOuterLoop:
         tokens = [e for e in events if e["type"] == "token"]
         assert len(tokens) == 1
         assert tokens[0]["content"] == "carbon"
+
+    async def test_workspace_events_are_forwarded_from_tools_executor(
+        self, engine: ChemSessionEngine
+    ) -> None:
+        lg_event = {
+            "event": "on_chain_end",
+            "name": "tools_executor",
+            "metadata": {"langgraph_node": "tools_executor"},
+            "data": {
+                "output": {
+                    "workspace_events": [
+                        {"type": "workspace.delta", "scope": "graph", "version": 1},
+                        {"type": "viewport.changed", "focused_handles": ["root_molecule"], "reference_handle": "root_molecule"},
+                    ]
+                }
+            },
+        }
+        mock_graph = _make_mock_graph([lg_event])
+
+        with (
+            patch("app.agents.main_agent.engine.get_compiled_graph", return_value=mock_graph),
+            patch("app.agents.main_agent.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
+        ):
+            events = await self._collect(engine, message="render workspace")
+
+        assert any(event["type"] == "workspace.delta" for event in events)
+        assert any(event["type"] == "viewport.changed" for event in events)
+
+    async def test_workspace_events_are_forwarded_from_chem_agent(
+        self, engine: ChemSessionEngine
+    ) -> None:
+        lg_event = {
+            "event": "on_chain_end",
+            "name": "chem_agent",
+            "metadata": {"langgraph_node": "chem_agent"},
+            "data": {
+                "output": {
+                    "workspace_events": [
+                        {"type": "job.completed", "job_id": "job_1", "status": "completed"},
+                    ]
+                }
+            },
+        }
+        mock_graph = _make_mock_graph([lg_event])
+
+        with (
+            patch("app.agents.main_agent.engine.get_compiled_graph", return_value=mock_graph),
+            patch("app.agents.main_agent.engine.has_persisted_session", new_callable=AsyncMock, return_value=False),
+        ):
+            events = await self._collect(engine, message="render workspace")
+
+        assert any(event["type"] == "job.completed" and event.get("job_id") == "job_1" for event in events)
+
+    async def test_poll_pending_jobs_updates_checkpoint_and_streams_results(
+        self, engine: ChemSessionEngine
+    ) -> None:
+        mock_graph = MagicMock()
+        mock_graph.aget_state = AsyncMock(
+            return_value=MagicMock(
+                values={"pending_worker_tasks": [{"task_id": "task_1"}]},
+                config={"configurable": {"checkpoint_id": "cp-1"}},
+            )
+        )
+        mock_graph.aupdate_state = AsyncMock()
+
+        async def _fake_drain(state, config):
+            return {
+                "messages": [],
+                "artifacts": [{"kind": "conformer_sdf", "artifact_id": "art_1"}],
+                "workspace_events": [{"type": "job.completed", "job_id": "job_1", "status": "completed"}],
+                "workspace_projection": {"project_id": "sess-test", "workspace_id": "ws_1", "version": 2, "nodes": {}, "relations": {}, "handle_bindings": {}, "viewport": {"focused_handles": [], "reference_handle": None}, "rules": [], "async_jobs": {}},
+                "pending_worker_tasks": [],
+                "tool_events": [{"tool_name": "tool_build_3d_conformer", "output": {"status": "success"}}],
+            }
+
+        with (
+            patch("app.agents.main_agent.engine.get_compiled_graph", return_value=mock_graph),
+            patch("app.agents.main_agent.engine.has_persisted_session", new_callable=AsyncMock, return_value=True),
+            patch("app.agents.main_agent.engine.drain_pending_worker_tasks", new=_fake_drain),
+        ):
+            events = [json.loads(chunk.removeprefix("data: ").strip()) async for chunk in engine.poll_pending_jobs()]
+
+        mock_graph.aupdate_state.assert_awaited_once()
+        assert any(event["type"] == "job.completed" for event in events)
+        assert any(event["type"] == "artifact" for event in events)
+        assert any(event["type"] == "tool_end" for event in events)
+        assert events[-1]["type"] == "done"
+
+    async def test_run_mvp_conformer_smoke_streams_job_lifecycle(
+        self, engine: ChemSessionEngine
+    ) -> None:
+        with (
+            patch(
+                "app.agents.main_agent.engine.submit_task_to_worker",
+                new=AsyncMock(return_value={
+                    "task_id": "task_mvp_1",
+                    "task_name": "babel.build_3d_conformer",
+                    "status": "queued",
+                    "result": {},
+                    "task_context": {},
+                    "delivery": "worker",
+                    "fallback_reason": "",
+                }),
+            ),
+            patch(
+                "app.agents.main_agent.engine.wait_for_task_result",
+                new=AsyncMock(return_value={
+                    "task_id": "task_mvp_1",
+                    "task_name": "babel.build_3d_conformer",
+                    "status": "completed",
+                    "result": {
+                        "is_valid": True,
+                        "smiles": "CCO",
+                        "name": "ethanol",
+                        "sdf_content": "mock-sdf",
+                        "energy_kcal_mol": -7.2,
+                    },
+                    "task_context": {},
+                    "delivery": "worker",
+                    "fallback_reason": "",
+                }),
+            ),
+        ):
+            events = [json.loads(chunk.removeprefix("data: ").strip()) async for chunk in engine.run_mvp_conformer_smoke(smiles="CCO", name="ethanol")]
+
+        assert any(event["type"] == "tool_start" and event.get("tool") == "tool_build_3d_conformer" for event in events)
+        assert any(event["type"] == "job.started" for event in events)
+        assert any(event["type"] == "job.progress" for event in events)
+        assert any(event["type"] == "artifact" and event.get("kind") == "conformer_sdf" for event in events)
+        assert any(event["type"] == "job.completed" for event in events)
+        assert events[-1]["type"] == "done"
 
     async def test_artifact_pointer_replaces_large_field(
         self, engine: ChemSessionEngine

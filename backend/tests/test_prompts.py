@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.agents.prompts import get_system_prompt
+from app.agents.utils import format_workspace_projection
 
 
 def test_system_prompt_includes_artifact_handoff_rules() -> None:
@@ -103,3 +104,38 @@ def test_system_prompt_includes_execution_failed_self_correction_rule() -> None:
     assert "[Execution Failed]" in prompt
     assert "最多 3 次" in prompt
     assert "道歉" in prompt
+
+
+def test_format_workspace_projection_prefers_handles_over_legacy_tree() -> None:
+    rendered = format_workspace_projection(
+        {
+            "project_id": "project-1",
+            "workspace_id": "ws_1",
+            "version": 3,
+            "nodes": {
+                "mol_root": {
+                    "node_id": "mol_root",
+                    "handle": "root_molecule",
+                    "canonical_smiles": "CCO",
+                    "display_name": "ethanol",
+                    "parent_node_id": None,
+                    "origin": "root_commit",
+                    "status": "active",
+                    "diagnostics": {"logP": 1.2},
+                    "artifact_ids": [],
+                    "hover_text": "",
+                }
+            },
+            "relations": {},
+            "handle_bindings": {
+                "root_molecule": {"handle": "root_molecule", "node_id": "mol_root", "bound_at_version": 3}
+            },
+            "viewport": {"focused_handles": ["root_molecule"], "reference_handle": "root_molecule"},
+            "rules": [],
+            "async_jobs": {},
+        }
+    )
+
+    assert "Workspace Projection" in rendered
+    assert "root_molecule" in rendered
+    assert "version=3" in rendered

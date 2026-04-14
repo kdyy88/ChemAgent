@@ -103,6 +103,17 @@ class SubtaskStatePointer(TypedDict):
     execution_task_id: NotRequired[str]
 
 
+class PendingWorkerTask(TypedDict):
+    task_id: str
+    task_name: str
+    tool_name: str
+    workspace_job_id: str
+    workspace_target_handle: NotRequired[str]
+    project_id: NotRequired[str]
+    workspace_id: NotRequired[str]
+    workspace_version: NotRequired[int]
+
+
 # ---------------------------------------------------------------------------
 # 5. ChemState — 系统状态机核心
 # ---------------------------------------------------------------------------
@@ -128,6 +139,9 @@ class ChemState(TypedDict):
     subtask_control: dict[str, Any] | None
     artifact_expiry_warning: NotRequired[str | None]
     skills_enabled: bool
+    workspace_projection: NotRequired[dict[str, Any]]
+    workspace_events: NotRequired[list[dict[str, Any]]]
+    pending_worker_tasks: NotRequired[list[PendingWorkerTask]]
 
 
 class RouteDecision(BaseModel):

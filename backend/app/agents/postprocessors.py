@@ -6,6 +6,13 @@ from langchain_core.runnables import RunnableConfig
 from app.agents.utils import ToolPostprocessor, ToolResult, refresh_result, strip_binary_fields
 from app.services.chem_engine.babel_ops import build_3d_conformer, convert_format, prepare_pdbqt
 from app.services.chem_engine.rdkit_ops import compute_descriptors, substructure_match
+from app.services.task_runner.bridge import run_via_worker, submit_task_to_worker
+
+
+_ASYNC_WORKER_TASKS: dict[str, tuple[str, str]] = {
+    "tool_build_3d_conformer": ("babel.build_3d_conformer", "3D构象任务已提交，正在后台生成。"),
+    "tool_prepare_pdbqt": ("babel.prepare_pdbqt", "PDBQT 准备任务已提交，正在后台生成。"),
+}
 
 
 async def _resolve_smiles_for_postprocessor(
@@ -45,7 +52,123 @@ def _strip_for_state(artifact: dict) -> dict:
 async def _dispatch_artifact(artifacts: list[dict], artifact: dict, config: RunnableConfig) -> None:
     # State list gets a lean copy (no binary blobs); SSE gets the full payload.
     artifacts.append(_strip_for_state(artifact))
-    await adispatch_custom_event("artifact", artifact, config=config)
+    try:
+        await adispatch_custom_event("artifact", artifact, config=config)
+    except Exception:
+        # Poll/resume paths may finalize artifacts outside an active LangGraph run.
+        # Persist the lightweight artifact in state regardless; event dispatch is best-effort.
+        pass
+
+
+def _task_context_from_config(config: RunnableConfig) -> dict[str, object]:
+    configurable = dict((config or {}).get("configurable") or {})
+    task_context: dict[str, object] = {}
+    for key in (
+        "thread_id",
+        "project_id",
+        "workspace_id",
+        "workspace_version",
+        "workspace_job_id",
+        "workspace_target_handle",
+        "execution_task_id",
+    ):
+        value = configurable.get(key)
+        if value is not None and value != "":
+            task_context[key] = value
+    return task_context
+
+
+async def _finalize_build_3d_conformer_result(
+    detailed: ToolResult,
+    artifacts: list[dict],
+    config: RunnableConfig,
+) -> ToolResult:
+    if detailed.get("sdf_content"):
+        await _dispatch_artifact(
+            artifacts,
+            {
+                "kind": "conformer_sdf",
+                "title": detailed.get("name") or "3D 构象 SDF",
+                "smiles": detailed.get("smiles"),
+                "sdf_content": detailed.get("sdf_content"),
+                "energy": detailed.get("energy_kcal_mol"),
+            },
+            config,
+        )
+        summary = strip_binary_fields(detailed)
+        summary["message"] = "3D构象已生成，SDF 文件已发送给用户"
+        return summary
+    return detailed
+
+
+async def _finalize_prepare_pdbqt_result(
+    detailed: ToolResult,
+    artifacts: list[dict],
+    config: RunnableConfig,
+) -> ToolResult:
+    if detailed.get("pdbqt_content"):
+        await _dispatch_artifact(
+            artifacts,
+            {
+                "kind": "pdbqt_file",
+                "title": detailed.get("name") or "PDBQT 配体文件",
+                "smiles": detailed.get("smiles"),
+                "pdbqt_content": detailed.get("pdbqt_content"),
+                "rotatable_bonds": detailed.get("rotatable_bonds"),
+            },
+            config,
+        )
+        summary = strip_binary_fields(detailed)
+        summary["message"] = "PDBQT 文件已生成并发送给用户"
+        return summary
+    return detailed
+
+
+async def finalize_async_tool_result(
+    tool_name: str,
+    detailed: ToolResult,
+    artifacts: list[dict],
+    config: RunnableConfig,
+) -> ToolResult:
+    if tool_name == "tool_build_3d_conformer":
+        return await _finalize_build_3d_conformer_result(detailed, artifacts, config)
+    if tool_name == "tool_prepare_pdbqt":
+        return await _finalize_prepare_pdbqt_result(detailed, artifacts, config)
+    return detailed
+
+
+async def submit_async_tool_task(
+    tool_name: str,
+    task_kwargs: dict[str, object],
+    artifacts: list[dict],
+    config: RunnableConfig,
+) -> ToolResult:
+    task_name, queued_message = _ASYNC_WORKER_TASKS[tool_name]
+    submission = await submit_task_to_worker(
+        task_name,
+        task_kwargs,
+        task_context=_task_context_from_config(config),
+    )
+    if submission.get("status") == "queued":
+        return {
+            "status": "queued",
+            "is_valid": True,
+            "message": queued_message,
+            "task_id": submission["task_id"],
+            "task_name": task_name,
+            "delivery": submission.get("delivery", "worker"),
+            "__async_task__": {
+                "task_id": submission["task_id"],
+                "task_name": task_name,
+                "task_context": dict(submission.get("task_context") or {}),
+            },
+        }
+    return await finalize_async_tool_result(
+        tool_name,
+        submission.get("result") or {},
+        artifacts,
+        config,
+    )
 
 
 async def postprocess_render_smiles(
@@ -226,32 +349,20 @@ async def postprocess_build_3d_conformer(
     artifacts: list[dict],
     config: RunnableConfig,
 ) -> ToolResult:
-    detailed = refresh_result(
-        parsed,
-        required_key="sdf_content",
-        loader=lambda: build_3d_conformer(
-            str(args.get("smiles", "")),
-            name=str(args.get("name", "")),
-            forcefield=str(args.get("forcefield", "mmff94")),
-            steps=int(str(args.get("steps", 500))),
-        ),
-    )
-    if detailed.get("sdf_content"):
-        await _dispatch_artifact(
-            artifacts,
+    detailed = parsed
+    if not detailed.get("sdf_content"):
+        detailed = await run_via_worker(
+            "babel.build_3d_conformer",
             {
-                "kind": "conformer_sdf",
-                "title": detailed.get("name") or "3D 构象 SDF",
-                "smiles": detailed.get("smiles"),
-                "sdf_content": detailed.get("sdf_content"),
-                "energy": detailed.get("energy_kcal_mol"),
+                "smiles": str(args.get("smiles", "")),
+                "name": str(args.get("name", "")),
+                "forcefield": str(args.get("forcefield", "mmff94")),
+                "steps": int(str(args.get("steps", 500))),
             },
-            config,
+            timeout=120.0,
+            task_context=_task_context_from_config(config),
         )
-        summary = strip_binary_fields(detailed)
-        summary["message"] = "3D构象已生成，SDF 文件已发送给用户"
-        return summary
-    return detailed
+    return await _finalize_build_3d_conformer_result(detailed, artifacts, config)
 
 
 async def postprocess_prepare_pdbqt(
@@ -260,31 +371,19 @@ async def postprocess_prepare_pdbqt(
     artifacts: list[dict],
     config: RunnableConfig,
 ) -> ToolResult:
-    detailed = refresh_result(
-        parsed,
-        required_key="pdbqt_content",
-        loader=lambda: prepare_pdbqt(
-            str(args.get("smiles", "")),
-            name=str(args.get("name", "")),
-            ph=float(str(args.get("ph", 7.4))),
-        ),
-    )
-    if detailed.get("pdbqt_content"):
-        await _dispatch_artifact(
-            artifacts,
+    detailed = parsed
+    if not detailed.get("pdbqt_content"):
+        detailed = await run_via_worker(
+            "babel.prepare_pdbqt",
             {
-                "kind": "pdbqt_file",
-                "title": detailed.get("name") or "PDBQT 配体文件",
-                "smiles": detailed.get("smiles"),
-                "pdbqt_content": detailed.get("pdbqt_content"),
-                "rotatable_bonds": detailed.get("rotatable_bonds"),
+                "smiles": str(args.get("smiles", "")),
+                "name": str(args.get("name", "")),
+                "ph": float(str(args.get("ph", 7.4))),
             },
-            config,
+            timeout=120.0,
+            task_context=_task_context_from_config(config),
         )
-        summary = strip_binary_fields(detailed)
-        summary["message"] = "PDBQT 文件已生成并发送给用户"
-        return summary
-    return detailed
+    return await _finalize_prepare_pdbqt_result(detailed, artifacts, config)
 
 
 async def postprocess_convert_format(

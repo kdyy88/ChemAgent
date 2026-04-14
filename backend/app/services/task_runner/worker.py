@@ -92,14 +92,29 @@ async def _execute_task(task_name: str, kwargs: dict[str, Any], task_id: str) ->
     return result
 
 
-async def run_chem_task(ctx: dict[str, Any], task_name: str, kwargs: dict[str, Any], task_id: str) -> dict[str, Any]:
+async def run_chem_task(
+    ctx: dict[str, Any],
+    task_name: str,
+    kwargs: dict[str, Any],
+    task_id: str,
+    task_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
         result = await _execute_task(task_name, kwargs, task_id)
     except Exception as exc:
         result = {"is_valid": False, "error": f"任务执行失败：{exc}"}
 
-    await store_task_result(task_id, result, ttl_seconds=get_default_result_ttl_seconds())
-    return result
+    envelope = {
+        "task_id": task_id,
+        "task_name": task_name,
+        "status": "completed" if result.get("is_valid", True) else "failed",
+        "result": result,
+        "task_context": dict(task_context or {}),
+        "delivery": "worker",
+        "fallback_reason": "",
+    }
+    await store_task_result(task_id, envelope, ttl_seconds=get_default_result_ttl_seconds())
+    return envelope
 
 
 class WorkerSettings:

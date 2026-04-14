@@ -55,6 +55,8 @@ from app.domain.schemas.api import (
     ApproveToolRequest,
     ModelCatalogItem,
     ModelCatalogResponse,
+    MvpConformerSmokeRequest,
+    PendingJobsRequest,
     StreamChatRequest,
 )
 
@@ -119,6 +121,39 @@ async def approve_tool(req: ApproveToolRequest) -> StreamingResponse:
     engine = ChemSessionEngine(session_id=req.session_id, turn_id=req.turn_id)
     return StreamingResponse(
         engine.resume_approval(action=req.action, args=req.args, plan_id=req.plan_id),
+        media_type="text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@router.post("/pending/poll")
+async def poll_pending_jobs(req: PendingJobsRequest) -> StreamingResponse:
+    engine = ChemSessionEngine(session_id=req.session_id, turn_id=req.turn_id)
+    return StreamingResponse(
+        engine.poll_pending_jobs(),
+        media_type="text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@router.post("/mvp/conformer")
+async def mvp_conformer_smoke(req: MvpConformerSmokeRequest) -> StreamingResponse:
+    engine = ChemSessionEngine(session_id=req.session_id, turn_id=req.turn_id)
+    return StreamingResponse(
+        engine.run_mvp_conformer_smoke(
+            smiles=req.smiles,
+            name=req.name,
+            forcefield=req.forcefield,
+            steps=req.steps,
+        ),
         media_type="text/event-stream",
         headers={
             "X-Accel-Buffering": "no",

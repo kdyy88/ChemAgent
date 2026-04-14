@@ -12,8 +12,8 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from app.agents.contracts.protocol import RecoveryAction, NodeUpdate, NodeCreate  # noqa: F401 (NodeUpdate/NodeCreate used for type hint comments only)
-from app.agents.postprocessors import TOOL_POSTPROCESSORS
-from app.domain.schemas.agent import ChemState, MoleculeWorkspaceEntry, Task, TaskStatus
+from app.agents.postprocessors import TOOL_POSTPROCESSORS, submit_async_tool_task
+from app.domain.schemas.agent import ChemState, MoleculeWorkspaceEntry, PendingWorkerTask, Task, TaskStatus
 from app.tools.metadata import DIAGNOSTIC_SCHEMA
 from app.tools.registry import get_root_tools
 from app.agents.utils import (
@@ -30,12 +30,21 @@ from app.agents.utils import (
 )
 from app.domain.store.plan_store import read_plan_file
 from app.domain.store.artifact_store import get_engine_artifact, get_engine_artifact_warning
+from app.services.workspace import (
+    apply_protocol_to_workspace,
+    complete_workspace_job,
+    ensure_workspace_projection,
+    extract_workspace_job_result,
+    resolve_workspace_target,
+    start_workspace_job,
+)
 
 _TOOL_LOOKUP = {tool.name: tool for tool in get_root_tools()}
 logger = logging.getLogger(__name__)
 _MAX_PARENT_ARTIFACT_IDS = 8
 _MAX_SUBTASK_RECOVERY_ATTEMPTS = 2
 _SUB_AGENT_VERBOSE_LOGS = os.environ.get("CHEMAGENT_SUB_AGENT_VERBOSE_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}
+_WORKSPACE_ASYNC_TOOLS = frozenset({"tool_build_3d_conformer", "tool_prepare_pdbqt"})
 
 # ---------------------------------------------------------------------------
 # Auto-harvest: tools in this set trigger automatic molecule_tree population
@@ -351,6 +360,11 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
         for task_id, pointer in (state.get("active_subtasks") or {}).items()
         if isinstance(pointer, dict)
     }
+    pending_worker_tasks: list[PendingWorkerTask] = [
+        cast(PendingWorkerTask, dict(task))
+        for task in state.get("pending_worker_tasks", [])
+        if isinstance(task, dict)
+    ]
     active_subtask_id = str(state.get("active_subtask_id") or "").strip() or None
     parent_artifacts = state.get("artifacts") or []
     recent_artifact_ids = _collect_recent_artifact_ids(parent_artifacts)
@@ -462,11 +476,18 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
     # State tool protocol accumulators (ScratchpadUpdate / ViewportUpdate)
     scratchpad_updates: dict[str, Any] = {"established_rules": [], "failed_attempts": [], "research_goal": ""}
     viewport_override: dict[str, Any] | None = None
+    workspace_projection = ensure_workspace_projection(
+        state,
+        project_id=str(((config or {}).get("configurable") or {}).get("thread_id") or "default_project"),
+    )
+    workspace_events: list[dict[str, Any]] = []
 
     for tool_call in tool_calls:
         tool_name = tool_call["name"]
         tool_call_id = tool_call.get("id", "")
         args: dict[str, Any] = dict(tool_call.get("args", {}) if isinstance(tool_call.get("args"), dict) else {})
+        job_id_for_workspace: str | None = None
+        target_handle_for_workspace: str | None = None
         if isinstance(args, dict) and args.get("__redacted__") and args.get("__artifact_id__"):
             restored_args = await get_engine_artifact(str(args.get("__artifact_id__")))
             if isinstance(restored_args, dict):
@@ -485,6 +506,24 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
 
         try:
             tool_config: RunnableConfig | dict = config
+            if tool_name in _WORKSPACE_ASYNC_TOOLS:
+                target = resolve_workspace_target(
+                    workspace_projection,
+                    artifact_id=str(args.get("artifact_id") or ""),
+                    smiles=str(args.get("smiles") or ""),
+                    fallback_smiles=str(new_active_smiles or ""),
+                )
+                if target is not None:
+                    target_handle, _ = target
+                    target_handle_for_workspace = target_handle
+                    job_id_for_workspace = f"job_{tool_call_id or uuid4().hex}"
+                    workspace_projection, new_workspace_events = start_workspace_job(
+                        workspace_projection,
+                        job_id=job_id_for_workspace,
+                        job_type=tool_name,
+                        target_handle=target_handle,
+                    )
+                    workspace_events.extend(new_workspace_events)
             logger.info("\ud83d\udd27 [ToolDispatch] tool=%s  args_keys=%s", tool_name, list(args.keys()))
             # Inject current read_file_state into configurable for tool_edit_file
             # and tool_write_file (the latter needs it for its exist-guard).
@@ -495,6 +534,15 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                     **file_read_state_updates,  # prefer freshly seen reads this turn
                 }
                 tool_config = {**dict(tool_config or {}), "configurable": _rfs_configurable}
+            if tool_name in _WORKSPACE_ASYNC_TOOLS and job_id_for_workspace is not None:
+                _workspace_configurable = dict((tool_config or {}).get("configurable") or {})
+                _workspace_configurable["workspace_job_id"] = job_id_for_workspace
+                _workspace_configurable["workspace_id"] = workspace_projection.workspace_id
+                _workspace_configurable["project_id"] = workspace_projection.project_id
+                _workspace_configurable["workspace_version"] = workspace_projection.version
+                if target_handle_for_workspace:
+                    _workspace_configurable["workspace_target_handle"] = target_handle_for_workspace
+                tool_config = {**dict(tool_config or {}), "configurable": _workspace_configurable}
             # Inject live molecule_tree snapshot into tool_screen_molecules.
             if tool_name == "tool_screen_molecules":
                 _sm_configurable = dict((tool_config or {}).get("configurable") or {})
@@ -533,8 +581,26 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                 tool_config = dict(config or {})
                 tool_config["configurable"] = configurable
 
-            raw_output = await tool.ainvoke(args, config=tool_config)
-            parsed = parse_tool_output(raw_output)
+            raw_output: Any = None
+            if tool_name in _WORKSPACE_ASYNC_TOOLS:
+                async_task_kwargs: dict[str, object]
+                if tool_name == "tool_build_3d_conformer":
+                    async_task_kwargs = {
+                        "smiles": str(args.get("smiles", "")),
+                        "name": str(args.get("name", "")),
+                        "forcefield": str(args.get("forcefield", "mmff94")),
+                        "steps": int(str(args.get("steps", 500))),
+                    }
+                else:
+                    async_task_kwargs = {
+                        "smiles": str(args.get("smiles", "")),
+                        "name": str(args.get("name", "")),
+                        "ph": float(str(args.get("ph", 7.4))),
+                    }
+                parsed = await submit_async_tool_task(tool_name, async_task_kwargs, artifacts, tool_config)
+            else:
+                raw_output = await tool.ainvoke(args, config=tool_config)
+                parsed = parse_tool_output(raw_output)
 
             if isinstance(parsed, dict):
                 _status = parsed.get("status", "ok")
@@ -817,6 +883,12 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                         }
                         if aid not in node_create_ids:
                             node_create_ids.append(aid)
+                        workspace_projection, new_workspace_events = apply_protocol_to_workspace(
+                            workspace_projection,
+                            protocol_type,
+                            parsed,
+                        )
+                        workspace_events.extend(new_workspace_events)
                     elif protocol_type == "ScratchpadUpdate":
                         scratchpad_updates["established_rules"].extend(
                             list(parsed.get("established_rules") or [])
@@ -827,6 +899,12 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                         new_goal = str(parsed.get("research_goal") or "").strip()
                         if new_goal:
                             scratchpad_updates["research_goal"] = new_goal
+                        workspace_projection, new_workspace_events = apply_protocol_to_workspace(
+                            workspace_projection,
+                            protocol_type,
+                            parsed,
+                        )
+                        workspace_events.extend(new_workspace_events)
                     elif protocol_type == "ViewportUpdate":
                         viewport_override = {
                             "focused_artifact_ids": list(
@@ -836,6 +914,12 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                         ref = parsed.get("reference_artifact_id")
                         if ref:
                             viewport_override["reference_artifact_id"] = str(ref)
+                        workspace_projection, new_workspace_events = apply_protocol_to_workspace(
+                            workspace_projection,
+                            protocol_type,
+                            parsed,
+                        )
+                        workspace_events.extend(new_workspace_events)
                     elif protocol_type == "BatchNodeUpdate":
                         for _upd in (parsed.get("updates") or []):
                             _upd_aid = str(_upd.get("artifact_id") or "").strip()
@@ -861,6 +945,12 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                             if str(_upd.get("status") or "") != "rejected":
                                 if _upd_aid not in node_create_ids:
                                     node_create_ids.append(_upd_aid)
+                        workspace_projection, new_workspace_events = apply_protocol_to_workspace(
+                            workspace_projection,
+                            protocol_type,
+                            parsed,
+                        )
+                        workspace_events.extend(new_workspace_events)
                     else:
                         # ── File protocol branch ──────────────────────────────
                         file_protocol = (parsed or {}).get("__file_protocol__")
@@ -876,7 +966,7 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                         new_active_smiles = apply_active_smiles_update(tool_name, parsed, new_active_smiles)
                         molecule_workspace = update_molecule_workspace(molecule_workspace, tool_name, parsed, args)
                         postprocessor = TOOL_POSTPROCESSORS.get(tool_name)
-                        if postprocessor is not None:
+                        if postprocessor is not None and tool_name not in _WORKSPACE_ASYNC_TOOLS:
                             parsed = await postprocessor(parsed, args, artifacts, config)
                         # Auto-harvest: register a MoleculeNode for tools that
                         # consume a SMILES and return a validated structure.
@@ -890,6 +980,48 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                             tool_name, args, parsed,
                             current_tree, molecule_tree_updates,
                         )
+
+                if tool_name in _WORKSPACE_ASYNC_TOOLS and job_id_for_workspace is not None and isinstance(parsed, dict):
+                    async_task_meta = parsed.get("__async_task__")
+                    if parsed.get("status") == "queued" and isinstance(async_task_meta, dict):
+                        pending_task: PendingWorkerTask = {
+                            "task_id": str(async_task_meta.get("task_id") or parsed.get("task_id") or "").strip(),
+                            "task_name": str(async_task_meta.get("task_name") or "").strip(),
+                            "tool_name": tool_name,
+                            "workspace_job_id": job_id_for_workspace,
+                        }
+                        task_context = dict(async_task_meta.get("task_context") or {})
+                        if target_handle_for_workspace:
+                            pending_task["workspace_target_handle"] = target_handle_for_workspace
+                        for key in ("project_id", "workspace_id", "workspace_version"):
+                            if task_context.get(key) is not None:
+                                pending_task[key] = task_context[key]
+                        pending_worker_tasks.append(pending_task)
+                        workspace_events.append({
+                            "type": "job.progress",
+                            "job_id": job_id_for_workspace,
+                            "status": "queued",
+                            "target_handle": target_handle_for_workspace,
+                            "version": workspace_projection.version,
+                        })
+                        workspace_events.append({
+                            "type": "workspace.delta",
+                            "scope": "jobs",
+                            "version": workspace_projection.version,
+                            "job_id": job_id_for_workspace,
+                            "status": "queued",
+                        })
+                    else:
+                        job_result = extract_workspace_job_result(tool_name, parsed, artifacts)
+                        workspace_projection, new_workspace_events = complete_workspace_job(
+                            workspace_projection,
+                            job_id=job_id_for_workspace,
+                            diagnostics=job_result["diagnostics"],
+                            artifact_id=job_result["artifact_id"],
+                            hover_text=job_result["hover_text"],
+                            result_summary=job_result["result_summary"],
+                        )
+                        workspace_events.extend(new_workspace_events)
 
                 parsed = _sanitize_message_bus_payload(tool_name, parsed)
 
@@ -932,7 +1064,10 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
         "evidence_revision": evidence_revision,
         "active_subtasks": active_subtasks,
         "active_subtask_id": active_subtask_id,
+        **(({"pending_worker_tasks": pending_worker_tasks}) if pending_worker_tasks or state.get("pending_worker_tasks") else {}),
         "artifact_expiry_warning": artifact_expiry_warning,
+        "workspace_projection": workspace_projection,
+        **(({"workspace_events": workspace_events}) if workspace_events else {}),
         # Chem LSP protocol writes — only emitted when non-empty so unrelated
         # turns don't trigger unnecessary LangGraph reducer calls.
         **(({"molecule_tree": molecule_tree_updates}) if molecule_tree_updates else {}),
