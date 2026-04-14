@@ -152,13 +152,36 @@ def _mode_rank(mode: SubAgentMode) -> int:
     }[mode]
 
 
+def _smiles_log_limit() -> int:
+    """Return SMILES log truncation limit. 0 means no truncation."""
+    raw = os.environ.get("CHEMAGENT_LOG_SMILES_LIMIT", "").strip()
+    if not raw:
+        return 80
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 80
+
+
 def _compact_smiles_for_log(smiles: str, limit: int = 80) -> str:
     normalized = (smiles or "").strip()
     if not normalized:
         return ""
-    if len(normalized) <= limit:
+    effective_limit = _smiles_log_limit() if limit == 80 else limit
+    if effective_limit == 0 or len(normalized) <= effective_limit:
         return normalized
-    return normalized[: limit - 3] + "..."
+    return normalized[: effective_limit - 3] + "..."
+
+
+def _sub_agent_recursion_limit() -> int:
+    """Return recursion limit for sub-agent graphs from env (floor 10, default 25)."""
+    raw = os.environ.get("CHEMAGENT_SUB_AGENT_RECURSION_LIMIT", "").strip()
+    if not raw:
+        return 25
+    try:
+        return max(10, int(raw))
+    except ValueError:
+        return 25
 
 
 def _preview_text(value: str, limit: int = 400) -> str:
@@ -605,7 +628,7 @@ async def tool_run_sub_agent(
             "scratchpad_session_id": parent_thread_id,
             "subagent_phase": "plan" if mode == SubAgentMode.plan.value else "execution",
         },
-        "recursion_limit": 256,
+        "recursion_limit": _sub_agent_recursion_limit(),
     }
     if plan_id is not None:
         sub_config["configurable"]["plan_id"] = plan_id

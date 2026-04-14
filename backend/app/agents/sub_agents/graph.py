@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from hashlib import sha256
 from typing import Any, cast
 
@@ -45,7 +46,18 @@ from app.agents.utils import (
 
 logger = logging.getLogger(__name__)
 
-_SUB_RECURSION_LIMIT = 25
+
+def _sub_agent_recursion_limit() -> int:
+    """Return recursion limit for sub-agent graphs (env: CHEMAGENT_SUB_AGENT_RECURSION_LIMIT, floor 10, default 25)."""
+    raw = os.environ.get("CHEMAGENT_SUB_AGENT_RECURSION_LIMIT", "").strip()
+    if not raw:
+        return 25
+    try:
+        return max(10, int(raw))
+    except ValueError:
+        return 25
+
+
 _TERMINAL_TOOL_NAMES = {
     "tool_task_complete",
     "tool_exit_plan_mode",

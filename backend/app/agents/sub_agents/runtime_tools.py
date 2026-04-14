@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from typing import Any
 
@@ -20,6 +21,21 @@ from app.agents.memory.scratchpad import create_scratchpad_entry, read_scratchpa
 from app.domain.schemas.workflow import FailureCategory, PlanPointer, RecoveryAction, ScratchpadKind
 
 logger = logging.getLogger(__name__)
+
+
+def _compact_smiles_for_log(smiles: str) -> str:
+    """Truncate SMILES for logging, respecting CHEMAGENT_LOG_SMILES_LIMIT (0 = no truncation)."""
+    normalized = (smiles or "").strip()
+    if not normalized:
+        return ""
+    raw = os.environ.get("CHEMAGENT_LOG_SMILES_LIMIT", "").strip()
+    try:
+        limit = max(0, int(raw)) if raw else 80
+    except ValueError:
+        limit = 80
+    if limit == 0 or len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3] + "..."
 
 
 def _runtime_ids() -> tuple[str, str]:
@@ -175,7 +191,7 @@ def tool_task_complete(
         "[TASK COMPLETE] summary=%r artifacts=%s smiles=%r metrics_keys=%s",
         payload.summary[:120],
         payload.produced_artifact_ids,
-        payload.advisory_active_smiles[:60],
+        _compact_smiles_for_log(payload.advisory_active_smiles),
         list(payload.metrics.keys()),
     )
     return json.dumps(
