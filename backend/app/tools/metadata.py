@@ -6,6 +6,13 @@ CHEM_TIER_METADATA_KEY = "chem_tier"
 CHEM_TIMEOUT_METADATA_KEY = "chem_timeout_seconds"
 CHEM_ROUTE_HINT_METADATA_KEY = "chem_route_hint"
 
+# Added by BaseChemTool migration — also declared in app.tools.base to avoid
+# a circular import, but canonical definitions live here.
+CHEM_READ_ONLY_KEY = "chem_read_only"
+CHEM_DIAGNOSTIC_KEYS_KEY = "chem_diagnostic_keys"
+CHEM_CONCURRENCY_SAFE_KEY = "chem_concurrency_safe"
+CHEM_MAX_RESULT_SIZE_KEY = "chem_max_result_size_chars"
+
 ChemToolTier = Literal["L1", "L2"]
 
 # ---------------------------------------------------------------------------

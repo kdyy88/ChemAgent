@@ -11,6 +11,8 @@
     "integrating_results": "🧠 Integrating tool results…",
     "task_running": "📋 Executing task {{id}}",
     "task_list_updated": "📋 Task list updated",
+    "auto_retrying": "⏳ LLM timed out, retrying automatically (attempt {{id}})…",
+    "auto_retrying_unknown": "⏳ LLM timed out, retrying automatically…",
     "shadow_error": "⚠️ Correcting structure issue…",
     "awaiting_reply": "🙋 Awaiting your reply…",
     "reasoning": "🧠 Agent reasoning…"

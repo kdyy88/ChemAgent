@@ -144,6 +144,25 @@ function summarizeSubAgentCompletion(output: Record<string, unknown>): string {
   return summary ? `${prefix}：${summary}` : `${prefix}，结果已返回主流程。`
 }
 
+function extractRetryAttempt(text: string): number | null {
+  const zhMatch = text.match(/第\s*(\d+)\s*次尝试/)
+  if (zhMatch) return Number.parseInt(zhMatch[1] ?? '', 10)
+
+  const enMatch = text.match(/attempt\s*(\d+)/i)
+  if (enMatch) return Number.parseInt(enMatch[1] ?? '', 10)
+
+  return null
+}
+
+function retryStatusLabelFromThinking(text: string): string | null {
+  if (!text.includes('自动重试') && !/retry/i.test(text)) return null
+
+  const attempt = extractRetryAttempt(text)
+  return attempt != null
+    ? translateStatusLabel('auto_retrying', { id: attempt })
+    : translateStatusLabel('auto_retrying_unknown')
+}
+
 function createTurn(turnId: string, message: string, tasks: SSETaskItem[]): SSETurn {
   return {
     turnId,
@@ -581,9 +600,13 @@ export const useSseStore = create<SseState>((set, get) => {
     },
 
     appendThinking: (thinking) => {
-      updateLastTurn((turn) => ({
-        thinkingSteps: appendThinkingStep(turn.thinkingSteps, thinking),
-      }))
+      updateLastTurn((turn) => {
+        const retryStatusLabel = retryStatusLabelFromThinking(thinking.text)
+        return {
+          thinkingSteps: appendThinkingStep(turn.thinkingSteps, thinking),
+          statusLabel: retryStatusLabel ?? turn.statusLabel,
+        }
+      })
     },
 
     completeStream: () => {

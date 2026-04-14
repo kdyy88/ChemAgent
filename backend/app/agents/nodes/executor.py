@@ -114,8 +114,16 @@ def _auto_patch_diagnostics(
     """If the tool result contains declared diagnostic keys, patch the matching
     molecule_tree node's diagnostics in-place.  Only updates nodes that already
     exist (created by tool_create_molecule_node or auto-harvest) — never creates
-    new nodes.  New tools only need a row in DIAGNOSTIC_SCHEMA; no code change."""
-    keys = DIAGNOSTIC_SCHEMA.get(tool_name)
+    new nodes.
+
+    Key source priority:
+    1. ``tool.metadata["chem_diagnostic_keys"]`` — set by BaseChemTool subclasses
+       (SSOT via ``diagnostic_keys`` class attribute).
+    2. ``DIAGNOSTIC_SCHEMA[tool_name]`` — legacy fallback for un-migrated tools.
+    """
+    _tool = _TOOL_LOOKUP.get(tool_name)
+    _tool_meta: dict = getattr(_tool, "metadata", None) or {}
+    keys = _tool_meta.get("chem_diagnostic_keys") or DIAGNOSTIC_SCHEMA.get(tool_name)
     if not keys:
         return
     if not isinstance(result, dict):

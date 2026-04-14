@@ -77,6 +77,18 @@ export function translateToolLabel(toolName: string): string {
 
 type StatusKey = keyof (typeof import('../../public/locales/en/agent.json'))['status']
 
+const STATUS_FALLBACKS: Record<StatusKey, string> = {
+  tool_running: '🛠️ 工具执行中…',
+  integrating_results: '🧠 正在整合工具结果…',
+  task_running: '📋 正在执行任务 {{id}}',
+  task_list_updated: '📋 任务清单已更新',
+  auto_retrying: '⏳ LLM 超时，正在第 {{id}} 次自动重试…',
+  auto_retrying_unknown: '⏳ LLM 超时，正在自动重试…',
+  shadow_error: '⚠️ 正在修正结构问题…',
+  awaiting_reply: '🙋 等待您的回复…',
+  reasoning: '🧠 智能体推理中…',
+}
+
 /**
  * Translate a status key from the `agent:status` namespace with interpolation.
  *
@@ -86,7 +98,18 @@ type StatusKey = keyof (typeof import('../../public/locales/en/agent.json'))['st
  *   translateStatusLabel('shadow_error')            // "⚠️ Correcting structure issue…"
  */
 export function translateStatusLabel(key: StatusKey, vars?: Record<string, unknown>): string {
-  return i18next.t(`agent:status.${key}`, vars as Record<string, string> | undefined)
+  const i18nKey = `agent:status.${key}`
+  const result = (i18next.t as (k: string, opts?: object) => string)(
+    i18nKey,
+    vars as Record<string, string> | undefined,
+  )
+  if (result !== i18nKey && !result.includes('agent:status.')) return result
+
+  let fallback = STATUS_FALLBACKS[key] ?? key
+  for (const [varKey, value] of Object.entries(vars ?? {})) {
+    fallback = fallback.replace(`{{${varKey}}}`, String(value))
+  }
+  return fallback
 }
 
 // ── Error message translation ────────────────────────────────────────────────

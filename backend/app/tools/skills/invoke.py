@@ -1,28 +1,14 @@
-"""tool_invoke_skill — The SkillTool Bridge
-==========================================
+"""tool_invoke_skill -- class-based BaseChemTool contract.
 
-Implements the ``tool_invoke_skill`` LangChain tool that acts as the single
-entry-point for the main agent to activate any registered skill.
-
-Pipeline
---------
-1. **Discovery** — Agent reads the L1 catalogue (always in system prompt) and
-   identifies the skill whose ``when_to_use`` matches the current intent.
-2. **Bridge** — Agent calls ``tool_invoke_skill(skill_name, arguments)``.
-3. **Execution** — This tool loads the L2 SOP and either:
-   - ``context=inline``: returns the SOP wrapped in a strong XML attention
-     anchor so the agent continues its ReAct loop under skill instructions.
-   - ``context=fork``:  delegates to an isolated sub-agent via the existing
-     ``tool_run_sub_agent`` infrastructure (required_skills path), then returns
-     the sub-agent result summary.
+The SkillTool Bridge: single entry-point for the main agent to activate any
+registered skill.
 
 Security
 --------
-- Arguments are **never** substituted into the SOP via string replacement
-  (prompt injection risk).  They are appended as a sanitised ``<arguments>``
-  block by ``skills.loader.load_skill_sop``.
-- Skill names are sanitised via ``_sanitize_skill_name`` before any filesystem
-  access.
+- Arguments are never substituted into the SOP via string replacement
+  (prompt injection risk). They are appended as a sanitised <arguments>
+  block by skills.loader.load_skill_sop.
+- Skill names are sanitised via _sanitize_skill_name before any filesystem access.
 """
 
 from __future__ import annotations
@@ -30,82 +16,97 @@ from __future__ import annotations
 import json
 import logging
 
-from langchain_core.runnables import RunnableConfig
+from pydantic import BaseModel, Field
 
-from app.tools.decorators import chem_tool
+from app.domain.schemas.workflow import ValidationResult
+from app.tools.base import ChemStateTool, _current_tool_config
 
 logger = logging.getLogger(__name__)
 
 
-@chem_tool(tier="L1")
-def tool_invoke_skill(skill_name: str, arguments: str = "{}", config: RunnableConfig | None = None) -> str:
+class InvokeSkillInput(BaseModel):
+    skill_name: str = Field(
+        description="The exact name from the skill catalogue (e.g. 'database-lookup')"
+    )
+    arguments: str = Field(
+        default="{}",
+        description=(
+            "JSON string with key/value pairs matching the skill's declared arguments. "
+            "Always include at least 'query' (free-text intent), and 'smiles' or 'artifact_id' "
+            "when a molecule is involved. "
+            "Example: '{\"query\": \"aspirin\", \"smiles\": \"CC(=O)Oc1ccccc1C(=O)O\"}'"
+        ),
+    )
+
+
+class ToolInvokeSkill(ChemStateTool[InvokeSkillInput, str]):
     """Activate a registered skill by name and execute its SOP.
 
     Use this tool when the user's intent matches one of the skills listed in
     ``<available_skills>``.  Read each skill's ``when_to_use`` to decide.
-
-    Parameters
-    ----------
-    skill_name:
-        The exact ``name`` from the skill catalogue (e.g. ``"database-lookup"``).
-    arguments:
-        JSON string with key/value pairs matching the skill's declared
-        ``arguments``.  Always include at least ``query`` (free-text intent),
-        and ``smiles`` or ``artifact_id`` when a molecule is involved.
-        Example: ``{"query": "aspirin", "smiles": "CC(=O)Oc1ccccc1C(=O)O"}``
     """
-    # ── Parse arguments ────────────────────────────────────────────────────────
-    try:
-        parsed_args: dict = json.loads(arguments) if arguments.strip() else {}
-    except json.JSONDecodeError as exc:
-        return json.dumps(
-            {"status": "error", "error": f"Invalid JSON in arguments: {exc}"},
-            ensure_ascii=False,
-        )
 
-    # ── Validate skill exists ──────────────────────────────────────────────────
-    from app.skills.loader import load_skill_catalogue  # noqa: PLC0415
+    name = "tool_invoke_skill"
+    args_schema = InvokeSkillInput
+    tier = "L1"
+    read_only = True
+    max_result_size_chars = 16_000
 
-    catalogue = load_skill_catalogue()
-    manifest = next((m for m in catalogue if m.name == skill_name), None)
-    if manifest is None:
-        available = [m.name for m in catalogue]
-        return json.dumps(
-            {
-                "status": "error",
-                "error": f"Skill not found: {skill_name!r}",
-                "available_skills": available,
-            },
-            ensure_ascii=False,
-        )
+    async def validate_input(
+        self, args: InvokeSkillInput, context: dict
+    ) -> ValidationResult:
+        try:
+            if args.arguments.strip():
+                json.loads(args.arguments)
+        except json.JSONDecodeError as exc:
+            return ValidationResult(
+                result=False,
+                message=f"Invalid JSON in arguments: {exc}",
+            )
+        return ValidationResult(result=True)
 
-    # ── Validate required arguments (fail-fast) ────────────────────────────────
-    missing = [
-        arg.name for arg in manifest.arguments
-        if arg.required and arg.name not in parsed_args
-    ]
-    if missing:
-        return json.dumps(
-            {
-                "status": "error",
-                "error": f"Missing required arguments for skill {skill_name!r}: {missing}. "
-                         "Use available tools to resolve them or ask the user.",
-            },
-            ensure_ascii=False,
-        )
+    def call(self, args: InvokeSkillInput) -> str:
+        """Invoke a registered skill by name with JSON arguments and return its output."""
+        parsed_args: dict = json.loads(args.arguments) if args.arguments.strip() else {}
 
-    # ── Dispatch by context ────────────────────────────────────────────────────
-    if manifest.context == "inline":
-        return _invoke_inline(skill_name, parsed_args)
-    else:
-        return _invoke_fork(skill_name, manifest, parsed_args, config)
+        from app.skills.loader import load_skill_catalogue  # noqa: PLC0415
 
+        catalogue = load_skill_catalogue()
+        manifest = next((m for m in catalogue if m.name == args.skill_name), None)
+        if manifest is None:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": f"Skill not found: {args.skill_name!r}",
+                    "available_skills": [m.name for m in catalogue],
+                },
+                ensure_ascii=False,
+            )
 
-# ── Inline execution ───────────────────────────────────────────────────────────
+        missing = [
+            arg.name for arg in manifest.arguments
+            if arg.required and arg.name not in parsed_args
+        ]
+        if missing:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error": (
+                        f"Missing required arguments for skill {args.skill_name!r}: {missing}. "
+                        "Use available tools to resolve them or ask the user."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        if manifest.context == "inline":
+            return _invoke_inline(args.skill_name, parsed_args)
+        else:
+            config = _current_tool_config.get()
+            return _invoke_fork(args.skill_name, manifest, parsed_args, config)
 
 
 def _invoke_inline(skill_name: str, parsed_args: dict) -> str:
-    """Load L2 SOP and return it with a strong XML attention anchor (雷3 対策)."""
     from app.skills.loader import load_skill_sop  # noqa: PLC0415
 
     try:
@@ -113,9 +114,6 @@ def _invoke_inline(skill_name: str, parsed_args: dict) -> str:
     except FileNotFoundError as exc:
         return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
 
-    # The XML wrapper creates a strong attention anchor in the context window.
-    # Plain JSON fields are forgotten as the context grows; a named XML block
-    # is highly salient and models respect it across long multi-step traces.
     return (
         f"技能加载成功。请立刻停止闲聊，进入技能执行模式。\n"
         f"严格按照以下 XML 标签内的指令执行：\n\n"
@@ -125,22 +123,7 @@ def _invoke_inline(skill_name: str, parsed_args: dict) -> str:
     )
 
 
-# ── Fork execution ─────────────────────────────────────────────────────────────
-
-
-def _invoke_fork(
-    skill_name: str,
-    manifest,  # type: ignore[type-arg]
-    parsed_args: dict,
-    config: RunnableConfig | None = None,
-) -> str:
-    """Delegate to an isolated sub-agent via tool_run_sub_agent (fork context).
-
-    Uses synchronous ``.invoke()``—safe because this function runs inside the
-    ``safe_chem_tool`` subprocess which has no running event loop.
-    ``config`` is forwarded so thread_id checkpointing and LangSmith tracing
-    remain intact across the parent → sub-agent boundary.
-    """
+def _invoke_fork(skill_name: str, manifest, parsed_args: dict, config) -> str:  # type: ignore[type-arg]
     import asyncio  # noqa: PLC0415
 
     from app.agents.sub_agents.tool import tool_run_sub_agent  # noqa: PLC0415
@@ -162,9 +145,6 @@ def _invoke_fork(
     }
 
     try:
-        # Sync invoke is correct here: this code runs in a subprocess spawned by
-        # safe_chem_tool, which has no running event loop.  asyncio.run() is used
-        # as the underlying transport to avoid the deprecated get_event_loop() path.
         result = asyncio.run(
             tool_run_sub_agent.ainvoke(invoke_input, config=config)
         )
@@ -175,3 +155,6 @@ def _invoke_fork(
             {"status": "error", "error": f"Fork execution failed: {exc}"},
             ensure_ascii=False,
         )
+
+
+tool_invoke_skill = ToolInvokeSkill().as_langchain_tool()

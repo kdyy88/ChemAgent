@@ -320,6 +320,27 @@ describe('sseStore', () => {
     expect(turn.thinkingSteps[0].text).toBe('正在调用：生成三维构象')
   })
 
+  it('elevates automatic retry thinking into a prominent retry status label', () => {
+    useSseStore.getState().startTurn('turn-retry', 'retry me', [])
+
+    useSseStore.getState().appendThinking({
+      type: 'thinking',
+      text: 'LLM 响应超时，正在基于当前节点上下文自动重试，第 2 次尝试...',
+      iteration: 0,
+      done: true,
+      source: 'engine',
+      category: 'status',
+      importance: 'high',
+      session_id: 'session-1',
+      turn_id: 'turn-retry',
+    })
+
+    const turn = useSseStore.getState().turns[0]
+    expect(turn.thinkingSteps).toHaveLength(1)
+    expect(turn.thinkingSteps[0].text).toContain('自动重试')
+    expect(turn.statusLabel).toBe('⏳ LLM 超时，正在第 2 次自动重试…')
+  })
+
   it('routes sub-agent token streams into thinking and preserves parent stream updates', async () => {
     fetchEventSourceMock.mockImplementation(async (_url: string, options?: { onmessage?: (msg: { data: string }) => void }) => {
       const emit = (event: SSEEvent) => {

@@ -314,10 +314,19 @@ def chem_tool(
 ) -> Callable[[Callable[P, Any]], Any]:
     """Register a chemistry tool with unified safety and tier metadata.
 
-    This keeps LangChain registration, timeout/error boundaries, and tool tier
-    metadata co-located so tool classification can be derived from the tool
-    object instead of scattered decorator stacks and side tables.
+    .. deprecated::
+        Use ``BaseChemTool`` subclasses (``ChemComputeTool``, ``ChemLookupTool``,
+        etc.) from ``app.tools.base`` instead.  The ``@chem_tool`` decorator
+        does not support ``validate_input``, ``check_permissions``, JIT
+        ``prompt()`` contributions, or ``max_result_size_chars`` enforcement.
+        All new tools and any migrated tools should use the class hierarchy.
     """
+    import warnings  # noqa: PLC0415
+    warnings.warn(
+        "@chem_tool is deprecated; use BaseChemTool subclasses from app.tools.base instead.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
     merged_metadata = dict(metadata or {})
     merged_metadata[CHEM_TIER_METADATA_KEY] = tier

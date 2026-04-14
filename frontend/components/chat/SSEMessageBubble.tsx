@@ -186,7 +186,7 @@ export const SSEMessageBubble = memo(function SSEMessageBubble({ turn }: SSEMess
             <div className="flex items-center gap-2 rounded-full border border-border/70 bg-muted/45 px-3 py-1.5 text-xs text-muted-foreground/78 shadow-sm backdrop-blur-sm w-fit">
               <LoaderCircle className="h-3.5 w-3.5 animate-spin text-foreground/62" />
               <span className="font-medium text-foreground/70">
-                {isPlanning ? 'Thinking · Planning…' : 'Thinking…'}
+                {turn.statusLabel || (isPlanning ? 'Thinking · Planning…' : 'Thinking…')}
               </span>
               <span className="rounded-full bg-background/80 px-1.5 py-0.5 font-mono tabular-nums text-[10px] text-muted-foreground/72">
                 {streamElapsedSeconds}s

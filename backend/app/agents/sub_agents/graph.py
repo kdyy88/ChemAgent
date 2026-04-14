@@ -34,6 +34,7 @@ from app.agents.postprocessors import TOOL_POSTPROCESSORS
 from app.agents.sub_agents.runtime_tools import INTERNAL_SUB_AGENT_TOOLS
 from app.domain.schemas.agent import ChemState, MoleculeWorkspaceEntry
 from app.agents.sub_agents.prompts import SubAgentMode, get_sub_agent_prompt
+from app.tools.registry import compile_tool_prompts
 from app.agents.utils import (
     apply_active_smiles_update,
     build_llm,
@@ -191,7 +192,9 @@ def _make_sub_agent_node(
 ) -> Any:
     """Return an async LangGraph-compatible node function for the LLM step."""
 
-    system_prompt = get_sub_agent_prompt(mode, custom_instructions, skill_markdown)
+    base_prompt = get_sub_agent_prompt(mode, custom_instructions, skill_markdown)
+    tool_prompt_extra = compile_tool_prompts(tools)
+    system_prompt = (base_prompt + "\n\n" + tool_prompt_extra).rstrip() if tool_prompt_extra.strip() else base_prompt
 
     async def sub_agent_node(state: ChemState, config: RunnableConfig) -> dict:  # noqa: ARG001
         llm = build_llm(model=state.get("selected_model"))

@@ -276,3 +276,112 @@ def get_tools_for_mode(
         allowed_names = [n for n in whitelist if n not in ALWAYS_DENIED and n in catalog]
 
     return [catalog[name] for name in allowed_names]
+
+
+# ── New helpers (BaseChemTool contract support) ───────────────────────────────
+
+
+def is_tool_read_only(tool_or_name: Any) -> bool:
+    """Return True when a tool is declared as read-only via BaseChemTool.read_only
+    or via the legacy ``chem_read_only`` metadata key.
+
+    Checks ``tool.metadata["chem_read_only"]`` set by
+    ``BaseChemTool._build_metadata()``.  Falls back to False (fail-closed).
+    """
+    if isinstance(tool_or_name, str):
+        catalog = _tool_catalog()
+        tool_obj = catalog.get(tool_or_name)
+        if tool_obj is None:
+            return False
+    else:
+        tool_obj = tool_or_name
+    metadata = dict(getattr(tool_obj, "metadata", None) or {})
+    return bool(metadata.get("chem_read_only", False))
+
+
+def get_tool_prompt_injection(tool_or_name: Any, context: dict | None = None) -> str:
+    """Return the per-tool JIT system prompt contribution.
+
+    For ``BaseChemTool``-based tools, the underlying instance is stored on
+    ``tool._chem_instance`` and its ``prompt()`` coroutine is called.
+    Falls back gracefully to ``""`` for legacy ``@chem_tool`` tools.
+    """
+    import asyncio  # noqa: PLC0415
+
+    if isinstance(tool_or_name, str):
+        catalog = _tool_catalog()
+        tool_obj = catalog.get(tool_or_name)
+    else:
+        tool_obj = tool_or_name
+    if tool_obj is None:
+        return ""
+    instance = getattr(tool_obj, "_chem_instance", None)
+    if instance is None:
+        return ""
+    try:
+        coro = instance.prompt(context or {})
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Already in async context — caller should await directly.
+                return ""
+            return loop.run_until_complete(coro)
+        except RuntimeError:
+            return asyncio.run(coro)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def compile_tool_prompts(tools: list[Any], context: dict | None = None) -> str:
+    """Concatenate non-empty prompt contributions from a tool set.
+
+    Designed for use in sub-agent system prompt assembly::
+
+        extra = compile_tool_prompts(allowed_tools, context)
+        if extra:
+            system_prompt += "\\n\\n" + extra
+    """
+    parts = [get_tool_prompt_injection(t, context) for t in tools]
+    return "\n\n".join(p for p in parts if p.strip())
+
+
+# ── Startup integrity assertion ───────────────────────────────────────────────
+
+
+def assert_explore_tools_are_read_only() -> None:
+    """Verify that every tool in _EXPLORE_TOOLS declares ``read_only=True``.
+
+    Call once at application startup (e.g. in ``app/main.py``) to catch the
+    class of bug where a mutating tool is accidentally added to the explore
+    whitelist.  Raises ``AssertionError`` with the offending names.
+
+    Tools not yet migrated to ``BaseChemTool`` (no ``chem_read_only`` key in
+    metadata) are skipped with a warning so the migration can proceed
+    incrementally without breaking startup.
+    """
+    import logging as _logging  # noqa: PLC0415
+
+    _log = _logging.getLogger(__name__)
+    catalog = _tool_catalog()
+    violations: list[str] = []
+    skipped: list[str] = []
+    for name in _EXPLORE_TOOLS:
+        tool_obj = catalog.get(name)
+        if tool_obj is None:
+            continue
+        metadata = dict(getattr(tool_obj, "metadata", None) or {})
+        if "chem_read_only" not in metadata:
+            skipped.append(name)
+            continue
+        if not metadata["chem_read_only"]:
+            violations.append(name)
+    if skipped:
+        _log.warning(
+            "assert_explore_tools_are_read_only: %d tools not yet migrated to "
+            "BaseChemTool and cannot be verified: %s",
+            len(skipped),
+            skipped,
+        )
+    assert not violations, (
+        f"Explore-mode tools must declare read_only=True. Violations: {violations}"
+    )

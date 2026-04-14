@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -40,8 +41,13 @@ _LOG_DIR = Path(
         str(Path(__file__).resolve().parents[4] / "logs" / "sessions"),
     )
 )
+_DEFAULT_LLM_TIMEOUT_SECONDS = 180.0
 
 _session_file_handlers: dict[str, logging.FileHandler] = {}
+
+
+class LlmCallTimeoutError(TimeoutError):
+    """Raised when the root agent LLM call exceeds the configured timeout."""
 
 
 def _get_session_logger(session_id: str) -> logging.Logger:
@@ -74,6 +80,16 @@ def _preview_text(value: str, limit: int = 220) -> str:
     if len(compact) <= limit:
         return compact
     return compact[:limit] + " ...[truncated]"
+
+
+def _llm_call_timeout_seconds() -> float:
+    raw = os.environ.get("CHEMAGENT_LLM_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return _DEFAULT_LLM_TIMEOUT_SECONDS
+    try:
+        return max(float(raw), 1.0)
+    except ValueError:
+        return _DEFAULT_LLM_TIMEOUT_SECONDS
 
 
 def _log_prompt_summary(prompt_messages: list[SystemMessage], *logs: logging.Logger) -> None:
@@ -173,7 +189,21 @@ async def chem_agent_node(state: ChemState, config: RunnableConfig = None) -> di
             for _l in _log_targets:
                 _l.info("📨 [LLM Input] msg[%d] role=%s:\n%s", i, role, content)
 
-    response = await llm_with_tools.ainvoke(prompt_messages)
+    llm_timeout_seconds = _llm_call_timeout_seconds()
+    try:
+        response = await asyncio.wait_for(
+            llm_with_tools.ainvoke(prompt_messages),
+            timeout=llm_timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        timeout_message = (
+            "LLM 调用超时，当前轮未能完成。"
+            f"已等待 {llm_timeout_seconds:g}s，请重试或缩小任务范围。"
+        )
+        logger.error("LLM call timed out after %ss", llm_timeout_seconds)
+        if slog:
+            slog.error("LLM call timed out after %ss", llm_timeout_seconds)
+        raise LlmCallTimeoutError(timeout_message) from exc
 
     if _LOG_LLM_IO and not _LOG_LLM_IO_FULL:
         _log_response_summary(response, *_log_targets)

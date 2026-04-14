@@ -26,7 +26,7 @@ from app.tools.pubchem.search import ALL_PUBCHEM_TOOLS
 from app.tools.rdkit import ALL_RDKIT_TOOLS
 from app.tools.skills.invoke import tool_invoke_skill
 from app.tools.skills.references import tool_read_skill_reference
-from app.tools.system.task_control import ALL_SYSTEM_CONTROL_TOOLS
+from app.tools.system.task_control import ALL_TASK_CONTROL_TOOLS as ALL_SYSTEM_CONTROL_TOOLS
 from app.tools.system.file_ops import ALL_FILE_OPS_TOOLS
 from app.tools.system.shell import ALL_SHELL_TOOLS
 from app.tools.system.state_tools import ALL_STATE_TOOLS

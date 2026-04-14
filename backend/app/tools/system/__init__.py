@@ -1,4 +1,4 @@
-from app.tools.system.task_control import ALL_SYSTEM_CONTROL_TOOLS, tool_ask_human, tool_update_task_status
+from app.tools.system.task_control import ALL_TASK_CONTROL_TOOLS as ALL_SYSTEM_CONTROL_TOOLS, tool_ask_human, tool_update_task_status
 from app.tools.system.file_ops import (
     ALL_FILE_OPS_TOOLS,
     tool_edit_file,

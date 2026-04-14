@@ -56,7 +56,8 @@ from enum import Enum
 from typing import Annotated, Any, cast
 
 from langchain_core.messages import HumanMessage
-from langchain_core.tools import tool
+from app.domain.schemas.workflow import ValidationResult
+from app.tools.base import ChemControlTool, _current_tool_config
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
@@ -467,19 +468,7 @@ class RunSubAgentArgs(BaseModel):
 # ── Tool implementation ────────────────────────────────────────────────────────
 
 
-@tool(args_schema=RunSubAgentArgs)
-async def tool_run_sub_agent(
-    mode: str,
-    task: str,
-    delegation: dict[str, Any] | SubAgentDelegation | None = None,
-    artifact_ids: list[str] | None = None,
-    custom_instructions: str = "",
-    custom_tools: list[str] | None = None,
-    required_skills: list[str] | None = None,
-    task_kind: str = SubAgentTaskKind.extract_facts.value,
-    output_contract: str = SubAgentOutputContract.bullet_summary.value,
-    smiles_policy: str = SubAgentSmilesPolicy.forbid_new.value,
-) -> str:
+class ToolRunSubAgent(ChemControlTool[RunSubAgentArgs, str]):
     """委派一个明确的子任务给隔离的专项子智能体执行。
 
     子智能体运行在独立的 LangGraph 线程中，拥有专属工具集和 Persona System Prompt。
@@ -496,461 +485,485 @@ async def tool_run_sub_agent(
     2. 子智能体不能访问当前对话历史；请优先使用 delegation 与 scratchpad refs 传递必要信息
     3. 子智能体不能再委派子任务（depth=1 强制限制）
     """
-    # ── Retrieve parent context via LangGraph config ──────────────────────────
-    try:
-        from langgraph.config import get_config as _lg_get_config  # noqa: PLC0415
-        lg_config = _lg_get_config()
-    except Exception:
-        lg_config = {}
 
-    configurable = lg_config.get("configurable") or {}
-    parent_thread_id: str = configurable.get("thread_id", "default")
-    callbacks = lg_config.get("callbacks")
-    parent_active_smiles = str(configurable.get("parent_active_smiles") or "").strip()
-    parent_active_artifact_id = str(configurable.get("parent_active_artifact_id") or "").strip()
-    parent_artifact_ids = [
-        str(artifact_id).strip()
-        for artifact_id in configurable.get("parent_artifact_ids", [])
-        if str(artifact_id).strip()
-    ]
-    parent_molecule_workspace_summary = str(configurable.get("parent_molecule_workspace_summary") or "").strip()
+    name = "tool_run_sub_agent"
+    args_schema = RunSubAgentArgs
+    tier = "L2"
+    max_result_size_chars = 10_000
 
-    # ── Resolve mode and filtered tool set ───────────────────────────────────
-    try:
-        sub_agent_mode = SubAgentMode(mode)
-    except ValueError:
-        return json.dumps(
-            {"status": "error", "error": f"Unknown sub-agent mode: '{mode}'"},
-            ensure_ascii=False,
-        )
+    async def validate_input(
+        self, args: RunSubAgentArgs, context: dict
+    ) -> ValidationResult:
+        return ValidationResult(result=True)
 
-    resolved_task_kind = cast(
-        SubAgentTaskKind,
-        _normalize_enum(task_kind, SubAgentTaskKind, SubAgentTaskKind.extract_facts),
-    )
-    resolved_output_contract = cast(
-        SubAgentOutputContract,
-        _normalize_enum(
-        output_contract,
-        SubAgentOutputContract,
-        SubAgentOutputContract.bullet_summary,
-        ),
-    )
-    resolved_smiles_policy = cast(
-        SubAgentSmilesPolicy,
-        _normalize_enum(
-        smiles_policy,
-        SubAgentSmilesPolicy,
-        SubAgentSmilesPolicy.forbid_new,
-        ),
-    )
+    async def call(self, args: RunSubAgentArgs) -> str:
+        """Delegate a complex multi-step task to a specialised sub-agent and return its result."""
+        # Unpack for compatibility with the rest of the function body.
+        mode = args.mode
+        task = args.task
+        delegation = args.delegation
+        artifact_ids = args.artifact_ids
+        custom_instructions = args.custom_instructions
+        custom_tools = args.custom_tools
+        required_skills = args.required_skills
+        task_kind = args.task_kind
+        output_contract = args.output_contract
+        smiles_policy = args.smiles_policy
 
-    inferred_task_kind = _infer_task_kind(task)
-    if resolved_task_kind == SubAgentTaskKind.extract_facts and inferred_task_kind != SubAgentTaskKind.extract_facts:
-        resolved_task_kind = inferred_task_kind
+        # ── Retrieve parent context via tool config contextvar ────────────────
+        lg_config = _current_tool_config.get() or {}
 
-    sub_agent_mode, preflight_payload = _preflight_sub_agent_request(
-        mode=sub_agent_mode,
-        task=task,
-        task_kind=resolved_task_kind,
-        output_contract=resolved_output_contract,
-        smiles_policy=resolved_smiles_policy,
-    )
-    mode = sub_agent_mode.value
-    if preflight_payload is not None:
-        return json.dumps(preflight_payload, ensure_ascii=False)
+        configurable = lg_config.get("configurable") or {}
+        parent_thread_id: str = configurable.get("thread_id", "default")
+        callbacks = lg_config.get("callbacks")
+        parent_active_smiles = str(configurable.get("parent_active_smiles") or "").strip()
+        parent_active_artifact_id = str(configurable.get("parent_active_artifact_id") or "").strip()
+        parent_artifact_ids = [
+            str(artifact_id).strip()
+            for artifact_id in configurable.get("parent_artifact_ids", [])
+            if str(artifact_id).strip()
+        ]
+        parent_molecule_workspace_summary = str(configurable.get("parent_molecule_workspace_summary") or "").strip()
 
-    inferred_mode = _infer_required_mode(task)
-    if inferred_mode is not None and _mode_rank(inferred_mode) > _mode_rank(sub_agent_mode):
-        logger.warning(
-            "mode_mismatch suggested=%s used=%s task=%.80s",
-            inferred_mode.value,
-            sub_agent_mode.value,
-            task,
-        )
-        if _env_truthy("AUTO_UPGRADE_MODE", True):
-            sub_agent_mode = inferred_mode
-            mode = inferred_mode.value
-
-    try:
-        filtered_tools = get_tools_for_mode(sub_agent_mode, custom_tools or None)
-    except ValueError as exc:
-        return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
-
-    skill_markdown = ""
-    if sub_agent_mode == SubAgentMode.custom:
+        # ── Resolve mode and filtered tool set ───────────────────────────────────
         try:
-            skill_markdown = load_required_skill_markdown(required_skills or None)
-        except (FileNotFoundError, ValueError) as exc:
+            sub_agent_mode = SubAgentMode(mode)
+        except ValueError:
+            return json.dumps(
+                {"status": "error", "error": f"Unknown sub-agent mode: '{mode}'"},
+                ensure_ascii=False,
+            )
+
+        resolved_task_kind = cast(
+            SubAgentTaskKind,
+            _normalize_enum(task_kind, SubAgentTaskKind, SubAgentTaskKind.extract_facts),
+        )
+        resolved_output_contract = cast(
+            SubAgentOutputContract,
+            _normalize_enum(
+            output_contract,
+            SubAgentOutputContract,
+            SubAgentOutputContract.bullet_summary,
+            ),
+        )
+        resolved_smiles_policy = cast(
+            SubAgentSmilesPolicy,
+            _normalize_enum(
+            smiles_policy,
+            SubAgentSmilesPolicy,
+            SubAgentSmilesPolicy.forbid_new,
+            ),
+        )
+
+        inferred_task_kind = _infer_task_kind(task)
+        if resolved_task_kind == SubAgentTaskKind.extract_facts and inferred_task_kind != SubAgentTaskKind.extract_facts:
+            resolved_task_kind = inferred_task_kind
+
+        sub_agent_mode, preflight_payload = _preflight_sub_agent_request(
+            mode=sub_agent_mode,
+            task=task,
+            task_kind=resolved_task_kind,
+            output_contract=resolved_output_contract,
+            smiles_policy=resolved_smiles_policy,
+        )
+        mode = sub_agent_mode.value
+        if preflight_payload is not None:
+            return json.dumps(preflight_payload, ensure_ascii=False)
+
+        inferred_mode = _infer_required_mode(task)
+        if inferred_mode is not None and _mode_rank(inferred_mode) > _mode_rank(sub_agent_mode):
+            logger.warning(
+                "mode_mismatch suggested=%s used=%s task=%.80s",
+                inferred_mode.value,
+                sub_agent_mode.value,
+                task,
+            )
+            if _env_truthy("AUTO_UPGRADE_MODE", True):
+                sub_agent_mode = inferred_mode
+                mode = inferred_mode.value
+
+        try:
+            filtered_tools = get_tools_for_mode(sub_agent_mode, custom_tools or None)
+        except ValueError as exc:
             return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
 
-    # ── Shared checkpointer (MUST be the SQLite instance) ─────────────────────
-    try:
-        from app.agents.main_agent.runtime import get_checkpointer  # noqa: PLC0415
-        checkpointer = get_checkpointer()
-    except RuntimeError as exc:
-        return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
+        skill_markdown = ""
+        if sub_agent_mode == SubAgentMode.custom:
+            try:
+                skill_markdown = load_required_skill_markdown(required_skills or None)
+            except (FileNotFoundError, ValueError) as exc:
+                return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
 
-    # ── Build sub-graph ───────────────────────────────────────────────────────
-    sub_graph = build_sub_agent_graph(
-        sub_agent_mode,
-        filtered_tools,
-        checkpointer,
-        custom_instructions=custom_instructions or "",
-        skill_markdown=skill_markdown,
-    )
+        # ── Shared checkpointer (MUST be the SQLite instance) ─────────────────────
+        try:
+            from app.agents.main_agent.runtime import get_checkpointer  # noqa: PLC0415
+            checkpointer = get_checkpointer()
+        except RuntimeError as exc:
+            return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
 
-    # ── UUID-backed thread isolation ─────────────────────────────────────────
-    sub_thread_id, plan_id, execution_task_id = _resolve_runtime_ids(
-        mode=mode,
-        configurable=configurable,
-    )
-
-    normalized_delegation = _normalize_delegation_payload(
-        mode=mode,
-        task=task,
-        requested_artifact_ids=artifact_ids,
-        parent_thread_id=parent_thread_id,
-        sub_thread_id=sub_thread_id,
-        parent_active_smiles=parent_active_smiles,
-        parent_active_artifact_id=parent_active_artifact_id,
-        parent_artifact_ids=parent_artifact_ids,
-        parent_molecule_workspace_summary=parent_molecule_workspace_summary,
-        provided_delegation=delegation,
-    )
-
-    # Forward parent callbacks for free streaming (LangGraph propagates
-    # on_chat_model_stream events from the sub-graph up through astream_events).
-    sub_config: dict = {
-        "configurable": {
-            "thread_id": sub_thread_id,
-            "parent_thread_id": parent_thread_id,
-            "scratchpad_session_id": parent_thread_id,
-            "subagent_phase": "plan" if mode == SubAgentMode.plan.value else "execution",
-        },
-        "recursion_limit": _sub_agent_recursion_limit(),
-    }
-    if plan_id is not None:
-        sub_config["configurable"]["plan_id"] = plan_id
-    if execution_task_id is not None:
-        sub_config["configurable"]["execution_task_id"] = execution_task_id
-    if callbacks is not None:
-        sub_config["callbacks"] = callbacks
-
-    # ── HITL resume detection ─────────────────────────────────────────────────
-    # Check whether the sub-graph already has a persisted checkpoint with a
-    # pending interrupt.  This is the "second invocation" branch triggered when
-    # the parent resumes after the user clicked Approve / Reject / Modify.
-    sub_snapshot = await sub_graph.aget_state(
-        {"configurable": {"thread_id": sub_thread_id}}
-    )
-    has_pending_interrupt = bool(sub_snapshot and sub_snapshot.interrupts)
-
-    if has_pending_interrupt:
-        # Re-surface the sub-graph's interrupt payload to get the parent's
-        # resume decision.  On this (second) invocation, LangGraph's scratchpad
-        # returns the resume value instead of raising GraphInterrupt.
-        pending = sub_snapshot.interrupts[0]
-        pending_payload = pending.value if isinstance(pending.value, dict) else {}
-        resume_value = interrupt(
-            {
-                "type": "sub_agent_approval",
-                "sub_thread_id": sub_thread_id,
-                **pending_payload,
-            }
+        # ── Build sub-graph ───────────────────────────────────────────────────────
+        sub_graph = build_sub_agent_graph(
+            sub_agent_mode,
+            filtered_tools,
+            checkpointer,
+            custom_instructions=custom_instructions or "",
+            skill_markdown=skill_markdown,
         )
-        # resume_value = {"action": "approve" | "reject" | "modify", "args": {...}}
-        sub_input: dict | Command = Command(resume=resume_value)
-        if _SUB_AGENT_VERBOSE_LOGS:
-            logger.debug(
-                "Sub-agent resuming: sub_thread_id=%s action=%s",
-                sub_thread_id,
-                (resume_value or {}).get("action"),
-            )
-    else:
-        # Fresh run — build initial state for the sub-graph.
-        if _SUB_AGENT_VERBOSE_LOGS:
-            logger.debug(
-                "Sub-agent delegation payload: sub_thread_id=%s mode=%s artifact_pointers=%s parent_active_artifact_id=%s parent_artifact_ids=%s parent_active_smiles=%s inline_context_chars=%d scratchpad_refs=%s task_len=%d",
-                sub_thread_id,
-                mode,
-                normalized_delegation.artifact_pointers,
-                parent_active_artifact_id or "",
-                [str(artifact_id or "").strip() for artifact_id in (parent_artifact_ids or []) if str(artifact_id or "").strip()],
-                _compact_smiles_for_log(parent_active_smiles),
-                len(normalized_delegation.inline_context),
-                [ref.scratchpad_id for ref in normalized_delegation.scratchpad_refs],
-                len(task or ""),
-            )
-        if _SUB_AGENT_VERBOSE_LOGS:
-            logger.debug(
-                "Sub-agent normalized delegation: sub_thread_id=%s active_smiles_present=%s scratchpad_refs=%s inline_context_preview=%s workspace_preview=%s",
-                sub_thread_id,
-                bool(parent_active_smiles),
-                [ref.scratchpad_id for ref in normalized_delegation.scratchpad_refs],
-                _preview_text(normalized_delegation.inline_context),
-                _preview_text(parent_molecule_workspace_summary),
-            )
-        sub_input = {
-            "messages": [HumanMessage(content=format_delegation_prompt(normalized_delegation))],
-            "active_smiles": parent_active_smiles or None,
-            "artifacts": [],
-            "molecule_workspace": [],
-            "tasks": [],
-            "is_complex": False,
-            "sub_agent_result": None,
-            "active_subtasks": {},
-            "active_subtask_id": None,
-            "subtask_control": {},
+
+        # ── UUID-backed thread isolation ─────────────────────────────────────────
+        sub_thread_id, plan_id, execution_task_id = _resolve_runtime_ids(
+            mode=mode,
+            configurable=configurable,
+        )
+
+        normalized_delegation = _normalize_delegation_payload(
+            mode=mode,
+            task=task,
+            requested_artifact_ids=artifact_ids,
+            parent_thread_id=parent_thread_id,
+            sub_thread_id=sub_thread_id,
+            parent_active_smiles=parent_active_smiles,
+            parent_active_artifact_id=parent_active_artifact_id,
+            parent_artifact_ids=parent_artifact_ids,
+            parent_molecule_workspace_summary=parent_molecule_workspace_summary,
+            provided_delegation=delegation,
+        )
+
+        # Forward parent callbacks for free streaming (LangGraph propagates
+        # on_chat_model_stream events from the sub-graph up through astream_events).
+        sub_config: dict = {
+            "configurable": {
+                "thread_id": sub_thread_id,
+                "parent_thread_id": parent_thread_id,
+                "scratchpad_session_id": parent_thread_id,
+                "subagent_phase": "plan" if mode == SubAgentMode.plan.value else "execution",
+            },
+            "recursion_limit": _sub_agent_recursion_limit(),
         }
-        logger.info(
-            "Sub-agent starting: mode=%s sub_thread_id=%s",
-            mode,
-            sub_thread_id,
-        )
+        if plan_id is not None:
+            sub_config["configurable"]["plan_id"] = plan_id
+        if execution_task_id is not None:
+            sub_config["configurable"]["execution_task_id"] = execution_task_id
+        if callbacks is not None:
+            sub_config["callbacks"] = callbacks
 
-    # ── Execute sub-graph ─────────────────────────────────────────────────────
-    try:
-        result = await asyncio.wait_for(
-            sub_graph.ainvoke(sub_input, config=sub_config),  # type: ignore[arg-type]
-            timeout=_SUB_AGENT_TIMEOUT,
+        # ── HITL resume detection ─────────────────────────────────────────────────
+        # Check whether the sub-graph already has a persisted checkpoint with a
+        # pending interrupt.  This is the "second invocation" branch triggered when
+        # the parent resumes after the user clicked Approve / Reject / Modify.
+        sub_snapshot = await sub_graph.aget_state(
+            {"configurable": {"thread_id": sub_thread_id}}
         )
-    except asyncio.TimeoutError:
-        return _serialize_agent_result(
-            AgentToolResult(
-                status="timeout",
-                mode=mode,
-                sub_thread_id=sub_thread_id,
-                delegation=normalized_delegation,
-                summary=f"子智能体超时（>{_SUB_AGENT_TIMEOUT:.0f}s），任务未完成。",
-                error=f"子智能体超时（>{_SUB_AGENT_TIMEOUT:.0f}s），任务未完成。",
-            ),
-            extras={
-                "task_kind": resolved_task_kind.value,
-                "output_contract": resolved_output_contract.value,
-                "smiles_policy": resolved_smiles_policy.value,
-                "needs_followup": True,
-            },
-        )
-    except Exception as exc:
-        logger.exception("Sub-agent execution error: sub_thread_id=%s", sub_thread_id)
-        return _serialize_agent_result(
-            AgentToolResult(
-                status="error",
-                mode=mode,
-                sub_thread_id=sub_thread_id,
-                delegation=normalized_delegation,
-                summary=str(exc),
-                error=str(exc),
-            ),
-            extras={
-                "task_kind": resolved_task_kind.value,
-                "output_contract": resolved_output_contract.value,
-                "smiles_policy": resolved_smiles_policy.value,
-                "needs_followup": True,
-            },
-        )
+        has_pending_interrupt = bool(sub_snapshot and sub_snapshot.interrupts)
 
-    # ── HITL bubble-up (general/custom only; explore/plan bypass_hitl=True) ──
-    # If the sub-graph was interrupted by a HEAVY_TOOLS approval gate, delegate
-    # the decision to the parent by calling interrupt() here.
-    # On the FIRST call: LangGraph raises GraphInterrupt → parent pauses.
-    # On RESUME call   : this branch is not reached (has_pending_interrupt=True
-    #                    above handles the re-invocation instead).
-    if isinstance(result, dict):
-        sub_interrupts = result.get(_INTERRUPT_KEY)
-        if sub_interrupts:
-            pending_int = sub_interrupts[0]
-            pending_payload = pending_int.value if isinstance(pending_int.value, dict) else {}
-            if _SUB_AGENT_VERBOSE_LOGS:
-                logger.debug(
-                    "Sub-agent interrupted: sub_thread_id=%s payload=%s",
-                    sub_thread_id,
-                    pending_payload,
-                )
-            # This call raises GraphInterrupt on first encounter (parent pauses).
-            interrupt(
+        if has_pending_interrupt:
+            # Re-surface the sub-graph's interrupt payload to get the parent's
+            # resume decision.  On this (second) invocation, LangGraph's scratchpad
+            # returns the resume value instead of raising GraphInterrupt.
+            pending = sub_snapshot.interrupts[0]
+            pending_payload = pending.value if isinstance(pending.value, dict) else {}
+            resume_value = interrupt(
                 {
                     "type": "sub_agent_approval",
                     "sub_thread_id": sub_thread_id,
                     **pending_payload,
                 }
             )
-            # Unreachable — interrupt() raises. Needed only for static analysis.
-            return ""  # type: ignore[return-value]
-
-    # ── Extract and return final response ─────────────────────────────────────
-    final_response, produced_artifacts, final_active_smiles, completion_payload = extract_sub_agent_outcome(
-        result if isinstance(result, dict) else None
-    )
-    completion: TaskCompletePayload | None = None
-    terminal_status = str((completion_payload or {}).get("status") or "").strip().lower()
-    if terminal_status == "completed" and completion_payload is not None:
-        completion = TaskCompletePayload.model_validate(
-            {
-                key: value
-                for key, value in completion_payload.items()
-                if key in {"summary", "produced_artifact_ids", "metrics", "advisory_active_smiles", "xml_report"}
+            # resume_value = {"action": "approve" | "reject" | "modify", "args": {...}}
+            sub_input: dict | Command = Command(resume=resume_value)
+            if _SUB_AGENT_VERBOSE_LOGS:
+                logger.debug(
+                    "Sub-agent resuming: sub_thread_id=%s action=%s",
+                    sub_thread_id,
+                    (resume_value or {}).get("action"),
+                )
+        else:
+            # Fresh run — build initial state for the sub-graph.
+            if _SUB_AGENT_VERBOSE_LOGS:
+                logger.debug(
+                    "Sub-agent delegation payload: sub_thread_id=%s mode=%s artifact_pointers=%s parent_active_artifact_id=%s parent_artifact_ids=%s parent_active_smiles=%s inline_context_chars=%d scratchpad_refs=%s task_len=%d",
+                    sub_thread_id,
+                    mode,
+                    normalized_delegation.artifact_pointers,
+                    parent_active_artifact_id or "",
+                    [str(artifact_id or "").strip() for artifact_id in (parent_artifact_ids or []) if str(artifact_id or "").strip()],
+                    _compact_smiles_for_log(parent_active_smiles),
+                    len(normalized_delegation.inline_context),
+                    [ref.scratchpad_id for ref in normalized_delegation.scratchpad_refs],
+                    len(task or ""),
+                )
+            if _SUB_AGENT_VERBOSE_LOGS:
+                logger.debug(
+                    "Sub-agent normalized delegation: sub_thread_id=%s active_smiles_present=%s scratchpad_refs=%s inline_context_preview=%s workspace_preview=%s",
+                    sub_thread_id,
+                    bool(parent_active_smiles),
+                    [ref.scratchpad_id for ref in normalized_delegation.scratchpad_refs],
+                    _preview_text(normalized_delegation.inline_context),
+                    _preview_text(parent_molecule_workspace_summary),
+                )
+            sub_input = {
+                "messages": [HumanMessage(content=format_delegation_prompt(normalized_delegation))],
+                "active_smiles": parent_active_smiles or None,
+                "artifacts": [],
+                "molecule_workspace": [],
+                "tasks": [],
+                "is_complex": False,
+                "sub_agent_result": None,
+                "active_subtasks": {},
+                "active_subtask_id": None,
+                "subtask_control": {},
             }
+            logger.info(
+                "Sub-agent starting: mode=%s sub_thread_id=%s",
+                mode,
+                sub_thread_id,
+            )
+
+        # ── Execute sub-graph ─────────────────────────────────────────────────────
+        try:
+            result = await asyncio.wait_for(
+                sub_graph.ainvoke(sub_input, config=sub_config),  # type: ignore[arg-type]
+                timeout=_SUB_AGENT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            return _serialize_agent_result(
+                AgentToolResult(
+                    status="timeout",
+                    mode=mode,
+                    sub_thread_id=sub_thread_id,
+                    delegation=normalized_delegation,
+                    summary=f"子智能体超时（>{_SUB_AGENT_TIMEOUT:.0f}s），任务未完成。",
+                    error=f"子智能体超时（>{_SUB_AGENT_TIMEOUT:.0f}s），任务未完成。",
+                ),
+                extras={
+                    "task_kind": resolved_task_kind.value,
+                    "output_contract": resolved_output_contract.value,
+                    "smiles_policy": resolved_smiles_policy.value,
+                    "needs_followup": True,
+                },
+            )
+        except Exception as exc:
+            logger.exception("Sub-agent execution error: sub_thread_id=%s", sub_thread_id)
+            return _serialize_agent_result(
+                AgentToolResult(
+                    status="error",
+                    mode=mode,
+                    sub_thread_id=sub_thread_id,
+                    delegation=normalized_delegation,
+                    summary=str(exc),
+                    error=str(exc),
+                ),
+                extras={
+                    "task_kind": resolved_task_kind.value,
+                    "output_contract": resolved_output_contract.value,
+                    "smiles_policy": resolved_smiles_policy.value,
+                    "needs_followup": True,
+                },
+            )
+
+        # ── HITL bubble-up (general/custom only; explore/plan bypass_hitl=True) ──
+        # If the sub-graph was interrupted by a HEAVY_TOOLS approval gate, delegate
+        # the decision to the parent by calling interrupt() here.
+        # On the FIRST call: LangGraph raises GraphInterrupt → parent pauses.
+        # On RESUME call   : this branch is not reached (has_pending_interrupt=True
+        #                    above handles the re-invocation instead).
+        if isinstance(result, dict):
+            sub_interrupts = result.get(_INTERRUPT_KEY)
+            if sub_interrupts:
+                pending_int = sub_interrupts[0]
+                pending_payload = pending_int.value if isinstance(pending_int.value, dict) else {}
+                if _SUB_AGENT_VERBOSE_LOGS:
+                    logger.debug(
+                        "Sub-agent interrupted: sub_thread_id=%s payload=%s",
+                        sub_thread_id,
+                        pending_payload,
+                    )
+                # This call raises GraphInterrupt on first encounter (parent pauses).
+                interrupt(
+                    {
+                        "type": "sub_agent_approval",
+                        "sub_thread_id": sub_thread_id,
+                        **pending_payload,
+                    }
+                )
+                # Unreachable — interrupt() raises. Needed only for static analysis.
+                return ""  # type: ignore[return-value]
+
+        # ── Extract and return final response ─────────────────────────────────────
+        final_response, produced_artifacts, final_active_smiles, completion_payload = extract_sub_agent_outcome(
+            result if isinstance(result, dict) else None
         )
+        completion: TaskCompletePayload | None = None
+        terminal_status = str((completion_payload or {}).get("status") or "").strip().lower()
+        if terminal_status == "completed" and completion_payload is not None:
+            completion = TaskCompletePayload.model_validate(
+                {
+                    key: value
+                    for key, value in completion_payload.items()
+                    if key in {"summary", "produced_artifact_ids", "metrics", "advisory_active_smiles", "xml_report"}
+                }
+            )
 
-    advisory_active_smiles = ""
-    if completion and completion.advisory_active_smiles.strip():
-        advisory_active_smiles = completion.advisory_active_smiles.strip()
-    elif final_active_smiles and final_active_smiles != parent_active_smiles:
-        advisory_active_smiles = final_active_smiles
+        advisory_active_smiles = ""
+        if completion and completion.advisory_active_smiles.strip():
+            advisory_active_smiles = completion.advisory_active_smiles.strip()
+        elif final_active_smiles and final_active_smiles != parent_active_smiles:
+            advisory_active_smiles = final_active_smiles
 
-    report_content = _build_report_content(
-        final_response=final_response,
-        completion_payload=completion_payload,
-        produced_artifacts=produced_artifacts if isinstance(produced_artifacts, list) else [],
-        advisory_active_smiles=advisory_active_smiles,
-    )
-    report_ref = create_scratchpad_entry(
-        session_id=parent_thread_id,
-        sub_thread_id=sub_thread_id,
-        kind=ScratchpadKind.report,
-        content=report_content,
-        created_by="sub_agent",
-        summary=_preview_text(report_content, limit=160),
-        extension="md",
-    )
-
-    if _SUB_AGENT_VERBOSE_LOGS:
-        logger.debug(
-            "Sub-agent outcome payload: sub_thread_id=%s produced_artifacts=%d advisory_active_smiles_present=%s completion_present=%s report_ref=%s response_preview=%s",
-            sub_thread_id,
-            len(produced_artifacts),
-            bool(advisory_active_smiles),
-            completion_payload is not None,
-            report_ref.scratchpad_id,
-            _preview_text(report_content),
-        )
-
-    if terminal_status == "plan_pending_approval":
-        plan_payload = ExitPlanModePayload.model_validate(completion_payload or {})
-        return _serialize_agent_result(
-            AgentToolResult(
-                status="plan_pending_approval",
-                mode=mode,
-                sub_thread_id=sub_thread_id,
-                execution_task_id=execution_task_id,
-                delegation=normalized_delegation,
-                plan_pointer=plan_payload.plan,
-                scratchpad_report_ref=report_ref,
-                summary=plan_payload.summary or report_ref.summary or "子智能体已生成待审批计划。",
-            ),
-            extras={
-                "task_kind": resolved_task_kind.value,
-                "output_contract": resolved_output_contract.value,
-                "smiles_policy": resolved_smiles_policy.value,
-                "needs_followup": True,
-            },
-        )
-
-    if terminal_status == "failed":
-        failure_payload = ReportFailurePayload.model_validate(completion_payload or {})
-        return _serialize_agent_result(
-            AgentToolResult(
-                status="failed",
-                mode=mode,
-                sub_thread_id=sub_thread_id,
-                execution_task_id=execution_task_id,
-                delegation=normalized_delegation,
-                produced_artifacts=produced_artifacts if isinstance(produced_artifacts, list) else [],
-                scratchpad_report_ref=report_ref,
-                summary=failure_payload.summary or report_ref.summary or "子智能体执行失败。",
-                advisory_active_smiles=advisory_active_smiles or None,
-                error=failure_payload.error or failure_payload.summary,
-                failure=failure_payload,
-            ),
-            extras={
-                "task_kind": resolved_task_kind.value,
-                "output_contract": resolved_output_contract.value,
-                "smiles_policy": resolved_smiles_policy.value,
-                "needs_followup": True,
-            },
-        )
-
-    if terminal_status == "stopped":
-        stop_payload = TaskStopPayload.model_validate(completion_payload or {})
-        return _serialize_agent_result(
-            AgentToolResult(
-                status="stopped",
-                mode=mode,
-                sub_thread_id=sub_thread_id,
-                execution_task_id=execution_task_id,
-                delegation=normalized_delegation,
-                produced_artifacts=produced_artifacts if isinstance(produced_artifacts, list) else [],
-                scratchpad_report_ref=report_ref,
-                summary=stop_payload.summary or report_ref.summary or "子智能体已停止。",
-                advisory_active_smiles=advisory_active_smiles or None,
-                error=stop_payload.reason,
-                failure=stop_payload,
-            ),
-            extras={
-                "task_kind": resolved_task_kind.value,
-                "output_contract": resolved_output_contract.value,
-                "smiles_policy": resolved_smiles_policy.value,
-                "needs_followup": True,
-            },
-        )
-
-    if completion is None:
-        logger.warning(
-            "[PROTOCOL ERROR] sub_thread_id=%s mode=%s — sub-agent did not call a terminal protocol tool; report_ref=%s response_len=%d",
-            sub_thread_id,
-            mode,
-            report_ref.scratchpad_id,
-            len(final_response),
-        )
-        return _serialize_agent_result(
-            AgentToolResult(
-                status="protocol_error",
-                mode=mode,
-                sub_thread_id=sub_thread_id,
-                execution_task_id=execution_task_id,
-                delegation=normalized_delegation,
-                produced_artifacts=produced_artifacts if isinstance(produced_artifacts, list) else [],
-                scratchpad_report_ref=report_ref,
-                summary="子智能体未调用终结协议工具，结果未通过强类型终结协议。",
-                advisory_active_smiles=advisory_active_smiles or None,
-                error="子智能体未调用终结协议工具，结果未通过强类型终结协议。",
-            ),
-            extras={
-                "task_kind": resolved_task_kind.value,
-                "output_contract": resolved_output_contract.value,
-                "smiles_policy": resolved_smiles_policy.value,
-                "needs_followup": True,
-            },
-        )
-
-    logger.info(
-        "Sub-agent complete: sub_thread_id=%s response_len=%d produced_artifacts=%d report_ref=%s advisory_active_smiles=%s",
-        sub_thread_id,
-        len(final_response),
-        len(produced_artifacts),
-        report_ref.scratchpad_id,
-        _compact_smiles_for_log(advisory_active_smiles),
-    )
-
-    return _serialize_agent_result(
-        AgentToolResult(
-            status="ok",
-            mode=mode,
-            sub_thread_id=sub_thread_id,
-            execution_task_id=execution_task_id,
-            delegation=normalized_delegation,
-            completion=completion,
+        report_content = _build_report_content(
+            final_response=final_response,
+            completion_payload=completion_payload,
             produced_artifacts=produced_artifacts if isinstance(produced_artifacts, list) else [],
-            scratchpad_report_ref=report_ref,
-            summary=completion.summary or report_ref.summary or "子智能体已完成任务。",
-            advisory_active_smiles=advisory_active_smiles or None,
-        ),
-        extras={
-            "task_kind": resolved_task_kind.value,
-            "output_contract": resolved_output_contract.value,
-            "smiles_policy": resolved_smiles_policy.value,
-            "needs_followup": False,
-        },
-    )
+            advisory_active_smiles=advisory_active_smiles,
+        )
+        report_ref = create_scratchpad_entry(
+            session_id=parent_thread_id,
+            sub_thread_id=sub_thread_id,
+            kind=ScratchpadKind.report,
+            content=report_content,
+            created_by="sub_agent",
+            summary=_preview_text(report_content, limit=160),
+            extension="md",
+        )
+
+        if _SUB_AGENT_VERBOSE_LOGS:
+            logger.debug(
+                "Sub-agent outcome payload: sub_thread_id=%s produced_artifacts=%d advisory_active_smiles_present=%s completion_present=%s report_ref=%s response_preview=%s",
+                sub_thread_id,
+                len(produced_artifacts),
+                bool(advisory_active_smiles),
+                completion_payload is not None,
+                report_ref.scratchpad_id,
+                _preview_text(report_content),
+            )
+
+        if terminal_status == "plan_pending_approval":
+            plan_payload = ExitPlanModePayload.model_validate(completion_payload or {})
+            return _serialize_agent_result(
+                AgentToolResult(
+                    status="plan_pending_approval",
+                    mode=mode,
+                    sub_thread_id=sub_thread_id,
+                    execution_task_id=execution_task_id,
+                    delegation=normalized_delegation,
+                    plan_pointer=plan_payload.plan,
+                    scratchpad_report_ref=report_ref,
+                    summary=plan_payload.summary or report_ref.summary or "子智能体已生成待审批计划。",
+                ),
+                extras={
+                    "task_kind": resolved_task_kind.value,
+                    "output_contract": resolved_output_contract.value,
+                    "smiles_policy": resolved_smiles_policy.value,
+                    "needs_followup": True,
+                },
+            )
+
+        if terminal_status == "failed":
+            failure_payload = ReportFailurePayload.model_validate(completion_payload or {})
+            return _serialize_agent_result(
+                AgentToolResult(
+                    status="failed",
+                    mode=mode,
+                    sub_thread_id=sub_thread_id,
+                    execution_task_id=execution_task_id,
+                    delegation=normalized_delegation,
+                    produced_artifacts=produced_artifacts if isinstance(produced_artifacts, list) else [],
+                    scratchpad_report_ref=report_ref,
+                    summary=failure_payload.summary or report_ref.summary or "子智能体执行失败。",
+                    advisory_active_smiles=advisory_active_smiles or None,
+                    error=failure_payload.error or failure_payload.summary,
+                    failure=failure_payload,
+                ),
+                extras={
+                    "task_kind": resolved_task_kind.value,
+                    "output_contract": resolved_output_contract.value,
+                    "smiles_policy": resolved_smiles_policy.value,
+                    "needs_followup": True,
+                },
+            )
+
+        if terminal_status == "stopped":
+            stop_payload = TaskStopPayload.model_validate(completion_payload or {})
+            return _serialize_agent_result(
+                AgentToolResult(
+                    status="stopped",
+                    mode=mode,
+                    sub_thread_id=sub_thread_id,
+                    execution_task_id=execution_task_id,
+                    delegation=normalized_delegation,
+                    produced_artifacts=produced_artifacts if isinstance(produced_artifacts, list) else [],
+                    scratchpad_report_ref=report_ref,
+                    summary=stop_payload.summary or report_ref.summary or "子智能体已停止。",
+                    advisory_active_smiles=advisory_active_smiles or None,
+                    error=stop_payload.reason,
+                    failure=stop_payload,
+                ),
+                extras={
+                    "task_kind": resolved_task_kind.value,
+                    "output_contract": resolved_output_contract.value,
+                    "smiles_policy": resolved_smiles_policy.value,
+                    "needs_followup": True,
+                },
+            )
+
+        if completion is None:
+            logger.warning(
+                "[PROTOCOL ERROR] sub_thread_id=%s mode=%s — sub-agent did not call a terminal protocol tool; report_ref=%s response_len=%d",
+                sub_thread_id,
+                mode,
+                report_ref.scratchpad_id,
+                len(final_response),
+            )
+            return _serialize_agent_result(
+                AgentToolResult(
+                    status="protocol_error",
+                    mode=mode,
+                    sub_thread_id=sub_thread_id,
+                    execution_task_id=execution_task_id,
+                    delegation=normalized_delegation,
+                    produced_artifacts=produced_artifacts if isinstance(produced_artifacts, list) else [],
+                    scratchpad_report_ref=report_ref,
+                    summary="子智能体未调用终结协议工具，结果未通过强类型终结协议。",
+                    advisory_active_smiles=advisory_active_smiles or None,
+                    error="子智能体未调用终结协议工具，结果未通过强类型终结协议。",
+                ),
+                extras={
+                    "task_kind": resolved_task_kind.value,
+                    "output_contract": resolved_output_contract.value,
+                    "smiles_policy": resolved_smiles_policy.value,
+                    "needs_followup": True,
+                },
+            )
+
+        logger.info(
+            "Sub-agent complete: sub_thread_id=%s response_len=%d produced_artifacts=%d report_ref=%s advisory_active_smiles=%s",
+            sub_thread_id,
+            len(final_response),
+            len(produced_artifacts),
+            report_ref.scratchpad_id,
+            _compact_smiles_for_log(advisory_active_smiles),
+        )
+
+        return _serialize_agent_result(
+            AgentToolResult(
+                status="ok",
+                mode=mode,
+                sub_thread_id=sub_thread_id,
+                execution_task_id=execution_task_id,
+                delegation=normalized_delegation,
+                completion=completion,
+                produced_artifacts=produced_artifacts if isinstance(produced_artifacts, list) else [],
+                scratchpad_report_ref=report_ref,
+                summary=completion.summary or report_ref.summary or "子智能体已完成任务。",
+                advisory_active_smiles=advisory_active_smiles or None,
+            ),
+            extras={
+                "task_kind": resolved_task_kind.value,
+                "output_contract": resolved_output_contract.value,
+                "smiles_policy": resolved_smiles_policy.value,
+                "needs_followup": False,
+            },
+        )
+
+
+tool_run_sub_agent = ToolRunSubAgent().as_langchain_tool()

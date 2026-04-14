@@ -11,6 +11,8 @@
     "integrating_results": "🧠 正在整合工具结果…",
     "task_running": "📋 正在执行任务 {{id}}",
     "task_list_updated": "📋 任务清单已更新",
+    "auto_retrying": "⏳ LLM 超时，正在第 {{id}} 次自动重试…",
+    "auto_retrying_unknown": "⏳ LLM 超时，正在自动重试…",
     "shadow_error": "⚠️ 正在修正结构问题…",
     "awaiting_reply": "🙋 等待您的回复…",
     "reasoning": "🧠 智能体推理中…"

@@ -441,13 +441,7 @@ def format_tasks_for_prompt(tasks: list[Task] | None) -> str:
         return "- 当前没有显式任务清单；直接根据用户请求执行即可，无需调用 `tool_update_task_status`。"
 
     lines = [
-        "- 你必须按顺序执行以下任务。",
-        "- 调用 `tool_update_task_status` 时，优先直接使用任务列表里的纯数字 `task_id`（例如 `1`、`2`），不要拼接描述文本。",
-        "- 如果某项任务会跨多轮推进、需要向前端显示长耗时阶段，开始前再调用 `tool_update_task_status(task_id, \"in_progress\")`。",
-        "- 如果你会在当前工作跨度内直接完成该任务，可跳过单独的 `in_progress` 调用，完成后直接标记 `completed` 或 `failed`。",
-        "- 完成某项任务后，立即调用 `tool_update_task_status(task_id, \"completed\")`；若已有明确阶段结论，请附带一句 `summary` 记录本阶段产物。",
-        "- 如果某项任务无法完成，调用 `tool_update_task_status(task_id, \"failed\")` 并说明原因。",
-        "- 已完成任务默认视为锁定；只有在新工具证据、用户补充信息或新的实验结果出现后，才允许重新打开。",
+        "- 按顺序执行以下任务；`task_id` 使用纯数字（例如 `1`、`2`）。",
     ]
     for task in tasks:
         lines.append(f"- [{task['status']}] {task['id']}. {task['description']}")

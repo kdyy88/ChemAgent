@@ -56,3 +56,37 @@ class SubtaskPointer(BaseModel):
     plan_id: str | None = Field(default=None, description="Associated plan UUID when applicable.")
     plan_file_ref: str | None = Field(default=None, description="Associated plan file pointer when applicable.")
     summary: str = Field(default="", description="Compact subtask summary for parent state/UI.")
+
+
+# ---------------------------------------------------------------------------
+# Tool contract types (used by BaseChemTool)
+# ---------------------------------------------------------------------------
+
+
+class ValidationResult(BaseModel):
+    """Result of BaseChemTool.validate_input().
+
+    When result=False the executor surfaces the message to the model so it can
+    correct its arguments and retry.  No UI is shown to the user — this is a
+    pure model-facing signal (mirrors Claude Code Tool.ts validateInput()).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    result: bool = Field(description="True when input is valid and execution may proceed.")
+    message: str | None = Field(default=None, description="Human-readable explanation when result=False.")
+    error_code: int | None = Field(default=None, description="Optional machine-readable error code.")
+
+
+class PermissionResult(BaseModel):
+    """Result of BaseChemTool.check_permissions().
+
+    When granted=False the executor triggers the HITL approval gate and surfaces
+    reason to the user.  Only called after validate_input() passes
+    (mirrors Claude Code Tool.ts checkPermissions()).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    granted: bool = Field(description="True when the tool is permitted to run.")
+    reason: str | None = Field(default=None, description="Human-readable explanation when granted=False.")

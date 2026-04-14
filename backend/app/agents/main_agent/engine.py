@@ -31,6 +31,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
 
 from app.agents.main_agent.runtime import get_compiled_graph, has_persisted_session
+from app.agents.nodes.agent import LlmCallTimeoutError
 from app.domain.schemas.agent import ChemState, MoleculeNode
 from app.domain.store.artifact_store import store_engine_artifact
 from app.domain.store.plan_store import update_plan_file
@@ -348,6 +349,35 @@ class ChemSessionEngine:
                 # Only push the correction system message in the next turn;
                 # LangGraph state already holds the full prior conversation.
                 active_graph_input = {"messages": retry_sig.new_messages}
+                self._llm_reasoning_emitted = False
+
+            except LlmCallTimeoutError as exc:
+                current_retry += 1
+                if current_retry > self.MAX_RETRIES:
+                    yield self._sse(
+                        self._event_payload(
+                            "error",
+                            error=(
+                                f"LLM 调用连续超时，已达最大重试次数 ({self.MAX_RETRIES})。"
+                                f"最后错误: {exc}"
+                            ),
+                        )
+                    )
+                    return
+
+                yield self._sse(
+                    self._thinking_dict(
+                        text=(
+                            f"LLM 响应超时，正在基于当前节点上下文自动重试，"
+                            f"第 {current_retry} 次尝试..."
+                        ),
+                        source="engine",
+                        category="system",
+                        importance="high",
+                    )
+                )
+                has_checkpoint = await has_persisted_session(session_id)
+                active_graph_input = {} if has_checkpoint else graph_input
                 self._llm_reasoning_emitted = False
 
             except Exception as exc:

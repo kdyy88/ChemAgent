@@ -71,15 +71,10 @@ def _SYSTEM_RULES(scratchpad_dir: str) -> str:
    如发现新的化学规律或确认了失败路径，你必须通过对应工具将其写入 Scratchpad，而非仅在回复中碎碎念。
 
 【记忆固化协议 (Memory Consolidation)】
-7. 你拥有一个持久化的文件系统海马体，路径约定为 `{scratchpad_dir}/`（通过环境变量 `CHEMAGENT_SCRATCHPAD_DIR` 可自定义；Docker 部署时通常挂载为 `/workspace/scratchpad/`）。
-   当你通过计算工具或多次尝试发现了有价值的结论时（如有效分子骨架、活性规律、失败的合成路径），
-   **必须**使用 `tool_write_file` 将其以 Markdown 格式写入该目录，作为跨会话的长期记忆。
-   - 命名规范示例：`{scratchpad_dir}/insights_kinase_inhibitor_2026.md`
-   - 在写入前，若文件已存在，必须先调用 `tool_read_file` 读取后再写入（read-before-write 原则）。
-   - 这些文件将成为你解决后续问题的科学直觉底座，避免重复踩坑。
+7. 你拥有持久化文件系统海马体（路径: `{scratchpad_dir}/`）。当计算发现有价值结论时（有效骨架、活性规律、失败路径），**必须**用 `tool_write_file` 写入 Markdown 文件作为跨会话记忆；写前若文件存在，必须先 `tool_read_file`（read-before-write 原则）。
 
 【不确定性处理】
-7. 遇到高度歧义的化学请求（例如未指定靶点蛋白），必须使用 `tool_ask_human` 请求科学家澄清，严禁自行幻觉填充参数。
+8. 遇到高度歧义的化学请求（例如未指定靶点蛋白），必须使用 `tool_ask_human` 请求科学家澄清，严禁自行幻觉填充参数。
 </system_rules>"""
 
 
@@ -112,6 +107,12 @@ def _TOOL_USAGE() -> str:
 3. **状态收敛**：属性齐备后，调用 `tool_screen_molecules(criteria={...})` 按阈值批量将节点推进为 `lead` 或 `rejected`。
 4. **视口聚焦**：筛选完成后，用 `tool_update_viewport` 聚焦 lead 分子，前端会立即更新分屏视图。
 5. **固化规律**：`tool_write_file` 与 `tool_update_scratchpad` 是独立通道；发现可复用的构效规律时，同时调用两者保持双向同步。
+
+【任务状态管理规则 (Task Status Protocol)】
+- 开始执行某任务的工具调用前，必须先声明 `tool_update_task_status(task_id, "in_progress")`；若当前工作跨度内可直接完成，可跳过，完成后直接标记。
+- 工具证据确认完成时，立即调用 `tool_update_task_status(task_id, "completed")`；禁止批量堆积到最后提交。若有明确阶段结论，附带 `summary` 记录阶段产物。
+- 无法完成时调用 `tool_update_task_status(task_id, "failed")` 并说明原因。
+- 已完成任务视为锁定；只有新工具证据或用户补充信息出现时，才允许重新标记为 `in_progress`。
 </tool_usage>"""
 
 def _OUTPUT_EFFICIENCY(env: dict) -> str:
@@ -151,8 +152,8 @@ def _ENVIRONMENT_INFO(env: dict) -> str:
     active_artifact = env.get("active_artifact_id") or "None"
     artifact_warning = env.get("artifact_warning") or ""
     active_receptor = env.get("active_receptor_id") or "None"
-    viewport_content = env.get("viewport_content") or "- 当前视口为空。"
-    scratchpad_content = env.get("scratchpad_content") or "- 研究黑板当前为空。"
+    viewport_content = env.get("viewport_content") or "(空)"
+    scratchpad_content = env.get("scratchpad_content") or "(空)"
     tool_ns = env.get("available_tool_namespaces") or "rdkit, babel"
     os_info = env.get("os") or "Linux/Docker"
     py_env = env.get("python_env") or "Python 3.11"
@@ -178,11 +179,6 @@ def _TASK_PLAN(env: dict) -> str:
         "- 当前没有显式任务清单；直接根据用户请求执行即可，无需调用 `tool_update_task_status`。"
     )
     return f"""<task_plan>
-【任务清单】
-当你把某项任务标记为 `completed` 或 `failed` 时，如有明确阶段结论，请在 `tool_update_task_status` 中附带一句 `summary`，把该阶段的可复用产物写入状态。
-在开始执行某项任务的工具调用之前，必须先调用 `tool_update_task_status(task_id, "in_progress")` 进行声明；不得推迟或省略此步骤。
-当工具结果确认该任务完成时，立即（在同一轮或下一轮）调用 `tool_update_task_status(task_id, "completed")`；禁止将多个任务的 completed 批量堆积到最后统一提交。
-已完成任务默认视为锁定；只有当新的工具证据、用户补充信息或实验结果出现时，才允许重新标记为 `in_progress`。
 {task_plan}
 </task_plan>"""
 
