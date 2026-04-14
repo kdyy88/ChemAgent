@@ -38,7 +38,7 @@ from app.domain.schemas.workspace import CreateRootMoleculeCommand
 from app.domain.store.artifact_store import store_engine_artifact
 from app.domain.store.plan_store import update_plan_file
 from app.services.task_runner.bridge import submit_task_to_worker, wait_for_task_result
-from app.services.workspace import complete_workspace_job, ensure_workspace_projection, start_workspace_job
+from app.services.workspace import complete_workspace_job, ensure_workspace_projection, project_legacy_workspace_view, start_workspace_job
 from app.services.workspace.applicator import WorkspaceApplicator
 from app.agents.main_agent.engine_sse import (
     _ARTIFACT_COLLAPSE_KEYS,
@@ -261,6 +261,15 @@ class ChemSessionEngine:
         initial_messages = [*history_messages, HumanMessage(content=message)]
 
         _viewport, _molecule_tree = _seed_state_from_smiles(active_smiles)
+        initial_workspace = ensure_workspace_projection(
+            {
+                "viewport": _viewport,
+                "molecule_tree": _molecule_tree,
+                "scratchpad": {},
+            },
+            project_id=session_id,
+        )
+        _viewport, _molecule_tree = project_legacy_workspace_view(initial_workspace)
         initial_state: ChemState = {
             "messages": initial_messages,
             "selected_model": model,
@@ -276,14 +285,7 @@ class ChemSessionEngine:
             "active_subtask_id": None,
             "subtask_control": None,
             "skills_enabled": skills_enabled,
-            "workspace_projection": ensure_workspace_projection(
-                {
-                    "viewport": _viewport,
-                    "molecule_tree": _molecule_tree,
-                    "scratchpad": {},
-                },
-                project_id=session_id,
-            ).model_dump(),
+            "workspace_projection": initial_workspace.model_dump(),
             "workspace_events": [],
             "pending_worker_tasks": [],
         }
@@ -877,6 +879,14 @@ class ChemSessionEngine:
 
             chain_output = event.get("data", {}).get("output")
             if isinstance(chain_output, dict):
+                if node_name == "golden_scenario":
+                    for message in list(chain_output.get("messages") or []):
+                        content = getattr(message, "content", None)
+                        if content is None and isinstance(message, dict):
+                            content = message.get("content")
+                        if isinstance(content, str) and content.strip():
+                            results.append(self._event_payload("assistant.message", content=content.strip(), node=node_name))
+                            break
                 for workspace_event in list(chain_output.get("workspace_events") or []):
                     if not isinstance(workspace_event, dict):
                         continue

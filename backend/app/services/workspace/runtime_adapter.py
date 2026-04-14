@@ -6,6 +6,8 @@ from app.domain.schemas.workspace import (
     ApplyAsyncJobResultCommand,
     CreateCandidateBranchCommand,
     CreateRootMoleculeCommand,
+    MarkAsyncJobProgressCommand,
+    MarkAsyncJobStaleCommand,
     PatchNodeCommand,
     RegisterRuleCommand,
     SetViewportCommand,
@@ -39,6 +41,38 @@ def ensure_workspace_projection(state: dict[str, Any], *, project_id: str) -> Wo
                 RegisterRuleCommand(kind="note", text=normalized, source="legacy_scratchpad", created_by="system"),
             )
     return workspace
+
+
+def project_legacy_workspace_view(workspace: WorkspaceProjection) -> tuple[dict[str, Any], dict[str, Any]]:
+    focused_artifact_ids: list[str] = []
+    molecule_tree: dict[str, Any] = {}
+    reference_artifact_id: str | None = None
+
+    for handle, binding in workspace.handle_bindings.items():
+        node = workspace.nodes.get(binding.node_id)
+        if node is None:
+            continue
+
+        artifact_id = node.artifact_ids[0] if node.artifact_ids else node.node_id
+        molecule_tree[artifact_id] = {
+            "artifact_id": artifact_id,
+            "smiles": node.canonical_smiles,
+            "parent_id": node.parent_node_id,
+            "creation_operation": node.origin,
+            "status": node.status,
+            "diagnostics": dict(node.diagnostics),
+            "aliases": [node.display_name] if node.display_name else [],
+            "artifact_ids": list(node.artifact_ids),
+        }
+        if handle in workspace.viewport.focused_handles:
+            focused_artifact_ids.append(artifact_id)
+        if handle == workspace.viewport.reference_handle:
+            reference_artifact_id = artifact_id
+
+    viewport: dict[str, Any] = {"focused_artifact_ids": focused_artifact_ids}
+    if reference_artifact_id is not None:
+        viewport["reference_artifact_id"] = reference_artifact_id
+    return viewport, molecule_tree
 
 
 def _artifact_to_handle(workspace: WorkspaceProjection, artifact_id: str) -> str | None:
@@ -138,7 +172,11 @@ def complete_workspace_job(
         ),
     )
     job = updated.async_jobs[job_id]
-    event_type = "job.completed" if job.status == "completed" else "job.failed"
+    event_type = "job.completed"
+    if job.status == "stale":
+        event_type = "job.stale"
+    elif job.status != "completed":
+        event_type = "job.failed"
     payload: dict[str, Any] = {
         "job_id": job_id,
         "status": job.status,
@@ -149,8 +187,82 @@ def complete_workspace_job(
     }
     if job.stale_reason:
         payload["stale_reason"] = job.stale_reason
-    return updated, [
+    events = [
         _workspace_event(event_type, payload),
+        _workspace_event("workspace.delta", {"scope": "jobs", "version": updated.version, "job_id": job_id, "status": job.status}),
+    ]
+    if artifact_id and job.status == "completed":
+        events.append(
+            _workspace_event(
+                "artifact.ready",
+                {
+                    "artifact_id": artifact_id,
+                    "target_handle": job.target_handle,
+                    "job_id": job_id,
+                    "version": updated.version,
+                },
+            )
+        )
+    return updated, events
+
+
+def mark_workspace_job_progress(
+    workspace: WorkspaceProjection,
+    *,
+    job_id: str,
+    diagnostics: dict[str, Any],
+    result_summary: str = "",
+) -> tuple[WorkspaceProjection, list[dict[str, Any]]]:
+    updated = WorkspaceApplicator.mark_job_progress(
+        workspace,
+        MarkAsyncJobProgressCommand(
+            job_id=job_id,
+            diagnostics=diagnostics,
+            result_summary=result_summary,
+        ),
+    )
+    job = updated.async_jobs[job_id]
+    return updated, [
+        _workspace_event(
+            "job.progress",
+            {
+                "job_id": job_id,
+                "target_handle": job.target_handle,
+                "summary": job.result_summary,
+                "version": updated.version,
+            },
+        ),
+        _workspace_event("workspace.delta", {"scope": "jobs", "version": updated.version, "job_id": job_id, "status": job.status}),
+    ]
+
+
+def mark_workspace_job_stale(
+    workspace: WorkspaceProjection,
+    *,
+    job_id: str,
+    stale_reason: str,
+    result_summary: str = "",
+) -> tuple[WorkspaceProjection, list[dict[str, Any]]]:
+    updated = WorkspaceApplicator.mark_job_stale(
+        workspace,
+        MarkAsyncJobStaleCommand(
+            job_id=job_id,
+            stale_reason=stale_reason,
+            result_summary=result_summary,
+        ),
+    )
+    job = updated.async_jobs[job_id]
+    return updated, [
+        _workspace_event(
+            "job.stale",
+            {
+                "job_id": job_id,
+                "target_handle": job.target_handle,
+                "stale_reason": job.stale_reason,
+                "summary": job.result_summary,
+                "version": updated.version,
+            },
+        ),
         _workspace_event("workspace.delta", {"scope": "jobs", "version": updated.version, "job_id": job_id, "status": job.status}),
     ]
 
@@ -192,6 +304,137 @@ def apply_protocol_to_workspace(
     parsed: dict[str, Any],
 ) -> tuple[WorkspaceProjection, list[dict[str, Any]]]:
     events: list[dict[str, Any]] = []
+
+    if protocol_type == "WorkspaceMutation":
+        updated = workspace
+        for operation in list(parsed.get("operations") or []):
+            action = str(operation.get("action") or "").strip()
+            if not action:
+                continue
+
+            if action == "add_rule":
+                text = str(operation.get("text") or "").strip()
+                if not text:
+                    continue
+                updated = WorkspaceApplicator.register_rule(
+                    updated,
+                    RegisterRuleCommand(
+                        kind=str(operation.get("kind") or "note"),
+                        text=text,
+                        normalized_value=str(operation.get("normalized_value") or ""),
+                        source=str(operation.get("source") or "tool_protocol"),
+                        created_by=str(operation.get("created_by") or "agent"),
+                    ),
+                )
+                events.append(_workspace_event("rules.updated", {"count": len(updated.rules), "version": updated.version}))
+                continue
+
+            if action == "upsert_root":
+                smiles = str(operation.get("smiles") or "").strip()
+                if not smiles:
+                    continue
+                handle = str(operation.get("handle") or "root_molecule")
+                artifact_id = str(operation.get("artifact_id") or "").strip()
+                updated = WorkspaceApplicator.create_root_molecule(
+                    updated,
+                    CreateRootMoleculeCommand(
+                        canonical_smiles=smiles,
+                        display_name=str(operation.get("display_name") or ""),
+                        handle=handle,
+                        hover_text=str(operation.get("hover_text") or str(operation.get("display_name") or smiles)),
+                        node_id=artifact_id or None,
+                        artifact_ids=[artifact_id] if artifact_id else [],
+                        diagnostics=dict(operation.get("diagnostics") or {}),
+                    ),
+                )
+                created = updated.nodes[updated.handle_bindings[handle].node_id]
+                status = str(operation.get("status") or "").strip()
+                if status:
+                    updated = WorkspaceApplicator.patch_node(updated, PatchNodeCommand(node_id=created.node_id, status=status))
+                    created = updated.nodes[created.node_id]
+                events.append(_workspace_event("molecule.upserted", {"node_id": created.node_id, "handle": created.handle, "version": updated.version}))
+                events.append(_workspace_event("viewport.changed", {"focused_handles": list(updated.viewport.focused_handles), "reference_handle": updated.viewport.reference_handle, "version": updated.version}))
+                continue
+
+            if action == "upsert_candidate":
+                smiles = str(operation.get("smiles") or "").strip()
+                parent_artifact_id = str(operation.get("parent_id") or "").strip()
+                if not smiles or not parent_artifact_id:
+                    continue
+                parent_handle = _artifact_to_handle(updated, parent_artifact_id)
+                if parent_handle is None:
+                    events.append(_workspace_event("workspace.delta", {"scope": "graph", "status": "rejected", "reason": f"unknown parent: {parent_artifact_id}"}))
+                    continue
+                handle = str(operation.get("handle") or "").strip() or _next_candidate_handle(updated)
+                artifact_id = str(operation.get("artifact_id") or "").strip()
+                try:
+                    updated = WorkspaceApplicator.create_candidate_branch(
+                        updated,
+                        CreateCandidateBranchCommand(
+                            parent_handle=parent_handle,
+                            handle=handle,
+                            canonical_smiles=smiles,
+                            display_name=str(operation.get("display_name") or ""),
+                            origin=str(operation.get("creation_operation") or operation.get("origin") or "derived_from_parent"),
+                            hover_text=str(operation.get("hover_text") or str(operation.get("display_name") or smiles)),
+                            node_id=artifact_id or None,
+                            artifact_ids=[artifact_id] if artifact_id else [],
+                            diagnostics=dict(operation.get("diagnostics") or {}),
+                        ),
+                    )
+                except (UnknownWorkspaceHandleError, WorkspaceConflictError) as exc:
+                    events.append(_workspace_event("workspace.delta", {"scope": "graph", "status": "rejected", "reason": str(exc)}))
+                    continue
+                created = updated.nodes[updated.handle_bindings[handle].node_id]
+                status = str(operation.get("status") or "").strip()
+                if status:
+                    updated = WorkspaceApplicator.patch_node(updated, PatchNodeCommand(node_id=created.node_id, status=status))
+                    created = updated.nodes[created.node_id]
+                events.append(_workspace_event("molecule.upserted", {"node_id": created.node_id, "handle": created.handle, "version": updated.version}))
+                if created.parent_node_id:
+                    events.append(_workspace_event("relation.upserted", {"target_node_id": created.node_id, "parent_node_id": created.parent_node_id, "version": updated.version}))
+                events.append(_workspace_event("viewport.changed", {"focused_handles": list(updated.viewport.focused_handles), "reference_handle": updated.viewport.reference_handle, "version": updated.version}))
+                continue
+
+            if action == "patch_node":
+                artifact_id = str(operation.get("artifact_id") or "").strip()
+                handle = _artifact_to_handle(updated, artifact_id)
+                if handle is None:
+                    continue
+                node_id = updated.handle_bindings[handle].node_id
+                updated = WorkspaceApplicator.patch_node(
+                    updated,
+                    PatchNodeCommand(
+                        node_id=node_id,
+                        diagnostics=dict(operation.get("diagnostics") or {}),
+                        status=operation.get("status"),
+                        hover_text=str(operation.get("hover_text") or ""),
+                        artifact_id=artifact_id or None,
+                    ),
+                )
+                node = updated.nodes[node_id]
+                events.append(_workspace_event("molecule.upserted", {"node_id": node.node_id, "handle": node.handle, "version": updated.version}))
+                continue
+
+            if action == "set_viewport":
+                handles = [
+                    handle
+                    for artifact_id in list(operation.get("focused_artifact_ids") or [])
+                    if (handle := _artifact_to_handle(updated, str(artifact_id or "").strip())) is not None
+                ]
+                if not handles:
+                    continue
+                reference_artifact_id = str(operation.get("reference_artifact_id") or "").strip()
+                reference_handle = _artifact_to_handle(updated, reference_artifact_id) if reference_artifact_id else None
+                updated = WorkspaceApplicator.set_viewport(
+                    updated,
+                    SetViewportCommand(focused_handles=handles, reference_handle=reference_handle),
+                )
+                events.append(_workspace_event("viewport.changed", {"focused_handles": list(updated.viewport.focused_handles), "reference_handle": updated.viewport.reference_handle, "version": updated.version}))
+
+        if updated is not workspace:
+            events.append(_workspace_event("workspace.delta", {"scope": "workspace", "version": updated.version, "op_count": len(list(parsed.get("operations") or []))}))
+        return updated, events
 
     if protocol_type == "ScratchpadUpdate":
         updated = workspace

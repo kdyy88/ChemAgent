@@ -1,76 +1,26 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-
-SessionControlType = Literal["session.start", "session.resume"]
-UserMessageType = Literal["user.message", "session.clear"]
-HeartbeatClientType = Literal["pong"]
-ServerEventType = Literal[
-    "ping",
-    "session.started",
-    "run.started",
-    "run.finished",
-    "run.failed",
-    "turn.status",
-    "assistant.message",
-    "assistant.delta",
-    "assistant.done",
-    "tool.call",
-    "tool.result",
-    "workspace.snapshot",
-    "workspace.delta",
-    "molecule.upserted",
-    "relation.upserted",
-    "viewport.changed",
-    "rules.updated",
-    "job.started",
-    "job.progress",
-    "job.completed",
-    "job.failed",
-    "artifact.ready",
-]
-
-
-class SessionControlMessage(BaseModel):
-    type: SessionControlType
-    session_id: str | None = None
-    agent_models: dict[str, str] | None = None
-
-
-class UserMessage(BaseModel):
-    type: UserMessageType
-    content: str
-    turn_id: str | None = None
-    agent_models: dict[str, str] | None = None
-
-
-class HeartbeatMessage(BaseModel):
-    type: HeartbeatClientType
-
-
-class EventEnvelope(BaseModel):
-    type: ServerEventType
-    session_id: str | None = None
-    turn_id: str | None = None
-    run_id: str | None = None
-    payload: dict[str, Any] = Field(default_factory=dict)
-
-    def to_wire(self) -> dict[str, Any]:
-        data: dict[str, Any] = {
-            "type": self.type,
-            **self.payload,
-        }
-        if self.session_id is not None:
-            data["session_id"] = self.session_id
-        if self.turn_id is not None:
-            data["turn_id"] = self.turn_id
-        if self.run_id is not None:
-            data["run_id"] = self.run_id
-        return data
+from app.domain.schemas.events import (
+    ApprovalAction,
+    ApprovalRequiredPayload,
+    ArtifactReadyPayload,
+    EventEnvelope,
+    HeartbeatClientType,
+    HeartbeatMessage,
+    JobEventPayload,
+    ServerEventType,
+    SessionControlMessage,
+    SessionControlType,
+    UserMessage,
+    UserMessageType,
+    WorkspaceDeltaPayload,
+    WorkspaceSnapshotResponse,
+)
 
 
 class HistoryMessage(BaseModel):
@@ -105,11 +55,23 @@ class ApproveToolRequest(BaseModel):
     session_id: str = Field(..., description="会话 ID，用于定位挂起的图检查点")
     turn_id: str = Field(default_factory=lambda: uuid4().hex)
     plan_id: str | None = Field(default=None, description="计划审批流的稳定 plan_id。提供后表示此次审批针对计划文件而非普通工具断点。")
-    action: str = Field(..., description='"approve" | "reject" | "modify"')
+    action: ApprovalAction = Field(..., description='"approve" | "reject" | "modify"')
+    target_job_id: str | None = Field(default=None, description="可选：本次审批针对的 workspace job id。")
     args: dict | None = Field(
         default=None,
         description="修改后的工具参数（仅在 action=modify 时有效）",
     )
+    modify_args: dict | None = Field(
+        default=None,
+        description="MVP 推荐字段；仅允许 forcefield、steps 等白名单参数。",
+    )
+
+    def resolved_args(self) -> dict[str, Any] | None:
+        if self.modify_args is not None:
+            return self.modify_args
+        if self.args is not None:
+            return self.args
+        return None
 
 
 class PendingJobsRequest(BaseModel):

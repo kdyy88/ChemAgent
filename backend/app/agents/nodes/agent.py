@@ -24,6 +24,7 @@ from app.agents.utils import (
     normalize_messages_for_api,
     sanitize_messages_for_state,
 )
+from app.services.workspace import ensure_workspace_projection, project_legacy_workspace_view
 from app.skills.loader import load_skill_catalogue
 
 # Loaded lazily so dotenv is applied before the flag is read.
@@ -141,10 +142,20 @@ async def chem_agent_node(state: ChemState, config: RunnableConfig = None) -> di
     active_artifact_id = artifacts[-1].get("artifact_id") if artifacts else None
     artifact_warning = state.get("artifact_expiry_warning")
 
-    viewport = state.get("viewport") or {"focused_artifact_ids": []}
-    molecule_tree = state.get("molecule_tree") or {}
     scratchpad = state.get("scratchpad") or {}
     workspace_projection = drained_workspace_projection or state.get("workspace_projection")
+    if workspace_projection:
+        workspace = ensure_workspace_projection(
+            {
+                "workspace_projection": workspace_projection,
+                "scratchpad": scratchpad,
+            },
+            project_id=str((((config or {}).get("configurable") or {}).get("thread_id")) or "default_project"),
+        )
+        viewport, molecule_tree = project_legacy_workspace_view(workspace)
+    else:
+        viewport = state.get("viewport") or {"focused_artifact_ids": []}
+        molecule_tree = state.get("molecule_tree") or {}
 
     env_info = {
         "active_artifact_id": active_artifact_id,

@@ -107,11 +107,11 @@ def _TOOL_USAGE() -> str:
 
 【分子状态管理推荐惯例 (State Workflow)】
 当会话涉及多个候选分子的设计、计算和筛选时，以下惯例有助于 IDE 状态保持一致（非强制，根据任务灵活调整）：
-1. **注册血缘**：用 `tool_create_molecule_node` 注册分子节点。参考母本/起始物用 `status="staged"`；`status="lead"` 保留给经过属性筛选后留下的分子，注册时不要手动指定。
-2. **属性回写**：优先用 `tool_compute_descriptors`、`tool_evaluate_molecule` 等原生工具（结果自动进入 `molecule_tree[mol_*].diagnostics`）。若已用 `tool_run_shell` 或子代理计算了属性，请调用 `tool_patch_diagnostics` 将结果显式写回，否则 `tool_screen_molecules` 无法读取这些数据。
-3. **状态收敛**：属性齐备后，调用 `tool_screen_molecules(criteria={...})` 按阈值批量将节点推进为 `lead` 或 `rejected`。
-4. **视口聚焦**：筛选完成后，用 `tool_update_viewport` 聚焦 lead 分子，前端会立即更新分屏视图。
-5. **固化规律**：`tool_write_file` 与 `tool_update_scratchpad` 是独立通道；发现可复用的构效规律时，同时调用两者保持双向同步。
+1. **优先批量提交**：如果你已经知道本轮要同时创建母本、候选、规则或视口，请优先调用 `tool_commit_molecule_mutation`，在一个 tool call 中提交整批结构化 mutation，而不是拆成多个状态工具。
+2. **兼容单点操作**：只需要补一条规则、补一个节点、或单独切换视口时，再分别使用 `tool_update_scratchpad`、`tool_create_molecule_node`、`tool_update_viewport`。
+3. **属性回写**：优先用 `tool_compute_descriptors`、`tool_evaluate_molecule` 等原生工具（结果自动进入 workspace diagnostics）。若已用 `tool_run_shell` 或子代理计算了属性，请调用 `tool_patch_diagnostics` 将结果显式写回，否则 `tool_screen_molecules` 无法读取这些数据。
+4. **状态收敛**：属性齐备后，调用 `tool_screen_molecules(criteria={...})` 按阈值批量将节点推进为 `lead` 或 `rejected`。
+5. **固化规律**：`tool_write_file` 与状态工具是独立通道；发现可复用的构效规律时，同时写研究文档和 workspace 状态，避免两边漂移。
 </tool_usage>"""
 
 def _OUTPUT_EFFICIENCY(env: dict) -> str:

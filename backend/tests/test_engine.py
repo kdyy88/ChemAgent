@@ -333,6 +333,28 @@ class TestParseLanggraphEvent:
         assert any(r["type"] == "workspace.delta" and r["scope"] == "graph" for r in results)
         assert any(r["type"] == "molecule.upserted" and r["node_id"] == "mol_root" for r in results)
 
+    def test_golden_scenario_chain_end_emits_assistant_message_and_workspace_events(
+        self, engine: ChemSessionEngine
+    ) -> None:
+        event = {
+            "event": "on_chain_end",
+            "name": "golden_scenario",
+            "metadata": {"langgraph_node": "golden_scenario"},
+            "data": {
+                "output": {
+                    "messages": [{"content": "Golden-path MVP workflow started."}],
+                    "workspace_events": [
+                        {"type": "workspace.delta", "version": 7},
+                        {"type": "job.started", "job_id": "job_candidate_1_conf"},
+                    ],
+                }
+            },
+        }
+        results = engine._parse_langgraph_event(event)
+        assert any(r["type"] == "assistant.message" and "Golden-path" in r["content"] for r in results)
+        assert any(r["type"] == "workspace.delta" for r in results)
+        assert any(r["type"] == "job.started" for r in results)
+
     def test_tool_start_event(self, engine: ChemSessionEngine) -> None:
         event = {
             "event": "on_tool_start",
@@ -513,6 +535,7 @@ class TestSubmitMessageOuterLoop:
             events = await self._collect(engine, message="render workspace")
 
         assert any(event["type"] == "job.completed" and event.get("job_id") == "job_1" for event in events)
+        
 
     async def test_poll_pending_jobs_updates_checkpoint_and_streams_results(
         self, engine: ChemSessionEngine

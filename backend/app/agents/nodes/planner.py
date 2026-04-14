@@ -11,7 +11,27 @@ from app.agents.utils import build_llm, dispatch_task_update, normalize_tasks
 logger = logging.getLogger(__name__)
 
 
+_SCAFFOLD_HOP_MVP_TASKS = [
+    {"id": "task_root", "description": "规范化母本", "status": "pending"},
+    {"id": "task_rules", "description": "登记约束规则", "status": "pending"},
+    {"id": "task_candidates", "description": "生成3个候选", "status": "pending"},
+    {"id": "task_view", "description": "设置单视口", "status": "pending"},
+    {"id": "task_conformer", "description": "提交3D任务", "status": "pending"},
+]
+
+
 async def planner_node(state: ChemState, config: RunnableConfig) -> dict:
+    if state.get("scenario_kind") == "scaffold_hop_mvp":
+        tasks = [dict(task) for task in _SCAFFOLD_HOP_MVP_TASKS]
+        logger.info("📋 [Planner] using scaffold_hop_mvp fixed plan")
+        await dispatch_task_update(tasks, config, source="planner_node")
+        return {
+            "tasks": tasks,
+            "is_complex": True,
+            "candidate_generation_status": "planned",
+            "pending_approval_job_ids": state.get("pending_approval_job_ids", []),
+        }
+
     llm = build_llm(PlanStructure, model=state.get("selected_model"))
     plan = await llm.ainvoke([
         SystemMessage(
@@ -37,4 +57,5 @@ async def planner_node(state: ChemState, config: RunnableConfig) -> dict:
     return {
         "tasks": tasks,
         "is_complex": True,
+        "candidate_generation_status": state.get("candidate_generation_status"),
     }

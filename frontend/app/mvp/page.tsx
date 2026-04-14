@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { fetchEventSource } from '@microsoft/fetch-event-source'
 import { FlaskConical, Radar, RefreshCw, Send, TestTubeDiagonal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -26,6 +27,7 @@ const API_BASE = resolveApiBaseUrl()
 const STREAM_URL = `${API_BASE}/api/v1/chat/stream`
 const POLL_URL = `${API_BASE}/api/v1/chat/pending/poll`
 const FORCE_CONFORMER_URL = `${API_BASE}/api/v1/chat/mvp/conformer`
+const LOCALE_PREFIX_PATTERN = /^\/(zh|en)(?=\/|$)/
 
 function createId() {
   return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -47,6 +49,7 @@ const PRESET_PROMPTS = [
 ]
 
 export default function MvpSmokePage() {
+  const pathname = usePathname()
   const [sessionId, setSessionId] = useState(() => createId())
   const [activeSmiles, setActiveSmiles] = useState('CCO')
   const [message, setMessage] = useState(PRESET_PROMPTS[0].message)
@@ -79,6 +82,11 @@ export default function MvpSmokePage() {
       .map((event) => String(event.payload.content ?? ''))
       .join('')
   }, [events])
+
+  const localePrefix = useMemo(() => {
+    const matched = pathname?.match(LOCALE_PREFIX_PATTERN)
+    return matched ? matched[0] : ''
+  }, [pathname])
 
   const appendEvent = (payload: Record<string, unknown>) => {
     setEvents((current) => [
@@ -201,8 +209,11 @@ export default function MvpSmokePage() {
               这个页面只验证 MVP 主链路是否跑通：聊天 SSE、workspace/job 事件、以及 pending job 轮询回流。
             </p>
           </div>
-          <Link href="/" className="text-sm text-slate-600 underline underline-offset-4 hover:text-slate-950">
+          <Link href={localePrefix || '/'} className="text-sm text-slate-600 underline underline-offset-4 hover:text-slate-950">
             Back to main app
+          </Link>
+          <Link href={`${localePrefix}/mvp/golden`} className="text-sm text-sky-700 underline underline-offset-4 hover:text-sky-900">
+            Open golden-path demo
           </Link>
         </div>
 

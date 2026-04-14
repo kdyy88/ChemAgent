@@ -7,6 +7,8 @@ from app.domain.schemas.workspace import (
     AsyncJobPointer,
     CreateCandidateBranchCommand,
     CreateRootMoleculeCommand,
+    MarkAsyncJobProgressCommand,
+    MarkAsyncJobStaleCommand,
     MoleculeNodeRecord,
     MoleculeRelationRecord,
     PatchNodeCommand,
@@ -35,6 +37,21 @@ class WorkspaceApplicator:
         if workspace_id is None:
             return WorkspaceProjection(project_id=project_id)
         return WorkspaceProjection(project_id=project_id, workspace_id=workspace_id)
+
+    @classmethod
+    def initialize_scaffold_hop_workspace(
+        cls,
+        workspace: WorkspaceProjection,
+        command: CreateRootMoleculeCommand,
+    ) -> WorkspaceProjection:
+        updated = cls.create_root_molecule(workspace, command)
+        return updated.model_copy(
+            update={
+                "scenario_kind": "scaffold_hop_mvp",
+                "active_view_id": "active_view",
+            },
+            deep=True,
+        )
 
     @staticmethod
     def _bump_version(workspace: WorkspaceProjection) -> WorkspaceProjection:
@@ -79,6 +96,10 @@ class WorkspaceApplicator:
         )
         updated.viewport.focused_handles = [command.handle]
         updated.viewport.reference_handle = command.handle
+        if updated.root_handle is None:
+            updated.root_handle = command.handle
+        if updated.active_view_id is None:
+            updated.active_view_id = "active_view"
         return updated
 
     @classmethod
@@ -133,12 +154,25 @@ class WorkspaceApplicator:
             node_id=node.node_id,
             bound_at_version=updated.version,
         )
+        if command.handle not in updated.candidate_handles:
+            updated.candidate_handles.append(command.handle)
         if command.parent_handle not in updated.viewport.focused_handles:
             updated.viewport.focused_handles.append(command.parent_handle)
         if command.handle not in updated.viewport.focused_handles:
             updated.viewport.focused_handles.append(command.handle)
         if updated.viewport.reference_handle is None:
             updated.viewport.reference_handle = command.parent_handle
+        return updated
+
+    @classmethod
+    def create_candidate_batch(
+        cls,
+        workspace: WorkspaceProjection,
+        commands: list[CreateCandidateBranchCommand],
+    ) -> WorkspaceProjection:
+        updated = workspace
+        for command in commands:
+            updated = cls.create_candidate_branch(updated, command)
         return updated
 
     @classmethod
@@ -155,7 +189,26 @@ class WorkspaceApplicator:
         updated = cls._bump_version(workspace)
         updated.viewport.focused_handles = list(dict.fromkeys(command.focused_handles))
         updated.viewport.reference_handle = command.reference_handle
+        if updated.active_view_id is None:
+            updated.active_view_id = "active_view"
         return updated
+
+    @classmethod
+    def set_single_comparison_view(
+        cls,
+        workspace: WorkspaceProjection,
+        *,
+        root_handle: str,
+        candidate_handles: list[str],
+    ) -> WorkspaceProjection:
+        focused_handles = [root_handle, *candidate_handles]
+        return cls.set_viewport(
+            workspace,
+            SetViewportCommand(
+                focused_handles=focused_handles,
+                reference_handle=root_handle,
+            ),
+        )
 
     @classmethod
     def start_async_job(
@@ -174,7 +227,60 @@ class WorkspaceApplicator:
             target_handle=command.target_handle,
             target_node_id=target_binding.node_id,
             base_workspace_version=workspace.version,
+            requested_at_version=updated.version,
             status="running",
+            approval_state=command.approval_state,
+            job_args=dict(command.job_args),
+        )
+        return updated
+
+    @classmethod
+    def mark_job_progress(
+        cls,
+        workspace: WorkspaceProjection,
+        command: MarkAsyncJobProgressCommand,
+    ) -> WorkspaceProjection:
+        job = workspace.async_jobs.get(command.job_id)
+        if job is None:
+            raise WorkspaceConflictError(f"Unknown async job: {command.job_id}")
+
+        updated = cls._bump_version(workspace)
+        updated_job = updated.async_jobs[command.job_id]
+        updated.async_jobs[command.job_id] = updated_job.model_copy(
+            update={
+                "status": "running",
+                "result_summary": command.result_summary or updated_job.result_summary,
+            }
+        )
+
+        if command.diagnostics:
+            node = updated.nodes.get(updated_job.target_node_id)
+            if node is not None:
+                updated.nodes[updated_job.target_node_id] = node.model_copy(
+                    update={
+                        "diagnostics": {**node.diagnostics, **command.diagnostics},
+                    }
+                )
+        return updated
+
+    @classmethod
+    def mark_job_stale(
+        cls,
+        workspace: WorkspaceProjection,
+        command: MarkAsyncJobStaleCommand,
+    ) -> WorkspaceProjection:
+        job = workspace.async_jobs.get(command.job_id)
+        if job is None:
+            raise WorkspaceConflictError(f"Unknown async job: {command.job_id}")
+
+        updated = cls._bump_version(workspace)
+        updated_job = updated.async_jobs[command.job_id]
+        updated.async_jobs[command.job_id] = updated_job.model_copy(
+            update={
+                "status": "stale",
+                "stale_reason": command.stale_reason,
+                "result_summary": command.result_summary or updated_job.result_summary,
+            }
         )
         return updated
 
@@ -248,6 +354,7 @@ class WorkspaceApplicator:
             update={
                 "status": "completed",
                 "artifact_id": command.artifact_id,
+                "completed_at_version": updated.version,
                 "result_summary": command.result_summary,
                 "stale_reason": "",
             }

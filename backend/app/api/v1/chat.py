@@ -49,6 +49,7 @@ from fastapi.responses import StreamingResponse
 
 from app.agents.config import fetch_available_models
 from app.agents.main_agent.engine import ChemSessionEngine
+from app.agents.main_agent.runtime import get_compiled_graph, has_persisted_session
 from app.domain.store.artifact_store import get_engine_artifact
 from app.domain.store.plan_store import read_plan_file
 from app.domain.schemas.api import (
@@ -58,9 +59,12 @@ from app.domain.schemas.api import (
     MvpConformerSmokeRequest,
     PendingJobsRequest,
     StreamChatRequest,
+    WorkspaceSnapshotResponse,
 )
+from app.services.workspace import ensure_workspace_projection
 
 router = APIRouter()
+_MODIFY_ALLOWED_KEYS = {"forcefield", "steps"}
 
 
 # ── FastAPI route ──────────────────────────────────────────────────────────────
@@ -118,9 +122,17 @@ async def approve_tool(req: ApproveToolRequest) -> StreamingResponse:
             status_code=422,
             detail=f"Invalid action '{req.action}'. Must be one of: approve, reject, modify.",
         )
+    if req.action == "modify":
+        resolved_args = req.resolved_args() or {}
+        invalid_keys = sorted(set(resolved_args) - _MODIFY_ALLOWED_KEYS)
+        if invalid_keys:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unsupported modify args: {', '.join(invalid_keys)}. Allowed keys: {', '.join(sorted(_MODIFY_ALLOWED_KEYS))}.",
+            )
     engine = ChemSessionEngine(session_id=req.session_id, turn_id=req.turn_id)
     return StreamingResponse(
-        engine.resume_approval(action=req.action, args=req.args, plan_id=req.plan_id),
+        engine.resume_approval(action=req.action, args=req.resolved_args(), plan_id=req.plan_id),
         media_type="text/event-stream",
         headers={
             "X-Accel-Buffering": "no",
@@ -200,5 +212,55 @@ async def get_plan(plan_id: str, session_id: str):
         "summary": pointer.summary,
         "revision": pointer.revision,
         "content": content,
+    }
+
+
+@router.get("/workspace/{session_id}", response_model=WorkspaceSnapshotResponse)
+async def get_workspace_snapshot(session_id: str) -> WorkspaceSnapshotResponse:
+    if not await has_persisted_session(session_id):
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+
+    graph = get_compiled_graph()
+    snapshot = await graph.aget_state(
+        {
+            "configurable": {
+                "thread_id": session_id,
+                "session_id": session_id,
+            }
+        }
+    )
+    state = snapshot.values if isinstance(snapshot.values, dict) else {}
+    workspace = ensure_workspace_projection(state, project_id=session_id)
+    pending_jobs = list(state.get("pending_worker_tasks") or []) if isinstance(state, dict) else []
+    return WorkspaceSnapshotResponse(
+        session_id=session_id,
+        workspace=workspace,
+        version=workspace.version,
+        pending_job_count=len(pending_jobs),
+    )
+
+
+@router.get("/workspace/{session_id}/events")
+async def get_workspace_events(session_id: str):
+    if not await has_persisted_session(session_id):
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+
+    graph = get_compiled_graph()
+    snapshot = await graph.aget_state(
+        {
+            "configurable": {
+                "thread_id": session_id,
+                "session_id": session_id,
+            }
+        }
+    )
+    state = snapshot.values if isinstance(snapshot.values, dict) else {}
+    workspace_events = list(state.get("workspace_events") or []) if isinstance(state, dict) else []
+    workspace = ensure_workspace_projection(state, project_id=session_id)
+    return {
+        "session_id": session_id,
+        "version": workspace.version,
+        "events": workspace_events,
+        "pending_job_count": len(list(state.get("pending_worker_tasks") or [])) if isinstance(state, dict) else 0,
     }
 

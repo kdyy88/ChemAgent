@@ -1,13 +1,14 @@
 """State Management Tools -- ChemAgent System Layer
 ====================================================
 
-Four tools that let the LLM explicitly write to the three stateful domains
+Five tools that let the LLM explicitly write to the three stateful domains
 of ``ChemState`` that have no automatic harvest path:
 
   tool_update_scratchpad    -- append rules / failures / update research goal
   tool_create_molecule_node -- register a molecule branch with explicit lineage
   tool_update_viewport      -- set exactly which molecules are in focus
   tool_patch_diagnostics    -- write computed properties into molecule_tree[mol_*].diagnostics
+    tool_commit_molecule_mutation -- batch multiple workspace mutations in one protocol
 
 All three communicate through the ``__chem_protocol__`` mechanism (Phase 3).
 The executor detects the marker, applies the payload to ChemState, and strips
@@ -19,6 +20,7 @@ Protocol types emitted
 - ``NodeCreate``       → executor upserts a node in ``ChemState.molecule_tree``
                          and appends the id to ``ChemState.viewport``
 - ``ViewportUpdate``   → executor replaces ``ChemState.viewport`` precisely
+- ``WorkspaceMutation`` → runtime adapter applies a batch of workspace mutations
 
 Design principle
 ----------------
@@ -43,6 +45,17 @@ from langchain_core.tools import tool
 def _artifact_id_from_smiles(canonical_smiles: str) -> str:
     """Stable artifact ID from canonical SMILES -- mirrors executor.py convention."""
     return "mol_" + hashlib.md5(canonical_smiles.encode()).hexdigest()[:8]
+
+
+def _clean_mutation_operations(operations: list[dict] | None) -> list[dict]:
+    cleaned: list[dict] = []
+    for operation in operations or []:
+        action = str(operation.get("action") or "").strip()
+        if not action:
+            continue
+        payload = {key: value for key, value in operation.items() if key != "action"}
+        cleaned.append({"action": action, **payload})
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +276,37 @@ def tool_patch_diagnostics(
     )
 
 
+@tool
+def tool_commit_molecule_mutation(
+    operations: Annotated[
+        list[dict],
+        """
+        Workspace mutation 批处理列表。支持 action:
+        - upsert_root: {"action":"upsert_root","smiles":"...","display_name":"...","artifact_id":"mol_*"}
+        - upsert_candidate: {"action":"upsert_candidate","smiles":"...","parent_id":"mol_*","creation_operation":"...","artifact_id":"mol_*"}
+        - patch_node: {"action":"patch_node","artifact_id":"mol_*","diagnostics":{...},"status":"candidate"}
+        - set_viewport: {"action":"set_viewport","focused_artifact_ids":[...],"reference_artifact_id":"mol_*"}
+        - add_rule: {"action":"add_rule","text":"必须保留 warhead","kind":"preserve"}
+        """,
+    ],
+) -> str:
+    """Commit one or more structured workspace mutations through a single protocol."""
+    cleaned = _clean_mutation_operations(operations)
+    if not cleaned:
+        return json.dumps(
+            {"is_valid": False, "error": "operations 不能为空，且每项必须包含 action。"},
+            ensure_ascii=False,
+        )
+
+    return json.dumps(
+        {
+            "__chem_protocol__": "WorkspaceMutation",
+            "operations": cleaned,
+        },
+        ensure_ascii=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tool list for catalog registration
 # ---------------------------------------------------------------------------
@@ -272,4 +316,5 @@ ALL_STATE_TOOLS = [
     tool_create_molecule_node,
     tool_update_viewport,
     tool_patch_diagnostics,
+    tool_commit_molecule_mutation,
 ]

@@ -1090,6 +1090,77 @@ async def test_invalid_parent_protocol_is_rejected_in_workspace_projection() -> 
 
 
 @pytest.mark.asyncio
+async def test_workspace_mutation_protocol_batches_graph_and_viewport_updates() -> None:
+    state = cast(ChemState, {
+        "messages": [
+            AIMessage(
+                content="Commit batched workspace mutation",
+                tool_calls=[
+                    {
+                        "name": "tool_commit_molecule_mutation",
+                        "id": "call-workspace-mutation",
+                        "args": {"operations": []},
+                    }
+                ],
+            )
+        ],
+        "active_smiles": None,
+        "artifacts": [],
+        "molecule_workspace": [],
+        "tasks": [],
+        "is_complex": False,
+        "evidence_revision": 0,
+    })
+
+    class _FakeMutationTool:
+        name = "tool_commit_molecule_mutation"
+
+        async def ainvoke(self, args: dict, config: dict | None = None):  # noqa: ARG002
+            return json.dumps(
+                {
+                    "__chem_protocol__": "WorkspaceMutation",
+                    "operations": [
+                        {
+                            "action": "upsert_root",
+                            "artifact_id": "mol_root",
+                            "smiles": "CCO",
+                            "display_name": "Seed",
+                            "status": "active",
+                        },
+                        {
+                            "action": "upsert_candidate",
+                            "artifact_id": "mol_child",
+                            "smiles": "CCN",
+                            "parent_id": "mol_root",
+                            "display_name": "Child",
+                            "creation_operation": "scaffold_hop",
+                        },
+                        {
+                            "action": "set_viewport",
+                            "focused_artifact_ids": ["mol_root", "mol_child"],
+                            "reference_artifact_id": "mol_root",
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            )
+
+    with patch.dict("app.agents.nodes.executor._TOOL_LOOKUP", {"tool_commit_molecule_mutation": _FakeMutationTool()}):
+        result = await tools_executor_node(state, {"configurable": {"thread_id": "project-gamma"}})
+
+    workspace = result["workspace_projection"]
+    assert isinstance(workspace, WorkspaceProjection)
+    assert workspace.viewport.focused_handles == ["root_molecule", "candidate_1"]
+    assert workspace.viewport.reference_handle == "root_molecule"
+    assert workspace.handle_bindings["root_molecule"].node_id == "mol_root"
+    assert workspace.handle_bindings["candidate_1"].node_id == "mol_child"
+    assert any(event["type"] == "molecule.upserted" for event in result["workspace_events"])
+    assert any(event["type"] == "relation.upserted" for event in result["workspace_events"])
+    assert any(event["type"] == "viewport.changed" for event in result["workspace_events"])
+    assert any(event["type"] == "workspace.delta" and event.get("scope") == "workspace" for event in result["workspace_events"])
+
+
+@pytest.mark.asyncio
 async def test_build_3d_conformer_emits_job_lifecycle_and_updates_workspace_projection() -> None:
     state = cast(ChemState, {
         "messages": [

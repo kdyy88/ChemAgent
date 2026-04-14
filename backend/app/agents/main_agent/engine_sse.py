@@ -40,13 +40,15 @@ _STREAMING_NODES = {"chem_agent"}
 _SUB_AGENT_NODE_PREFIX = "sub_agent"
 
 # LangGraph node names for which we emit node_start / node_end lifecycle events.
-_LIFECYCLE_NODES = {"task_router", "planner_node", "chem_agent", "tools_executor"}
+_LIFECYCLE_NODES = {"task_router", "planner_node", "golden_scenario", "chem_agent", "tools_executor"}
 
 _NODE_REASONING_MESSAGES: dict[tuple[str, str], str] = {
     ("task_router", "on_chain_start"): "正在快速判断这次请求是否需要显式任务规划...",
     ("task_router", "on_chain_end"): "复杂度判断完成。",
     ("planner_node", "on_chain_start"): "检测到复杂任务，正在生成可执行任务清单...",
     ("planner_node", "on_chain_end"): "任务清单已生成，准备进入执行阶段。",
+    ("golden_scenario", "on_chain_start"): "已命中黄金场景，正在建立母本、候选与工作台状态...",
+    ("golden_scenario", "on_chain_end"): "黄金场景工作流已启动，工作台与长任务正在同步推进。",
     ("chem_agent", "on_chain_start"): "进入智能体大脑，正在评估当前信息并规划下一步行动...",
     ("chem_agent", "on_chain_end"): "智能体本轮思考完毕。",
     ("tools_executor", "on_chain_start"): "准备转入工具执行流水线...",

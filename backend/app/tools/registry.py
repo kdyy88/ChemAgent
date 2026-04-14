@@ -75,6 +75,7 @@ _EXPLORE_TOOLS: frozenset[str] = frozenset({
     "tool_update_scratchpad",
     "tool_create_molecule_node",
     "tool_update_viewport",
+    "tool_commit_molecule_mutation",
     # Diagnostics backfill (escape hatch for shell/sub-agent computed values)
     "tool_patch_diagnostics",
     # Molecule screening (reads injected tree, no I/O)
@@ -115,6 +116,7 @@ _GENERAL_TOOLS: frozenset[str] = frozenset({
     "tool_update_scratchpad",
     "tool_create_molecule_node",
     "tool_update_viewport",
+    "tool_commit_molecule_mutation",
     # Diagnostics backfill + screening
     "tool_patch_diagnostics",
     # Molecule screening
@@ -166,6 +168,7 @@ _STATIC_TIER_OVERRIDES: dict[str, ChemToolTier] = {
     "tool_update_scratchpad": "L1",
     "tool_create_molecule_node": "L1",
     "tool_update_viewport": "L1",
+    "tool_commit_molecule_mutation": "L1",
     # Diagnostics backfill (escape hatch — pure state write, no I/O)
     "tool_patch_diagnostics": "L1",
     # Molecule screening (reads injected tree snapshot, no I/O)

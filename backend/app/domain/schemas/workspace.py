@@ -6,10 +6,23 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 
-RuleKind = Literal["preserve", "require", "note"]
+RuleKind = Literal["preserve", "require", "note", "target"]
 MoleculeNodeStatus = Literal["active", "candidate", "archived", "stale"]
 RelationKind = Literal["derived_from", "compared_to"]
 AsyncJobStatus = Literal["queued", "running", "completed", "failed", "stale", "cancelled"]
+ScenarioKind = Literal["scaffold_hop_mvp"]
+ApprovalState = Literal["not_required", "pending", "approved", "rejected", "modified"]
+WorkspaceDeltaScope = Literal["graph", "viewport", "rules", "jobs", "workspace"]
+WorkspaceDeltaOpKind = Literal[
+    "node_upsert",
+    "relation_upsert",
+    "viewport_set",
+    "rule_add",
+    "job_upsert",
+    "job_progress",
+    "job_stale",
+    "job_complete",
+]
 
 
 def new_workspace_id() -> str:
@@ -87,10 +100,39 @@ class AsyncJobPointer(BaseModel):
     target_handle: str
     target_node_id: str
     base_workspace_version: int = Field(ge=0)
+    requested_at_version: int = Field(default=0, ge=0)
+    completed_at_version: int | None = Field(default=None, ge=0)
     status: AsyncJobStatus = Field(default="queued")
+    approval_state: ApprovalState = Field(default="not_required")
+    job_args: dict[str, Any] = Field(default_factory=dict)
     stale_reason: str = Field(default="")
     artifact_id: str | None = Field(default=None)
     result_summary: str = Field(default="")
+
+
+class WorkspaceDeltaOp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: WorkspaceDeltaOpKind
+    key: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkspaceDelta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    previous_version: int = Field(ge=0)
+    version: int = Field(ge=0)
+    scope: WorkspaceDeltaScope = Field(default="workspace")
+    ops: list[WorkspaceDeltaOp] = Field(default_factory=list)
+
+
+class WorkspaceEventRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_type: str
+    version: int = Field(ge=0)
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkspaceProjection(BaseModel):
@@ -99,12 +141,28 @@ class WorkspaceProjection(BaseModel):
     project_id: str
     workspace_id: str = Field(default_factory=new_workspace_id)
     version: int = Field(default=0, ge=0)
+    scenario_kind: ScenarioKind | None = Field(default=None)
+    root_handle: str | None = Field(default=None)
+    candidate_handles: list[str] = Field(default_factory=list)
+    active_view_id: str | None = Field(default=None)
     nodes: dict[str, MoleculeNodeRecord] = Field(default_factory=dict)
     relations: dict[str, MoleculeRelationRecord] = Field(default_factory=dict)
     handle_bindings: dict[str, SemanticHandleBinding] = Field(default_factory=dict)
     viewport: WorkspaceViewport = Field(default_factory=WorkspaceViewport)
     rules: list[RuleSetEntry] = Field(default_factory=list)
     async_jobs: dict[str, AsyncJobPointer] = Field(default_factory=dict)
+
+    def active_candidate_count(self) -> int:
+        return len(self.candidate_handles)
+
+    def assert_mvp_shape(self) -> None:
+        if self.root_handle is not None and self.root_handle not in self.handle_bindings:
+            raise ValueError("workspace root_handle must reference an existing handle")
+        if len(self.candidate_handles) > 3:
+            raise ValueError("workspace candidate_handles exceeds MVP limit of 3")
+        for handle in self.candidate_handles:
+            if handle not in self.handle_bindings:
+                raise ValueError(f"workspace candidate handle is unbound: {handle}")
 
 
 class CreateRootMoleculeCommand(BaseModel):
@@ -156,6 +214,24 @@ class StartAsyncJobCommand(BaseModel):
     job_id: str
     job_type: str
     target_handle: str
+    approval_state: ApprovalState = Field(default="not_required")
+    job_args: dict[str, Any] = Field(default_factory=dict)
+
+
+class MarkAsyncJobProgressCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+    result_summary: str = Field(default="")
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
+class MarkAsyncJobStaleCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+    stale_reason: str = Field(min_length=1)
+    result_summary: str = Field(default="")
 
 
 class ApplyAsyncJobResultCommand(BaseModel):

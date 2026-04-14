@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -9,6 +10,37 @@ from app.domain.schemas.agent import ChemState, RouteDecision
 from app.agents.utils import build_llm, dispatch_task_update
 
 logger = logging.getLogger(__name__)
+
+
+_SCAFFOLD_HOP_HINTS = (
+    "scaffold hop",
+    "scaffold-hop",
+    "scaffold",
+    "骨架跃迁",
+    "新骨架",
+)
+_IBRUTINIB_HINTS = ("ibrutinib", "伊布替尼")
+_WARHEAD_HINTS = ("acrylamide", "warhead", "丙烯酰胺")
+_INDOLE_HINTS = ("fused indole", "并环吲哚", "indole", "吲哚")
+
+
+def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
+def _mentions_three_candidates(text: str) -> bool:
+    return bool(re.search(r"\b3\b", text)) or "3个" in text or "三个" in text
+
+
+def _is_scaffold_hop_mvp_request(text: str) -> bool:
+    normalized = text.casefold()
+    return (
+        _contains_any(normalized, _IBRUTINIB_HINTS)
+        and _contains_any(normalized, _WARHEAD_HINTS)
+        and _contains_any(normalized, _INDOLE_HINTS)
+        and (_contains_any(normalized, _SCAFFOLD_HOP_HINTS) or "候选" in normalized)
+        and _mentions_three_candidates(normalized)
+    )
 
 
 async def task_router_node(state: ChemState, config: RunnableConfig) -> dict:
@@ -20,6 +52,16 @@ async def task_router_node(state: ChemState, config: RunnableConfig) -> dict:
         ),
         "",
     )
+
+    if _is_scaffold_hop_mvp_request(last_user_message):
+        logger.info("🧭 [TaskRouter] matched scaffold_hop_mvp scenario")
+        return {
+            "is_complex": True,
+            "scenario_kind": "scaffold_hop_mvp",
+            "candidate_handles": ["candidate_1", "candidate_2", "candidate_3"],
+            "active_handle": "root_molecule",
+            "tasks": state.get("tasks", []),
+        }
 
     llm = build_llm(RouteDecision, model=state.get("selected_model"))
     decision = await llm.ainvoke([
@@ -44,6 +86,7 @@ async def task_router_node(state: ChemState, config: RunnableConfig) -> dict:
 
     return {
         "is_complex": is_complex,
+        "scenario_kind": state.get("scenario_kind"),
         "tasks": [] if not is_complex else state.get("tasks", []),
     }
 

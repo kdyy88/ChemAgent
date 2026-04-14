@@ -4,16 +4,23 @@ from app.domain.schemas.workspace import (
     ApplyAsyncJobResultCommand,
     CreateCandidateBranchCommand,
     CreateRootMoleculeCommand,
+    MarkAsyncJobProgressCommand,
+    MarkAsyncJobStaleCommand,
     RegisterRuleCommand,
     SetViewportCommand,
     StartAsyncJobCommand,
 )
-from app.services.workspace import UnknownWorkspaceHandleError, WorkspaceApplicator
+from app.services.workspace import (
+    UnknownWorkspaceHandleError,
+    WorkspaceApplicator,
+    complete_workspace_job,
+    project_legacy_workspace_view,
+)
 
 
 def test_create_root_and_branch_builds_workspace_projection() -> None:
     workspace = WorkspaceApplicator.create(project_id="proj_ibrutinib")
-    workspace = WorkspaceApplicator.create_root_molecule(
+    workspace = WorkspaceApplicator.initialize_scaffold_hop_workspace(
         workspace,
         CreateRootMoleculeCommand(
             canonical_smiles="CC1=C(C(=CC=C1)NC(=O)C=C)N2CC[C@H](C2)OCC=CC#N",
@@ -41,8 +48,41 @@ def test_create_root_and_branch_builds_workspace_projection() -> None:
 
     assert workspace.viewport.reference_handle == "root_molecule"
     assert workspace.viewport.focused_handles == ["root_molecule", "candidate_1"]
+    assert workspace.root_handle == "root_molecule"
+    assert workspace.candidate_handles == ["candidate_1"]
+    assert workspace.scenario_kind == "scaffold_hop_mvp"
     assert len(workspace.rules) == 2
     assert "candidate_1" in workspace.handle_bindings
+
+
+def test_project_legacy_workspace_view_uses_projection_as_truth() -> None:
+    workspace = WorkspaceApplicator.create(project_id="proj_ibrutinib")
+    workspace = WorkspaceApplicator.initialize_scaffold_hop_workspace(
+        workspace,
+        CreateRootMoleculeCommand(canonical_smiles="CCO", display_name="Seed"),
+    )
+    workspace = WorkspaceApplicator.create_candidate_branch(
+        workspace,
+        CreateCandidateBranchCommand(
+            parent_handle="root_molecule",
+            handle="candidate_1",
+            canonical_smiles="CCN",
+            display_name="Child",
+            origin="scaffold_hop",
+        ),
+    )
+
+    viewport, molecule_tree = project_legacy_workspace_view(workspace)
+
+    root_binding = workspace.handle_bindings["root_molecule"]
+    child_binding = workspace.handle_bindings["candidate_1"]
+    root_node = workspace.nodes[root_binding.node_id]
+    child_node = workspace.nodes[child_binding.node_id]
+
+    assert viewport["focused_artifact_ids"] == [root_node.node_id, child_node.node_id]
+    assert viewport["reference_artifact_id"] == root_node.node_id
+    assert molecule_tree[root_node.node_id]["smiles"] == "CCO"
+    assert molecule_tree[child_node.node_id]["parent_id"] == root_node.node_id
 
 
 def test_unknown_parent_handle_is_rejected() -> None:
@@ -145,3 +185,79 @@ def test_async_job_result_updates_target_node_when_binding_is_current() -> None:
     assert root_node.diagnostics["conformer_status"] == "ready"
     assert root_node.artifact_ids == ["art_conf_2"]
     assert root_node.hover_text == "3D conformer generated"
+    assert workspace.async_jobs["job_conf_2"].completed_at_version == workspace.version
+
+
+def test_mark_job_progress_updates_summary_and_node_diagnostics() -> None:
+    workspace = WorkspaceApplicator.create(project_id="proj_ibrutinib")
+    workspace = WorkspaceApplicator.create_root_molecule(
+        workspace,
+        CreateRootMoleculeCommand(canonical_smiles="CCO"),
+    )
+    workspace = WorkspaceApplicator.start_async_job(
+        workspace,
+        StartAsyncJobCommand(job_id="job_conf_3", job_type="conformer3d", target_handle="root_molecule"),
+    )
+
+    workspace = WorkspaceApplicator.mark_job_progress(
+        workspace,
+        MarkAsyncJobProgressCommand(
+            job_id="job_conf_3",
+            result_summary="MMFF94 optimization running",
+            diagnostics={"optimizer": "mmff94"},
+        ),
+    )
+
+    root_node = workspace.nodes[workspace.handle_bindings["root_molecule"].node_id]
+    assert workspace.async_jobs["job_conf_3"].status == "running"
+    assert workspace.async_jobs["job_conf_3"].result_summary == "MMFF94 optimization running"
+    assert root_node.diagnostics["optimizer"] == "mmff94"
+
+
+def test_mark_job_stale_sets_reason_without_mutating_node() -> None:
+    workspace = WorkspaceApplicator.create(project_id="proj_ibrutinib")
+    workspace = WorkspaceApplicator.create_root_molecule(
+        workspace,
+        CreateRootMoleculeCommand(canonical_smiles="CCO"),
+    )
+    workspace = WorkspaceApplicator.start_async_job(
+        workspace,
+        StartAsyncJobCommand(job_id="job_conf_4", job_type="conformer3d", target_handle="root_molecule"),
+    )
+
+    workspace = WorkspaceApplicator.mark_job_stale(
+        workspace,
+        MarkAsyncJobStaleCommand(
+            job_id="job_conf_4",
+            stale_reason="workspace replaced candidate batch",
+            result_summary="ignored late conformer result",
+        ),
+    )
+
+    assert workspace.async_jobs["job_conf_4"].status == "stale"
+    assert workspace.async_jobs["job_conf_4"].stale_reason == "workspace replaced candidate batch"
+    assert workspace.async_jobs["job_conf_4"].result_summary == "ignored late conformer result"
+
+
+def test_complete_workspace_job_emits_artifact_ready_event() -> None:
+    workspace = WorkspaceApplicator.create(project_id="proj_ibrutinib")
+    workspace = WorkspaceApplicator.create_root_molecule(
+        workspace,
+        CreateRootMoleculeCommand(canonical_smiles="CCO"),
+    )
+    workspace = WorkspaceApplicator.start_async_job(
+        workspace,
+        StartAsyncJobCommand(job_id="job_conf_5", job_type="conformer3d", target_handle="root_molecule"),
+    )
+
+    updated, events = complete_workspace_job(
+        workspace,
+        job_id="job_conf_5",
+        diagnostics={"conformer_status": "ready"},
+        artifact_id="art_conf_5",
+        hover_text="3D conformer generated",
+        result_summary="3D conformer ready",
+    )
+
+    assert updated.async_jobs["job_conf_5"].status == "completed"
+    assert any(event["type"] == "artifact.ready" and event["artifact_id"] == "art_conf_5" for event in events)

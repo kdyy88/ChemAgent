@@ -8,6 +8,8 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import NotRequired, TypedDict
 
+from app.domain.schemas.workspace import WorkspaceDelta, WorkspaceEventRecord, WorkspaceProjection
+
 
 TaskStatus = Literal["pending", "in_progress", "completed", "failed"]
 MoleculeStatus = Literal["staged", "exploring", "rejected", "lead"]
@@ -121,12 +123,16 @@ class ChemState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     selected_model: str | None
 
-    # --- [核心重构区] ---
-    viewport: WorkspaceViewport
-    molecule_tree: Annotated[dict[str, MoleculeNode], merge_molecule_tree]
+    # --- Canonical workspace state ---
+    workspace_projection: WorkspaceProjection | dict[str, Any]
+    workspace_delta: NotRequired[WorkspaceDelta | dict[str, Any] | None]
+    workspace_events: NotRequired[list[WorkspaceEventRecord | dict[str, Any]]]
+
+    # --- Legacy compatibility mirrors ---
+    viewport: NotRequired[WorkspaceViewport]
+    molecule_tree: NotRequired[Annotated[dict[str, MoleculeNode], merge_molecule_tree]]
     scratchpad: ProjectScratchpad
     read_file_state: Annotated[dict[str, FileReadEntry], merge_file_read_state]
-    # --------------------
 
     artifacts: Annotated[list[dict], operator.add]
 
@@ -139,8 +145,13 @@ class ChemState(TypedDict):
     subtask_control: dict[str, Any] | None
     artifact_expiry_warning: NotRequired[str | None]
     skills_enabled: bool
-    workspace_projection: NotRequired[dict[str, Any]]
-    workspace_events: NotRequired[list[dict[str, Any]]]
+    scenario_kind: NotRequired[str | None]
+    active_handle: NotRequired[str | None]
+    candidate_handles: NotRequired[list[str]]
+    candidate_generation_status: NotRequired[str | None]
+    approval_context: NotRequired[dict[str, Any] | None]
+    pending_approval_job_ids: NotRequired[list[str]]
+    last_workspace_version: NotRequired[int]
     pending_worker_tasks: NotRequired[list[PendingWorkerTask]]
 
 

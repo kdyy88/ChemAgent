@@ -8,6 +8,7 @@ from app.tools.system.file_ops import (
 from app.tools.system.shell import ALL_SHELL_TOOLS, tool_run_shell
 from app.tools.system.state_tools import (
     ALL_STATE_TOOLS,
+    tool_commit_molecule_mutation,
     tool_create_molecule_node,
     tool_patch_diagnostics,
     tool_update_scratchpad,
@@ -21,6 +22,7 @@ __all__ = [
     "ALL_SHELL_TOOLS",
     "ALL_STATE_TOOLS",
     "ALL_SCREEN_TOOLS",
+    "tool_commit_molecule_mutation",
     "tool_ask_human",
     "tool_update_task_status",
     "tool_read_file",

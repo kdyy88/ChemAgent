@@ -35,6 +35,7 @@ from app.services.workspace import (
     complete_workspace_job,
     ensure_workspace_projection,
     extract_workspace_job_result,
+    project_legacy_workspace_view,
     resolve_workspace_target,
     start_workspace_job,
 )
@@ -373,8 +374,14 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
     tool_messages: list[ToolMessage] = []
     tool_calls = list(getattr(last_message, "tool_calls", []))
 
+    workspace_projection = ensure_workspace_projection(
+        state,
+        project_id=str(((config or {}).get("configurable") or {}).get("thread_id") or "default_project"),
+    )
+    legacy_viewport, legacy_tree = project_legacy_workspace_view(workspace_projection)
+
     # Protocol accumulators for Chem LSP (Phase 3)
-    current_tree: dict[str, Any] = dict(state.get("molecule_tree") or {})
+    current_tree: dict[str, Any] = {**legacy_tree, **dict(state.get("molecule_tree") or {})}
     molecule_tree_updates: dict[str, Any] = {}
     node_create_ids: list[str] = []
 
@@ -951,6 +958,13 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
                             parsed,
                         )
                         workspace_events.extend(new_workspace_events)
+                    elif protocol_type == "WorkspaceMutation":
+                        workspace_projection, new_workspace_events = apply_protocol_to_workspace(
+                            workspace_projection,
+                            protocol_type,
+                            parsed,
+                        )
+                        workspace_events.extend(new_workspace_events)
                     else:
                         # ── File protocol branch ──────────────────────────────
                         file_protocol = (parsed or {}).get("__file_protocol__")
@@ -1108,10 +1122,10 @@ async def tools_executor_node(state: ChemState, config: RunnableConfig) -> dict:
             else (
                 {
                     "viewport": {
-                        **({"focused_artifact_ids": [], **dict(state.get("viewport") or {})}),
+                        **({"focused_artifact_ids": [], **dict(legacy_viewport or state.get("viewport") or {})}),
                         "focused_artifact_ids": list(
                             dict.fromkeys(
-                                list((state.get("viewport") or {}).get("focused_artifact_ids") or [])
+                                list((legacy_viewport or state.get("viewport") or {}).get("focused_artifact_ids") or [])
                                 + node_create_ids
                             )
                         ),
